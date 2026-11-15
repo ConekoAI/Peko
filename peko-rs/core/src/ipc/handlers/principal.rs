@@ -2102,15 +2102,7 @@ async fn handle_principal_stop(
     // drains it (cancel short-circuits before Gap-2), so the NEXT
     // run's first-iteration drain picks it up as context.
     let inbox = host.inbox_registry().get_or_create(&session_id).await;
-    inbox
-        .push(
-            SteeringMessage::new(
-                "The user stopped your previous turn. When you next respond, briefly \
-                 acknowledge what was interrupted and any partial state worth keeping.",
-            )
-            .into(),
-        )
-        .await;
+    inbox.push(SteeringMessage::new(STOP_NOTE).into()).await;
 
     let response = ResponsePacket::Done {
         request_id,
@@ -2119,6 +2111,101 @@ async fn handle_principal_stop(
     };
     send_response(sink, response).await?;
     Ok(())
+}
+
+/// The note a stop leaves in the session's inbox for the next run.
+const STOP_NOTE: &str = "The user stopped your previous turn. When you next respond, briefly \
+     acknowledge what was interrupted and any partial state worth keeping.";
+
+/// Take what someone wrote after the stop out of the inbox.
+///
+/// A stopped run ends at its next step, which can be a whole model call
+/// away. A message that arrives in between finds the session busy and
+/// is queued for that run, which never reads it. The caller answers
+/// each of these once the run has ended. The stop note and anything
+/// queued before it stay for the next run to read.
+async fn drain_written_after_stop(
+    inboxes: &peko_session::InboxRegistry,
+    session_id: &str,
+) -> Vec<SteeringMessage> {
+    let Some(inbox) = inboxes.peek_inbox(session_id).await else {
+        return Vec::new();
+    };
+    let mut queued: Vec<SteeringMessage> = inbox
+        .drain_steering()
+        .await
+        .into_iter()
+        .map(|env| SteeringMessage {
+            id: env.id,
+            content: env.content,
+            queued_at: env.queued_at,
+            from_peer: env.from_peer,
+        })
+        .collect();
+    let after_stop = queued
+        .iter()
+        .rposition(|m| !m.from_peer && m.content == STOP_NOTE)
+        .map_or(queued.len(), |at| at + 1);
+    let (written, notes): (Vec<_>, Vec<_>) = queued
+        .split_off(after_stop)
+        .into_iter()
+        .partition(|m| m.from_peer);
+    for kept in queued.into_iter().chain(notes) {
+        inbox.push(kept.into()).await;
+    }
+    written
+}
+
+#[cfg(test)]
+mod after_stop_tests {
+    use super::*;
+
+    async fn queued(inboxes: &peko_session::InboxRegistry, session: &str) -> Vec<String> {
+        let inbox = inboxes.peek_inbox(session).await.expect("inbox");
+        let left = inbox.drain_steering().await;
+        left.into_iter().map(|m| m.content).collect()
+    }
+
+    #[tokio::test]
+    async fn what_was_written_after_the_stop_is_taken_and_the_rest_stays() {
+        let inboxes = peko_session::InboxRegistry::new(
+            crate::async_exec::executor::executor::default_inbox_factory(),
+        );
+        let inbox = inboxes.get_or_create("s").await;
+        inbox
+            .push(SteeringMessage::from_peer("before").into())
+            .await;
+        inbox.push(SteeringMessage::new(STOP_NOTE).into()).await;
+        inbox.push(SteeringMessage::from_peer("after").into()).await;
+        inbox.push(SteeringMessage::new("a note").into()).await;
+
+        let written = drain_written_after_stop(&inboxes, "s").await;
+
+        assert_eq!(
+            written
+                .iter()
+                .map(|m| m.content.as_str())
+                .collect::<Vec<_>>(),
+            ["after"]
+        );
+        assert!(written[0].from_peer);
+        assert_eq!(queued(&inboxes, "s").await, ["before", STOP_NOTE, "a note"]);
+    }
+
+    #[tokio::test]
+    async fn without_a_stop_note_nothing_is_taken() {
+        let inboxes = peko_session::InboxRegistry::new(
+            crate::async_exec::executor::executor::default_inbox_factory(),
+        );
+        let inbox = inboxes.get_or_create("s").await;
+        inbox
+            .push(SteeringMessage::from_peer("waiting").into())
+            .await;
+
+        assert!(drain_written_after_stop(&inboxes, "s").await.is_empty());
+        assert_eq!(queued(&inboxes, "s").await, ["waiting"]);
+        assert!(drain_written_after_stop(&inboxes, "none").await.is_empty());
+    }
 }
 
 /// Refuse a send before anything is posted: an `Error` packet, then a
@@ -2887,6 +2974,28 @@ async fn run_principal_send(
                 error: Some(message),
             };
             send_response(sink, done).await?;
+
+            // What was written after the stop was queued for the run
+            // that was ending; answer it now that it has ended.
+            if user_stopped {
+                for msg in drain_written_after_stop(host.inbox_registry(), &session_id).await {
+                    run_steering_successor(
+                        host,
+                        sink,
+                        request_id,
+                        &principal,
+                        Arc::clone(&turns),
+                        &session_id,
+                        peer.clone(),
+                        permission_subject.clone(),
+                        msg,
+                        override_model.clone(),
+                        channel_port.clone(),
+                        dm_channel.clone(),
+                    )
+                    .await?;
+                }
+            }
         }
     }
     Ok(())
