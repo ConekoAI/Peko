@@ -744,6 +744,45 @@ fn posted_msg_id(ev: &ChannelEvent) -> Option<&str> {
     }
 }
 
+/// What [`ChannelStore::subscribe_all`] yields (ADR-108 D4).
+#[derive(Debug, Clone)]
+pub enum StoreSignal {
+    /// `event` was appended to `channel`.
+    Event {
+        channel: ChannelId,
+        event: ChannelEvent,
+    },
+    /// The person's read mark on `channel` moved to `msg_id`.
+    PersonRead { channel: ChannelId, msg_id: String },
+}
+
+/// What moving the person's read mark did (ADR-108 D5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PersonMarkMove {
+    /// The mark moved forward.
+    Moved,
+    /// The mark already covers that post.
+    Covered,
+    /// This copy does not hold that post yet; the mark is kept and
+    /// applied when the post arrives.
+    Kept,
+}
+
+/// The person's read state on one channel (ADR-108 D5).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PersonRead {
+    /// The newest post the person has seen, by `msg_id`.
+    pub mark: Option<String>,
+    /// Posts after the mark that the person did not write.
+    pub unread: usize,
+}
+
+/// `read_marks.json` key of the person's read mark: a `msg_id`, not a
+/// line number, because copies of a conversation order lines differently.
+const PERSON_MARK_KEY: &str = "person";
+/// `read_marks.json` key of a mark naming a post this copy lacks.
+const PERSON_PENDING_KEY: &str = "person_pending";
+
 // ---------------------------------------------------------------------------
 // ChannelStore
 // ---------------------------------------------------------------------------
@@ -769,6 +808,11 @@ pub struct ChannelStore {
     /// subscribe. Dead entries (no receivers) are GC'd by the next
     /// `subscribe_events` call.
     notifiers: Arc<Mutex<HashMap<ChannelId, broadcast::Sender<ChannelEvent>>>>,
+    /// ADR-108 D4: one signal for every channel of the store, for a
+    /// watcher that follows all of a person's conversations at once.
+    /// Fired with the per-channel signal, and when the person's read
+    /// mark moves.
+    all_events: broadcast::Sender<StoreSignal>,
     /// Per-page-file `(line_count, byte_len)` cache, keyed by the
     /// page's path (`events.jsonl` or a rotated `events.<n>.jsonl`).
     /// Powers the O(1) next-line-number computation in `append_event`
@@ -2350,6 +2394,7 @@ impl ChannelStore {
             cfg,
             dm_lock: Arc::new(tokio::sync::Mutex::new(())),
             notifiers: Arc::new(Mutex::new(HashMap::new())),
+            all_events: broadcast::channel(1024).0,
             line_counts: Arc::new(Mutex::new(HashMap::new())),
             rotate_bytes: DEFAULT_ROTATE_BYTES,
         }
@@ -2398,6 +2443,11 @@ impl ChannelStore {
             // acceptable for a best-effort notification.
             let _ = sender.send(event.clone());
         }
+        drop(guard);
+        let _ = self.all_events.send(StoreSignal::Event {
+            channel: channel.clone(),
+            event: event.clone(),
+        });
     }
 
     /// Borrow the underlying config (useful for tests asserting on the
@@ -2638,6 +2688,129 @@ impl ChannelStore {
         }
         marks.set(session_key.to_string(), mark);
         marks.save(&chan_dir).await
+    }
+
+    /// ADR-108 D4: every event appended to any channel of this store, and
+    /// every move of the person's read mark, from now on.
+    pub fn subscribe_all(&self) -> broadcast::Receiver<StoreSignal> {
+        self.all_events.subscribe()
+    }
+
+    /// The addresses this runtime's person posts under: the local user,
+    /// and their Hub account once the runtime is registered.
+    async fn person_addresses(&self) -> Vec<String> {
+        let me = self.actor_info(&ActorRef::User("local".into())).await;
+        let mut out = vec![me.address.clone()];
+        out.extend(me.hub_address());
+        out
+    }
+
+    /// ADR-108 D5: move the person's read mark on `channel` to the post
+    /// `msg_id`. Forward only, by the posts' time order (the order
+    /// [`Self::history_page`] reads them in).
+    pub async fn mark_person_read(
+        &self,
+        channel: &ChannelId,
+        msg_id: &str,
+    ) -> Result<PersonMarkMove> {
+        // An unknown id is kept until its post arrives, so it must at
+        // least be shaped like one.
+        if !is_post_id(msg_id) {
+            return Err(ChannelError::Adapter("`msg_id` is not a post's id".into()));
+        }
+        let posts = self.posts_by_time(channel).await?;
+        let position = |id: &str| posts.iter().position(|ev| posted_msg_id(ev) == Some(id));
+        let chan_dir = self.channel_dir_for_marks(channel).await?;
+        let _guard = lock_beside(&crate::read_marks::ChannelReadMarks::path_in(&chan_dir)).await?;
+        let mut marks = crate::read_marks::ChannelReadMarks::load(&chan_dir).await?;
+        let Some(new) = position(msg_id) else {
+            marks.set(PERSON_PENDING_KEY, msg_id.to_string());
+            marks.save(&chan_dir).await?;
+            return Ok(PersonMarkMove::Kept);
+        };
+        let current = marks.get(PERSON_MARK_KEY).and_then(|id| position(id));
+        if current.is_some_and(|old| old >= new) {
+            return Ok(PersonMarkMove::Covered);
+        }
+        marks.set(PERSON_MARK_KEY, msg_id.to_string());
+        marks.save(&chan_dir).await?;
+        drop(_guard);
+        let _ = self.all_events.send(StoreSignal::PersonRead {
+            channel: channel.clone(),
+            msg_id: msg_id.to_string(),
+        });
+        Ok(PersonMarkMove::Moved)
+    }
+
+    /// ADR-108 D5: the person's read mark on `channel` and how many posts
+    /// after it they did not write. With no mark, every post by someone
+    /// else is unread. A kept mark whose post has arrived is applied
+    /// first.
+    pub async fn person_read(&self, channel: &ChannelId) -> Result<PersonRead> {
+        let chan_dir = self.channel_dir_for_marks(channel).await?;
+        let marks = crate::read_marks::ChannelReadMarks::load(&chan_dir).await?;
+        if let Some(pending) = marks.get(PERSON_PENDING_KEY).cloned() {
+            if self.post_line(channel, &pending).await?.is_some() {
+                self.mark_person_read(channel, &pending).await?;
+                let _guard =
+                    lock_beside(&crate::read_marks::ChannelReadMarks::path_in(&chan_dir)).await?;
+                let mut marks = crate::read_marks::ChannelReadMarks::load(&chan_dir).await?;
+                if marks.get(PERSON_PENDING_KEY) == Some(&pending) {
+                    marks.0.remove(PERSON_PENDING_KEY);
+                    marks.save(&chan_dir).await?;
+                }
+            }
+        }
+        let mark = crate::read_marks::ChannelReadMarks::load(&chan_dir)
+            .await?
+            .get(PERSON_MARK_KEY)
+            .cloned();
+        let posts = self.posts_by_time(channel).await?;
+        let own = self.person_addresses().await;
+        let after = mark
+            .as_deref()
+            .and_then(|id| posts.iter().position(|ev| posted_msg_id(ev) == Some(id)))
+            .map_or(0, |i| i + 1);
+        let unread = posts[after..]
+            .iter()
+            .filter(|ev| match ev {
+                ChannelEvent::Posted { author, .. } => !own.contains(author),
+                _ => false,
+            })
+            .count();
+        Ok(PersonRead { mark, unread })
+    }
+
+    /// Whether the person's read mark on `channel` covers the post
+    /// `msg_id` (ADR-108 D6: such a post is not notified).
+    pub async fn person_has_read(&self, channel: &ChannelId, msg_id: &str) -> Result<bool> {
+        let Some(mark) = self.person_read(channel).await?.mark else {
+            return Ok(false);
+        };
+        let posts = self.posts_by_time(channel).await?;
+        let position = |id: &str| posts.iter().position(|ev| posted_msg_id(ev) == Some(id));
+        Ok(matches!((position(&mark), position(msg_id)), (Some(m), Some(p)) if m >= p))
+    }
+
+    /// Every conversation this runtime's person is in (ADR-108 D3): the
+    /// DMs and groups whose members include the local user.
+    pub async fn person_channels(&self) -> Result<Vec<(ChannelId, ConversationKind)>> {
+        let me = ActorRef::User("local".into());
+        let mut out = Vec::new();
+        for kind in [ConversationKind::Dm, ConversationKind::Group] {
+            for channel in self.channels_of_kind(kind).await? {
+                let tier = self.resolve_tier(&channel).await?;
+                if self.check_membership(tier, &channel, &me).await? {
+                    out.push((channel, kind));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// `channel`'s newest post by time, if it has one.
+    pub async fn newest_post(&self, channel: &ChannelId) -> Result<Option<ChannelEvent>> {
+        Ok(self.posts_by_time(channel).await?.pop())
     }
 
     /// Posts waiting on `session_key` on `channel`. See [`crate::attention`].
@@ -3961,6 +4134,19 @@ async fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
 /// A fresh stable message id.
 pub fn new_msg_id() -> String {
     format!("msg_{}", uuid::Uuid::new_v4().simple())
+}
+
+/// Whether `id` is shaped like a post's id (`msg_` and up to 124 letters,
+/// digits, `_` or `-`).
+#[must_use]
+pub fn is_post_id(id: &str) -> bool {
+    id.strip_prefix("msg_").is_some_and(|rest| {
+        !rest.is_empty()
+            && rest.len() <= 124
+            && rest
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -5404,6 +5590,102 @@ mod tests {
             members.len(),
             9,
             "creator + 8 concurrently invited users must all be present"
+        );
+    }
+
+    /// ADR-108 D5: the person's read mark moves forward only, counts
+    /// other people's posts after it, keeps a mark for a post this copy
+    /// lacks, and signals watchers.
+    #[tokio::test]
+    async fn person_read_mark_moves_forward_and_counts_others_posts() {
+        let store = ChannelStore::new(tmp_cfg("person-read"));
+        let peko = pid("prin_alice");
+        let me = ActorRef::User("local".into());
+        let channel = store
+            .create(&peko, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+        store.invite(&channel, &peko, &me).await.unwrap();
+        let mut signals = store.subscribe_all();
+        let mut ids = Vec::new();
+        for (sender, text) in [
+            (ActorRef::from(&peko), "one"),
+            (me.clone(), "mine"),
+            (ActorRef::from(&peko), "two"),
+        ] {
+            let (_, ev) = store
+                .post_with_event(&channel, &sender, PostMsg::root(text))
+                .await
+                .unwrap();
+            ids.push(posted_msg_id(&ev).unwrap().to_string());
+        }
+        assert_eq!(
+            store.person_read(&channel).await.unwrap(),
+            PersonRead {
+                mark: None,
+                unread: 2
+            }
+        );
+        assert!(store
+            .person_channels()
+            .await
+            .unwrap()
+            .contains(&(channel.clone(), ConversationKind::Group)));
+
+        assert_eq!(
+            store.mark_person_read(&channel, &ids[0]).await.unwrap(),
+            PersonMarkMove::Moved
+        );
+        assert_eq!(store.person_read(&channel).await.unwrap().unread, 1);
+        assert!(store.person_has_read(&channel, &ids[0]).await.unwrap());
+        assert!(!store.person_has_read(&channel, &ids[2]).await.unwrap());
+        assert_eq!(
+            store.mark_person_read(&channel, &ids[2]).await.unwrap(),
+            PersonMarkMove::Moved
+        );
+        assert_eq!(
+            store.mark_person_read(&channel, &ids[0]).await.unwrap(),
+            PersonMarkMove::Covered,
+            "a mark never moves back"
+        );
+        let read = store.person_read(&channel).await.unwrap();
+        assert_eq!(
+            (read.mark.as_deref(), read.unread),
+            (Some(ids[2].as_str()), 0)
+        );
+
+        // A mark for a post that has not arrived is kept, then applied.
+        // Not a post id: refused, and nothing is kept for later.
+        for bad in ["", "msg_", "nope", "msg_a b"] {
+            assert!(store.mark_person_read(&channel, bad).await.is_err());
+        }
+        assert_eq!(
+            store.mark_person_read(&channel, "msg_later").await.unwrap(),
+            PersonMarkMove::Kept
+        );
+        store
+            .post_with_event(
+                &channel,
+                &ActorRef::from(&peko),
+                PostMsg {
+                    msg_id: Some("msg_later".into()),
+                    ..PostMsg::root("three")
+                },
+            )
+            .await
+            .unwrap();
+        let read = store.person_read(&channel).await.unwrap();
+        assert_eq!((read.mark.as_deref(), read.unread), (Some("msg_later"), 0));
+
+        let mut moved = Vec::new();
+        while let Ok(signal) = signals.try_recv() {
+            if let StoreSignal::PersonRead { msg_id, .. } = signal {
+                moved.push(msg_id);
+            }
+        }
+        assert_eq!(
+            moved,
+            vec![ids[0].clone(), ids[2].clone(), "msg_later".into()]
         );
     }
 

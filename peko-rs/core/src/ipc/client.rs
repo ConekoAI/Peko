@@ -303,6 +303,40 @@ impl DaemonClient {
         }
     }
 
+    /// One non-streaming device request (ADR-108): `device_pair_start`,
+    /// `device_list`, or `device_remove`.
+    async fn device_request(&self, packet: RequestPacket) -> anyhow::Result<ResponsePacket> {
+        let mut stream = self.send_request(packet).await?;
+        match stream.next().await {
+            Some(packet) => Ok(packet),
+            None => anyhow::bail!("Device request stream closed unexpectedly"),
+        }
+    }
+
+    /// Open a pairing for a phone to scan (ADR-108 D2).
+    pub async fn device_pair_start(&self) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        self.device_request(RequestPacket::DevicePairStart { request_id })
+            .await
+    }
+
+    /// The phones paired with this runtime (ADR-108 D2).
+    pub async fn device_list(&self) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        self.device_request(RequestPacket::DeviceList { request_id })
+            .await
+    }
+
+    /// Remove a paired phone (ADR-108 D2).
+    pub async fn device_remove(&self, device_id: &str) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        self.device_request(RequestPacket::DeviceRemove {
+            request_id,
+            device_id: device_id.to_string(),
+        })
+        .await
+    }
+
     /// Comprehensive daemon status (issue #8). Returns uptime, version,
     /// and tunnel health snapshot.
     pub async fn status(&self) -> anyhow::Result<ResponsePacket> {

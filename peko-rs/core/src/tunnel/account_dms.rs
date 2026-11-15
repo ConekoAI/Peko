@@ -134,6 +134,11 @@ impl TunnelChannelPort {
             return false;
         }
         let dms = self.account_dm_list(&ctx, &account).await;
+        // The asking runtime is another of this person's computers
+        // (PekoHub relays the request only within the account): a route
+        // for them in each of these conversations.
+        self.keep_person_routes(&account, &source_runtime_id, &dms)
+            .await;
         let people = self.person_dm_list(&account).await;
         let blocks: Vec<DmBlock> = self
             .local
@@ -262,6 +267,32 @@ impl TunnelChannelPort {
         out
     }
 
+    /// Record `runtime`, another of this person's computers, as a route
+    /// for them in each of `dms` held here (ADR-095 D5, D7). What they
+    /// write there is then accepted here, and what they write here goes
+    /// there. Only their own pair with each peko: a list cannot name any
+    /// other conversation.
+    pub(crate) async fn keep_person_routes(&self, account: &str, runtime: &str, dms: &[AccountDm]) {
+        let person = format!("user:hub:{account}");
+        for dm in dms {
+            let Some(channel) = ChannelId::parse(&dm.channel_id) else {
+                continue;
+            };
+            if channel != human_dm_channel_id(&dm.peer_identity_key, &person)
+                || self.local.conversation_kind(&channel).await.is_err()
+            {
+                continue;
+            }
+            if let Err(e) = self
+                .local
+                .add_remote_member(&channel, runtime, &person)
+                .await
+            {
+                debug!(%channel, "route for the person's other computer not kept: {e}");
+            }
+        }
+    }
+
     /// One of this account's runtimes answers: open each DM this runtime
     /// lacks and catch it up from the peko's host.
     pub(crate) async fn on_account_dms(
@@ -356,6 +387,10 @@ impl TunnelChannelPort {
             }
         }
         let person = format!("user:hub:{account}");
+        // The answering runtime is another of this person's computers: a
+        // route for them in the conversations already held here.
+        self.keep_person_routes(&account, &source_runtime_id, &dms)
+            .await;
         for dm in dms {
             let Some(channel) = ChannelId::parse(&dm.channel_id) else {
                 continue;
@@ -378,6 +413,13 @@ impl TunnelChannelPort {
             };
             match self.open_resolved_hub_dm(&ctx, &user, &resolved).await {
                 Ok(opened) => {
+                    if let Err(e) = self
+                        .local
+                        .add_remote_member(&opened.channel, &source_runtime_id, &person)
+                        .await
+                    {
+                        debug!(channel = %opened.channel, "route for the person's other computer not kept: {e}");
+                    }
                     let port = Arc::clone(self);
                     tokio::spawn(async move {
                         if let Err(e) = port.sync_history(&opened.channel).await {

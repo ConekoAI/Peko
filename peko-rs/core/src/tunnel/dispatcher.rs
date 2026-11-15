@@ -1462,6 +1462,14 @@ impl TunnelDispatcher {
                     )
                     .await;
             }
+            message @ (TunnelMessage::TunnelDevicePair { .. }
+            | TunnelMessage::TunnelDeviceRequest { .. }
+            | TunnelMessage::TunnelDeviceGone { .. }
+            | TunnelMessage::TunnelReadMark { .. }) => {
+                // ADR-108: the daemon decides whether a device is
+                // believed and what it may ask.
+                self.host.device_message(message).await;
+            }
             _ => {
                 debug!("Ignoring tunnel message: {:?}", msg);
             }
@@ -9642,6 +9650,131 @@ mod tests {
                 .any(|m| m.runtime_id == l2.app.runtime_did()),
             "L2 is a route for alice on L1"
         );
+
+        // What alice writes at the host shows on L2 too. Opening the DM
+        // asked her other computers for her DMs, which made L1 a route
+        // for her on L2.
+        let account_runtimes = [
+            (l1.app.runtime_did(), account.clone()),
+            (l2.app.runtime_did(), account.clone()),
+        ];
+        route_account(&mut [&mut l1, &mut l2], &account_runtimes).await;
+        let person = format!("user:hub:{account}");
+        assert!(
+            l2_port
+                .is_remote_member(&channel, &l1.app.runtime_did(), &person)
+                .await
+                .unwrap(),
+            "L1 is a route for alice on L2"
+        );
+        // Typed in the app: posted as the local user.
+        l1_port
+            .post(
+                &channel,
+                &local_user,
+                peko_channel::PostMsg::root("typed at the host"),
+            )
+            .await
+            .unwrap();
+        // Sent with `peko send`: recorded by the peko, written by her.
+        l1_port
+            .post_attributed(
+                &channel,
+                &ActorRef::from(&peko.id),
+                &local_user.to_string(),
+                peko_channel::PostMsg::root("sent at the host"),
+            )
+            .await
+            .unwrap();
+        // Words the peko recorded for someone else stay the peko's to
+        // vouch for, and L2 refuses them as that person's.
+        let bob = format!("user:hub:{}", uuid::Uuid::new_v4());
+        l1_port
+            .post_attributed(
+                &channel,
+                &ActorRef::from(&peko.id),
+                &bob,
+                peko_channel::PostMsg::root("not hers"),
+            )
+            .await
+            .unwrap();
+        let outgoing = l1.sent();
+        let sources: Vec<&str> = outgoing
+            .iter()
+            .filter_map(|m| match m {
+                TunnelMessage::TunnelChannelEvent {
+                    source_principal_did,
+                    ..
+                } => Some(source_principal_did.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            sources,
+            [person.as_str(), person.as_str(), peko_did.as_str()],
+            "her posts go out as hers; another person's go out as the peko's"
+        );
+        for message in outgoing {
+            l2.receive(message).await;
+        }
+        relay(&mut l2, &mut l1).await;
+        let on_l2 = posts(&l2_port.peek(&channel, &Checkpoint::zero()).await.unwrap());
+        assert_eq!(
+            on_l2
+                .iter()
+                .map(|(_, text)| text.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "from my laptop",
+                "from my desktop",
+                "typed at the host",
+                "sent at the host"
+            ]
+        );
+        let l2_person = l2_port.actor_info(&local_user).await;
+        for (author, text) in &on_l2 {
+            let author = l2_port
+                .actor_info(&author.parse::<ActorRef>().unwrap())
+                .await;
+            assert_eq!(
+                author.identity_key, l2_person.identity_key,
+                "`{text}` is alice's on L2"
+            );
+        }
+
+        // A list of DMs can make its sender a route only in the person's
+        // own pair with a peko: not under another peko's key, and not in
+        // a conversation this computer does not hold.
+        let stranger = "did:key:z6MkStrangerRuntime".to_string();
+        let listed = |channel_id: String, key: &str| crate::tunnel::AccountDm {
+            channel_id,
+            peer_hub_id: hub_id.clone(),
+            peer_signing_did: peko_did.clone(),
+            peer_identity_key: key.to_string(),
+            peer_name: None,
+            peer_runtime_id: stranger.clone(),
+            peer_exposure: "private".into(),
+        };
+        let elsewhere = peko_channel::dm_channel_id("other-key", &person);
+        l2_port
+            .keep_person_routes(
+                &account,
+                &stranger,
+                &[
+                    listed(channel.as_str().into(), "other-key"),
+                    listed(elsewhere.as_str().into(), "other-key"),
+                ],
+            )
+            .await;
+        assert!(
+            !l2_port
+                .is_remote_member(&channel, &stranger, &person)
+                .await
+                .unwrap(),
+            "a list naming this DM under another key adds no route"
+        );
+        assert!(l2_port.conversation_kind(&elsewhere).await.is_err());
+
         // Unregistered, L1 keys the DM by its local user again.
         l1_port.local().unlink_local_user().await.unwrap();
         crate::principal::dm_rekey::reconcile_local_user_dms(l1.app.principal_manager())
@@ -9660,7 +9793,13 @@ mod tests {
         );
         assert_eq!(
             texts(l1_port.peek(&before, &Checkpoint::zero()).await.unwrap()),
-            ["from my laptop", "from my desktop"]
+            [
+                "from my laptop",
+                "from my desktop",
+                "typed at the host",
+                "sent at the host",
+                "not hers"
+            ]
         );
     }
 

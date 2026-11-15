@@ -182,6 +182,12 @@ pub struct PrincipalManager {
     identity_vault: Option<Arc<crate::common::vault::Vault>>,
 }
 
+/// Makes a conversation turn stoppable. Given the turn's session id it
+/// returns the token that cancels the turn and a guard to hold while the
+/// turn runs (the daemon's run registry, `daemon/channel_binding.rs`).
+pub(crate) type RunRegistrar =
+    dyn Fn(&str) -> (tokio_util::sync::CancellationToken, Box<dyn Send + Sync>) + Send + Sync;
+
 impl PrincipalManager {
     pub fn new(
         memory_factory: Arc<dyn PrincipalMemoryFactory>,
@@ -1720,6 +1726,7 @@ impl PrincipalManager {
         message: &str,
         files: &[peko_protocol::channel::Attachment],
         model: Option<String>,
+        stoppable: Option<&RunRegistrar>,
     ) -> anyhow::Result<()> {
         let principal = self
             .get(principal_id.clone())
@@ -1815,18 +1822,31 @@ impl PrincipalManager {
             &attachments,
         );
         let media = crate::principal::attachments::media(&principal.workspace_path, &attachments);
-        let outcome = turns
+        // The person can stop this turn like one they started here.
+        let (cancel, _registration) = match stoppable {
+            Some(register) => {
+                let (cancel, registration) = register(&child_id);
+                (Some(cancel), Some(registration))
+            }
+            None => (None, None),
+        };
+        let outcome = match turns
             .drive_conversation_turn(
                 Some((&port, channel)),
                 &child_id,
                 &text,
                 media,
                 Arc::new(|_| {}),
-                None,
+                cancel.clone(),
                 model,
                 acting_for,
             )
-            .await?;
+            .await
+        {
+            Ok(outcome) => outcome,
+            Err(_) if cancel.as_ref().is_some_and(|c| c.is_cancelled()) => return Ok(()),
+            Err(e) => return Err(e),
+        };
         post_peer_dm_reply(&port, &principal.id, channel, &outcome.final_text).await;
         self.record_peer_recall(&principal, author, &child_id, &outcome.final_text)
             .await;

@@ -65,7 +65,7 @@ mod release_version_tests {
 }
 
 use crate::commands::{
-    audit, auth, channel, config, credential, daemon, from_cli, init_logging, log, model,
+    audit, auth, channel, config, credential, daemon, device, from_cli, init_logging, log, model,
     principal, quota, runtime, send, stop, system, tunnel, update, vault, version, Cli, Commands,
     GlobalPaths,
 };
@@ -144,6 +144,7 @@ async fn run_command(command: Commands, paths: &GlobalPaths, json: bool) -> anyh
         Commands::Model(cmd) => model::execute(cmd, paths).await,
         Commands::Runtime(cmd) => runtime::handle_runtime(cmd, paths, json).await,
         Commands::Tunnel(cmd) => tunnel::handle_tunnel(cmd, paths, json).await,
+        Commands::Device(cmd) => device::handle_device(cmd, paths, json).await,
         Commands::Quota(cmd) => quota::handle_quota(cmd, paths, json).await,
         Commands::Audit(cmd) => audit::handle_audit(cmd, paths).await,
         Commands::Update { check, force } => update::handle_update(check, force).await,

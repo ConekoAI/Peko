@@ -72,6 +72,15 @@ fn variant(message: &TunnelMessage) -> &'static str {
         TunnelMessage::TunnelPekoApprovals { .. } => "tunnel_peko_approvals",
         TunnelMessage::TunnelPekoApprovalDecide { .. } => "tunnel_peko_approval_decide",
         TunnelMessage::TunnelPekoApprovalDecided { .. } => "tunnel_peko_approval_decided",
+        TunnelMessage::TunnelDevicePair { .. } => "tunnel_device_pair",
+        TunnelMessage::TunnelDevicePaired { .. } => "tunnel_device_paired",
+        TunnelMessage::TunnelDeviceRequest { .. } => "tunnel_device_request",
+        TunnelMessage::TunnelDeviceResponse { .. } => "tunnel_device_response",
+        TunnelMessage::TunnelDeviceEvent { .. } => "tunnel_device_event",
+        TunnelMessage::TunnelDeviceGone { .. } => "tunnel_device_gone",
+        TunnelMessage::TunnelDeviceRemoved { .. } => "tunnel_device_removed",
+        TunnelMessage::TunnelDeviceNotify { .. } => "tunnel_device_notify",
+        TunnelMessage::TunnelReadMark { .. } => "tunnel_read_mark",
         TunnelMessage::GroupRegister { .. } => "group_register",
         TunnelMessage::GroupRegistered { .. } => "group_registered",
         TunnelMessage::GroupRegisterRejected { .. } => "group_register_rejected",
@@ -128,6 +137,15 @@ const ALL_VARIANTS: &[&str] = &[
     "tunnel_peko_approvals",
     "tunnel_peko_approval_decide",
     "tunnel_peko_approval_decided",
+    "tunnel_device_pair",
+    "tunnel_device_paired",
+    "tunnel_device_request",
+    "tunnel_device_response",
+    "tunnel_device_event",
+    "tunnel_device_gone",
+    "tunnel_device_removed",
+    "tunnel_device_notify",
+    "tunnel_read_mark",
     "group_register",
     "group_registered",
     "group_register_rejected",
@@ -142,6 +160,7 @@ const RUNTIME_A: &str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2do
 const RUNTIME_B: &str = "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH";
 const HUB_ID: &str = "156f1a95-d977-4c4a-979e-8ed4848ae6eb";
 const ACCOUNT: &str = "0b6c7a4e-1d2f-4a3b-8c9d-0e1f2a3b4c5d";
+const DEVICE: &str = "dev_5f0c1c1e9a7b4f52a4f1c0de";
 
 fn channel_envelope(event: ChannelEvent) -> TunnelMessage {
     TunnelMessage::TunnelChannelEvent {
@@ -531,6 +550,59 @@ fn samples() -> Vec<TunnelMessage> {
             approval_id: "apr_0123456789ab".into(),
             decided: true,
             message: "Approved apr_0123456789ab.".into(),
+            signature: "runtime-signature".into(),
+        },
+        TunnelMessage::TunnelDevicePair {
+            request_id: "pair-1".into(),
+            runtime_id: RUNTIME_A.into(),
+            device_id: DEVICE.into(),
+            proof: "device-signature".into(),
+        },
+        TunnelMessage::TunnelDevicePaired {
+            request_id: "pair-1".into(),
+            device_id: DEVICE.into(),
+            runtime_id: RUNTIME_A.into(),
+            ok: false,
+            error: Some("That pairing code has expired.".into()),
+            signature: "runtime-signature".into(),
+        },
+        TunnelMessage::TunnelDeviceRequest {
+            request_id: "dreq-1".into(),
+            device_id: DEVICE.into(),
+            runtime_id: RUNTIME_A.into(),
+            signature: "device-signature".into(),
+        },
+        TunnelMessage::TunnelDeviceResponse {
+            request_id: "dreq-1".into(),
+            device_id: DEVICE.into(),
+            runtime_id: RUNTIME_A.into(),
+            signature: "runtime-signature".into(),
+        },
+        TunnelMessage::TunnelDeviceEvent {
+            device_id: DEVICE.into(),
+            runtime_id: RUNTIME_A.into(),
+            signature: "runtime-signature".into(),
+        },
+        TunnelMessage::TunnelDeviceGone {
+            device_id: DEVICE.into(),
+        },
+        TunnelMessage::TunnelDeviceRemoved {
+            device_id: DEVICE.into(),
+            runtime_id: RUNTIME_A.into(),
+        },
+        TunnelMessage::TunnelDeviceNotify {
+            device_id: DEVICE.into(),
+            runtime_id: RUNTIME_A.into(),
+            collapse_key: "dm_0123abcd".into(),
+            sealed: Some("c2VhbGVk".into()),
+            clear: true,
+        },
+        TunnelMessage::TunnelReadMark {
+            request_id: "read-1".into(),
+            source_runtime_id: RUNTIME_A.into(),
+            source_principal_did: format!("user:hub:{ACCOUNT}"),
+            channel_id: "dm_0123abcd".into(),
+            msg_id: "msg_0123456789abcdef0123456789abcdef".into(),
             signature: "runtime-signature".into(),
         },
         TunnelMessage::TunnelGroupInvitation {

@@ -248,6 +248,10 @@ pub(crate) struct AppState {
     /// (which can be set by extension failures etc.). Surfaced via
     /// `TunnelHealth::Degraded` (issue #8).
     tunnel_degraded: Arc<RwLock<bool>>,
+
+    /// ADR-108: the phones paired with this runtime, and what the daemon
+    /// keeps to tell them about conversations.
+    devices: Arc<devices::DeviceRuntime>,
 }
 
 /// Per-run control handle for an in-flight principal-send run.
@@ -279,6 +283,8 @@ pub(crate) struct StreamingRunHandle {
     /// future "wait for clean shutdown" semantics.
     pub interrupt_acked: Arc<tokio::sync::Notify>,
 }
+
+mod devices;
 
 impl std::fmt::Debug for AppState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -508,6 +514,7 @@ impl AppState {
         // on-disk `runtime.toml` configuration. These are needed by the
         // tunnel client.
         let runtime_signing_key = load_runtime_signing_key(&runtime_identity, &vault)?;
+        let device_runtime_id = runtime_identity.runtime_did.clone();
         let peko_config = load_peko_config(&config_dir);
         let invite_revocation_set = Arc::new(crate::tunnel::InviteRevocationSet::new());
         // peko-channel cross-runtime PR-B commit 2: the concrete
@@ -995,6 +1002,12 @@ impl AppState {
             // handle-publisher on every reconnect.
             streaming_runs,
             tunnel_handle_slot: Arc::new(RwLock::new(None)),
+            devices: Arc::new(devices::DeviceRuntime::new(
+                crate::tunnel::devices::DeviceGate::load(
+                    path_resolver.runtime_dir().join("devices.json"),
+                    device_runtime_id,
+                ),
+            )),
         })
     }
 
@@ -1329,6 +1342,9 @@ impl AppState {
             let mut td = self.tunnel_dispatcher.write().await;
             *td = Some(dispatcher.clone());
         }
+
+        // ADR-108: paired phones are told about conversations from now on.
+        self.start_device_pump();
 
         let dispatcher_for_handler = dispatcher;
 
@@ -2366,6 +2382,10 @@ impl crate::tunnel::TunnelHost for AppState {
     /// ADR-090 D5: start the turn of each peko bound to DM `channel` for a
     /// person's post that arrived over the tunnel. The turn runs in the
     /// background; the dispatcher does not wait for it.
+    async fn device_message(&self, message: crate::tunnel::TunnelMessage) {
+        self.on_device_message(message).await;
+    }
+
     async fn human_dm_post(
         &self,
         channel: peko_protocol::channel::ChannelId,
@@ -2383,7 +2403,19 @@ impl crate::tunnel::TunnelHost for AppState {
                 attachments.clone(),
                 model.clone(),
             );
+            // Registered like a turn started on this computer, so the
+            // person's stop reaches it and it shows as working.
+            let name = match manager.get(principal.clone()).await {
+                Some(peko) => peko.config.read().await.name.clone(),
+                None => continue,
+            };
+            let runs = self.streaming_runs();
             tokio::spawn(async move {
+                let stoppable = move |session_id: &str| {
+                    let (cancel, registration) =
+                        crate::daemon::channel_binding::register_run(&runs, session_id, &name);
+                    (cancel, Box::new(registration) as Box<dyn Send + Sync>)
+                };
                 if let Err(e) = manager
                     .receive_channel_dm_post(
                         &principal,
@@ -2392,6 +2424,7 @@ impl crate::tunnel::TunnelHost for AppState {
                         &text,
                         &attachments,
                         model,
+                        Some(&stoppable),
                     )
                     .await
                 {

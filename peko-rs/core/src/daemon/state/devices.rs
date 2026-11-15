@@ -1,0 +1,1884 @@
+//! Paired phones on the daemon side (ADR-108): pairing, the device verbs,
+//! the person's read mark between their runtimes, live events, and push.
+//!
+//! A phone never names an IPC request. Each verb in [`AppState::device_verb`]
+//! is carried out here as the runtime's local user; a verb that is not in
+//! that table does not exist for a phone. What decides whether a device
+//! message is believed at all is [`crate::tunnel::devices::DeviceGate`].
+
+use std::collections::{HashMap, HashSet};
+use std::str::FromStr as _;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use peko_auth::caller::CallerContext;
+use peko_channel::{ChannelEvent, ChannelId, ChannelPort as _, ConversationKind, StoreSignal};
+use peko_subject::ActorRef;
+use serde_json::{json, Value};
+
+use super::AppState;
+use crate::ipc::packet::{RequestPacket, ResponsePacket};
+use crate::tunnel::devices::{
+    seal_notification, sign_event, sign_paired, sign_read_mark, sign_response, verify_read_mark,
+    DeviceGate, DeviceNotifyPayload, DeviceRecord, PairingOffer, ReadMarkPayload,
+    DEVICE_NOTIFY_VERSION, READ_MARK_VERSION,
+};
+use crate::tunnel::TunnelMessage;
+
+/// Longest text a phone may post.
+const MAX_POST_CHARS: usize = 32_000;
+/// Most posts one `read` returns.
+const MAX_READ: usize = 100;
+/// A notification waits this long; it is not sent if the person has read
+/// the post by then (ADR-108 D6).
+const NOTIFY_HOLD: Duration = if cfg!(test) {
+    Duration::from_millis(60)
+} else {
+    Duration::from_secs(5)
+};
+/// How often runs and approval requests are looked at for phones.
+const POLL: Duration = if cfg!(test) {
+    Duration::from_millis(50)
+} else {
+    Duration::from_secs(2)
+};
+/// Longest `approvals` waits for the person's other computers.
+const REMOTE_APPROVALS_WAIT: Duration = Duration::from_secs(5);
+/// Longest notification body.
+const NOTIFY_BODY_CHARS: usize = 240;
+
+/// What the daemon keeps for paired phones.
+pub(crate) struct DeviceRuntime {
+    pub(crate) gate: Arc<DeviceGate>,
+    /// Conversations a notification went out for and no clear has yet.
+    notified: Mutex<HashSet<String>>,
+    pump_started: AtomicBool,
+}
+
+impl DeviceRuntime {
+    pub(crate) fn new(gate: DeviceGate) -> Self {
+        Self {
+            gate: Arc::new(gate),
+            notified: Mutex::new(HashSet::new()),
+            pump_started: AtomicBool::new(false),
+        }
+    }
+}
+
+/// Collects what an IPC handler answers.
+struct Collect(Mutex<Vec<ResponsePacket>>);
+
+#[async_trait::async_trait]
+impl crate::ipc::response_sink::ResponseSink for Collect {
+    async fn send_bytes(&self, bytes: &[u8]) -> std::io::Result<()> {
+        let packet = serde_json::from_slice(bytes).map_err(std::io::Error::other)?;
+        self.0.lock().expect("collect sink").push(packet);
+        Ok(())
+    }
+}
+
+fn me() -> ActorRef {
+    ActorRef::User("local".into())
+}
+
+fn arg_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
+    args.get(key)
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| format!("[bad_request] `{key}` is required"))
+}
+
+fn truncate(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let mut out: String = text.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+impl AppState {
+    fn store(&self) -> &Arc<peko_channel::ChannelStore> {
+        self.tunnel_channel_port.local()
+    }
+
+    async fn send_to_hub(&self, message: TunnelMessage) -> bool {
+        match self.tunnel_handle_slot.read().await.as_ref() {
+            Some(handle) => handle.send(message).is_ok(),
+            None => false,
+        }
+    }
+
+    /// Carry out one fixed IPC request as the runtime's local user and
+    /// return its single answer. The request is built here, never by a
+    /// phone.
+    async fn as_local_user(&self, request: RequestPacket) -> Result<ResponsePacket, String> {
+        let sink = Collect(Mutex::new(Vec::new()));
+        crate::ipc::handlers::RequestDispatcher::dispatch(
+            self.clone(),
+            request,
+            &CallerContext::local(),
+            &sink,
+            &crate::ipc::server::PeerAddr::Ip(([127, 0, 0, 1], 0).into()),
+        )
+        .await
+        .map_err(|e| format!("{e:#}"))?;
+        match sink.0.into_inner().expect("collect sink").pop() {
+            Some(ResponsePacket::Error { message, .. }) => Err(message),
+            Some(packet) => Ok(packet),
+            None => Err("no answer".into()),
+        }
+    }
+
+    // ── Pairing ───────────────────────────────────────────────────────
+
+    /// ADR-108 D2: open a pairing for the owner to show on this computer.
+    ///
+    /// # Errors
+    ///
+    /// The runtime is not registered with PekoHub: a phone could not
+    /// reach it.
+    pub(crate) fn device_pair_start(&self) -> Result<PairingOffer, String> {
+        let cred_path = crate::tunnel::PekoHubCredential::path_for_config_dir(&self.config_dir);
+        let hub = crate::tunnel::load_pekohub_credential(
+            Some(&cred_path),
+            &self.runtime_identity.runtime_did,
+        )
+        .ok()
+        .flatten()
+        .and_then(|cred| crate::tunnel::hub_origin(&cred.url))
+        .ok_or_else(|| {
+            "[not_registered] Sign this computer in to PekoHub first; a phone reaches it through PekoHub."
+                .to_string()
+        })?;
+        Ok(self.devices.gate.start_pairing(&hub))
+    }
+
+    /// ADR-108 D2: delete a device's record, tell PekoHub, and audit it.
+    /// `by` says who removed it (`owner`, or the device itself).
+    ///
+    /// # Errors
+    ///
+    /// The record could not be deleted.
+    pub(crate) async fn device_remove(&self, device_id: &str, by: &str) -> Result<bool, String> {
+        let Some(removed) = self.devices.gate.remove(device_id)? else {
+            return Ok(false);
+        };
+        let _ = self
+            .observability
+            .audit_security(
+                "device.removed",
+                None,
+                json!({ "device_id": removed.device_id, "name": removed.name, "by": by }),
+            )
+            .await;
+        self.send_to_hub(TunnelMessage::TunnelDeviceRemoved {
+            device_id: removed.device_id,
+            runtime_id: self.devices.gate.runtime_id().to_string(),
+        })
+        .await;
+        Ok(true)
+    }
+
+    // ── Inbound device messages ───────────────────────────────────────
+
+    /// A device message PekoHub relayed, or a read mark from another of
+    /// the person's runtimes.
+    pub(crate) async fn on_device_message(&self, message: TunnelMessage) {
+        let gate = &self.devices.gate;
+        match message {
+            TunnelMessage::TunnelDevicePair {
+                request_id,
+                runtime_id,
+                device_id,
+                proof,
+            } => {
+                if runtime_id != gate.runtime_id() {
+                    return;
+                }
+                let outcome = gate.pair(&runtime_id, &device_id, &proof);
+                let (event, details) = match &outcome {
+                    Ok(record) => (
+                        "device.paired",
+                        json!({
+                            "device_id": record.device_id,
+                            "name": record.name,
+                            "platform": record.platform,
+                        }),
+                    ),
+                    Err(reason) => (
+                        "device.pair_refused",
+                        json!({ "device_id": device_id, "reason": reason }),
+                    ),
+                };
+                let _ = self
+                    .observability
+                    .audit_security(event, None, details)
+                    .await;
+                let signature = sign_paired(
+                    &self.runtime_signing_key,
+                    &request_id,
+                    &device_id,
+                    &runtime_id,
+                    &outcome,
+                );
+                self.send_to_hub(TunnelMessage::TunnelDevicePaired {
+                    request_id,
+                    device_id,
+                    runtime_id,
+                    ok: outcome.is_ok(),
+                    error: outcome.err(),
+                    signature,
+                })
+                .await;
+            }
+            TunnelMessage::TunnelDeviceRequest {
+                request_id,
+                device_id,
+                runtime_id,
+                signature,
+            } => {
+                if runtime_id != gate.runtime_id() {
+                    return;
+                }
+                let outcome =
+                    match gate.verify_request(&request_id, &device_id, &runtime_id, &signature) {
+                        Ok((device, request)) => {
+                            self.device_verb(&device, &request.verb, &request.args)
+                                .await
+                        }
+                        Err(refusal) => {
+                            tracing::debug!(%device_id, "device request refused: {refusal}");
+                            Err(refusal)
+                        }
+                    };
+                let signature = sign_response(
+                    &self.runtime_signing_key,
+                    &request_id,
+                    &device_id,
+                    &runtime_id,
+                    outcome,
+                );
+                self.send_to_hub(TunnelMessage::TunnelDeviceResponse {
+                    request_id,
+                    device_id,
+                    runtime_id,
+                    signature,
+                })
+                .await;
+            }
+            TunnelMessage::TunnelDeviceGone { device_id } => gate.unwatch(&device_id),
+            TunnelMessage::TunnelReadMark {
+                request_id,
+                source_runtime_id,
+                source_principal_did,
+                channel_id,
+                msg_id,
+                signature,
+            } => {
+                self.on_read_mark(
+                    &request_id,
+                    &source_runtime_id,
+                    &source_principal_did,
+                    &channel_id,
+                    &msg_id,
+                    &signature,
+                )
+                .await;
+            }
+            _ => {}
+        }
+    }
+
+    // ── Verbs ─────────────────────────────────────────────────────────
+
+    /// ADR-108 D3: the whole of what a phone may ask.
+    async fn device_verb(
+        &self,
+        device: &DeviceRecord,
+        verb: &str,
+        args: &Value,
+    ) -> Result<Value, String> {
+        match verb {
+            "conversations" => self.verb_conversations().await,
+            "read" => self.verb_read(args).await,
+            "post" => self.verb_post(device, args).await,
+            "mark_read" => {
+                let channel = self.person_channel(arg_str(args, "channel")?).await?;
+                let moved = self
+                    .person_mark_read(&channel, arg_str(args, "msg_id")?)
+                    .await?;
+                Ok(json!({ "moved": moved == peko_channel::PersonMarkMove::Moved }))
+            }
+            "approvals" => self.verb_approvals().await,
+            "approval_decide" => self.verb_approval_decide(device, args).await,
+            "stop" => self.verb_stop(args).await,
+            "board" => {
+                let channel = self.person_channel(arg_str(args, "channel")?).await?;
+                match self
+                    .as_local_user(RequestPacket::ChannelBoard {
+                        request_id: 1,
+                        channel: channel.as_str().to_string(),
+                        sender_name: None,
+                        op: None,
+                    })
+                    .await?
+                {
+                    ResponsePacket::ChannelBoardResult { items, .. } => {
+                        Ok(json!({ "items": items }))
+                    }
+                    _ => Err("unexpected answer".into()),
+                }
+            }
+            "watch" => {
+                self.devices.gate.watch(&device.device_id);
+                self.start_device_pump();
+                Ok(json!({ "watching": true }))
+            }
+            "unwatch" => {
+                self.devices.gate.unwatch(&device.device_id);
+                Ok(json!({ "watching": false }))
+            }
+            "unpair" => {
+                self.device_remove(&device.device_id, "device").await?;
+                Ok(json!({ "paired": false }))
+            }
+            other => Err(format!("[unknown_verb] a phone cannot ask for `{other}`")),
+        }
+    }
+
+    /// A conversation the person is in, by its id.
+    async fn person_channel(&self, raw: &str) -> Result<ChannelId, String> {
+        let missing = || "[not_found] no such conversation".to_string();
+        let channel = ChannelId::parse(raw).ok_or_else(missing)?;
+        if self
+            .tunnel_channel_port
+            .belongs_to_another_account(&channel)
+            .await
+        {
+            return Err(missing());
+        }
+        match self.channel_port.list_members(&channel).await {
+            Ok(members) if members.contains(&me()) => Ok(channel),
+            _ => Err(missing()),
+        }
+    }
+
+    /// What an actor is called here.
+    async fn display_name(&self, address: &str) -> String {
+        match ActorRef::from_str(address) {
+            Ok(actor) => {
+                let info = self.channel_port.actor_info(&actor).await;
+                info.name.unwrap_or(info.address)
+            }
+            Err(_) => address.to_string(),
+        }
+    }
+
+    /// The conversations a run is working in now.
+    async fn working_channels(&self) -> HashSet<String> {
+        let running: HashSet<String> = self
+            .streaming_runs
+            .lock()
+            .expect("streaming runs")
+            .keys()
+            .cloned()
+            .collect();
+        let mut out = HashSet::new();
+        if running.is_empty() {
+            return out;
+        }
+        for principal in self.principal_manager.list_all().await {
+            let mut sessions = peko_session::manager::SessionManager::new()
+                .with_sessions_dir_internal(principal.memory.sessions_dir());
+            let Ok(metas) = sessions.list_all_sessions(false).await else {
+                continue;
+            };
+            for meta in metas {
+                if running.contains(&meta.session_id.to_string()) {
+                    out.extend(meta.channel_id);
+                }
+            }
+        }
+        out
+    }
+
+    async fn verb_conversations(&self) -> Result<Value, String> {
+        let store = self.store();
+        let working = self.working_channels().await;
+        let own = me();
+        let mut rows = Vec::new();
+        for (channel, kind) in store.person_channels().await.map_err(|e| e.to_string())? {
+            if self
+                .tunnel_channel_port
+                .belongs_to_another_account(&channel)
+                .await
+            {
+                continue;
+            }
+            let read = store.person_read(&channel).await.unwrap_or_default();
+            let last = match store.newest_post(&channel).await.ok().flatten() {
+                Some(ChannelEvent::Posted {
+                    author,
+                    text,
+                    at,
+                    msg_id,
+                    ..
+                }) => json!({
+                    "msg_id": msg_id,
+                    "author": author,
+                    "author_name": self.display_name(&author).await,
+                    "text": truncate(&text, NOTIFY_BODY_CHARS),
+                    "at": at,
+                }),
+                _ => Value::Null,
+            };
+            let mut row = json!({
+                "channel": channel.as_str(),
+                "kind": kind,
+                "last": last,
+                "unread": read.unread,
+                "read": read.mark,
+                "working": working.contains(channel.as_str()),
+            });
+            match kind {
+                ConversationKind::Dm => {
+                    let peer = self
+                        .channel_port
+                        .list_members(&channel)
+                        .await
+                        .unwrap_or_default()
+                        .into_iter()
+                        .find(|m| *m != own);
+                    if let Some(peer) = peer {
+                        let info = self.channel_port.actor_info(&peer).await;
+                        row["name"] =
+                            json!(info.name.clone().unwrap_or_else(|| info.address.clone()));
+                        row["peer"] = json!({
+                            "address": info.address,
+                            "kind": info.kind,
+                            "name": info.name,
+                        });
+                    }
+                }
+                ConversationKind::Group => {
+                    row["name"] = json!(store.channel_name(&channel).await.unwrap_or_default());
+                }
+            }
+            rows.push(row);
+        }
+        rows.sort_by(|a, b| {
+            let at = |row: &Value| row["last"]["at"].as_str().unwrap_or_default().to_string();
+            at(b).cmp(&at(a))
+        });
+        let account = store.actor_info(&own).await.hub_id;
+        let invitations = match account.as_deref() {
+            Some(account) => store.invitations(account).await.unwrap_or_default(),
+            None => Vec::new(),
+        };
+        Ok(json!({ "conversations": rows, "invitations": invitations }))
+    }
+
+    async fn verb_read(&self, args: &Value) -> Result<Value, String> {
+        let channel = self.person_channel(arg_str(args, "channel")?).await?;
+        let limit = args
+            .get("limit")
+            .and_then(Value::as_u64)
+            .map_or(50, |n| n as usize)
+            .clamp(1, MAX_READ);
+        let cursor = |key: &str| args.get(key).and_then(Value::as_str);
+        let (events, has_more) = self
+            .store()
+            .history_page(&channel, cursor("before"), cursor("after"), limit)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(json!({ "channel": channel.as_str(), "events": events, "has_more": has_more }))
+    }
+
+    async fn verb_post(&self, device: &DeviceRecord, args: &Value) -> Result<Value, String> {
+        use sha2::Digest as _;
+        let channel = self.person_channel(arg_str(args, "channel")?).await?;
+        let text = arg_str(args, "text")?;
+        if text.trim().is_empty() || text.chars().count() > MAX_POST_CHARS {
+            return Err("[bad_request] a post needs text, at most 32,000 characters".into());
+        }
+        // A repeated `client_msg_id` names the same post: the id is
+        // derived from it, and a post already in the log is not made
+        // again, however long ago the first try was.
+        let client_msg_id = arg_str(args, "client_msg_id")?;
+        let digest = sha2::Sha256::digest(
+            format!(
+                "{}\n{}\n{client_msg_id}",
+                device.device_id,
+                channel.as_str()
+            )
+            .as_bytes(),
+        );
+        let msg_id = format!("msg_{}", &hex::encode(digest)[..32]);
+        let store = self.store();
+        if store
+            .post_line(&channel, &msg_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .is_some()
+        {
+            return Ok(json!({ "channel": channel.as_str(), "msg_id": msg_id, "repeated": true }));
+        }
+        let mut msg = match args.get("reply_to").and_then(Value::as_str) {
+            Some(parent) => {
+                let line = store
+                    .post_line(&channel, parent)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .ok_or("[not_found] the post this replies to is not in the conversation")?;
+                peko_channel::PostMsg::reply(line, text)
+            }
+            None => peko_channel::PostMsg::root(text),
+        };
+        msg.msg_id = Some(msg_id.clone());
+        let me = me();
+        self.channel_port
+            .post(&channel, &me, msg)
+            .await
+            .map_err(|e| format!("could not post: {e}"))?;
+        // What the person writes is read by them.
+        let _ = store.mark_person_read(&channel, &msg_id).await;
+        // A DM with a peko hosted here: its turn starts as for any post
+        // of the person's that arrives over the tunnel (ADR-090 D5).
+        if args.get("reply_to").is_none() {
+            use crate::tunnel::TunnelHost as _;
+            self.human_dm_post(channel.clone(), me, text.to_string(), Vec::new(), None)
+                .await;
+        }
+        Ok(json!({ "channel": channel.as_str(), "msg_id": msg_id, "repeated": false }))
+    }
+
+    /// ADR-108 D5: move the person's read mark and, when it moved, tell
+    /// their other runtimes.
+    pub(crate) async fn person_mark_read(
+        &self,
+        channel: &ChannelId,
+        msg_id: &str,
+    ) -> Result<peko_channel::PersonMarkMove, String> {
+        if !peko_channel::is_post_id(msg_id) {
+            return Err("[bad_request] `msg_id` is not a post's id".into());
+        }
+        let moved = self
+            .store()
+            .mark_person_read(channel, msg_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        if moved == peko_channel::PersonMarkMove::Moved {
+            if let Some(account) = self.store().actor_info(&me()).await.hub_id {
+                let iat = chrono::Utc::now().timestamp();
+                let payload = ReadMarkPayload {
+                    v: READ_MARK_VERSION.into(),
+                    request_id: uuid::Uuid::new_v4().to_string(),
+                    source_runtime_id: self.devices.gate.runtime_id().to_string(),
+                    source_principal_did: format!("user:hub:{account}"),
+                    channel_id: channel.as_str().to_string(),
+                    msg_id: msg_id.to_string(),
+                    iat,
+                    exp: iat + 300,
+                };
+                let signature = sign_read_mark(&self.runtime_signing_key, &payload);
+                self.send_to_hub(TunnelMessage::TunnelReadMark {
+                    request_id: payload.request_id,
+                    source_runtime_id: payload.source_runtime_id,
+                    source_principal_did: payload.source_principal_did,
+                    channel_id: payload.channel_id,
+                    msg_id: payload.msg_id,
+                    signature,
+                })
+                .await;
+            }
+        }
+        Ok(moved)
+    }
+
+    /// The person read a conversation on another of their runtimes.
+    /// PekoHub relays a read mark only between runtimes of one account;
+    /// the mark must also name that account and be signed by the runtime
+    /// it says it is from. It moves the mark here and goes no further.
+    async fn on_read_mark(
+        &self,
+        request_id: &str,
+        source_runtime_id: &str,
+        source_principal_did: &str,
+        channel_id: &str,
+        msg_id: &str,
+        signature: &str,
+    ) {
+        if source_runtime_id == self.devices.gate.runtime_id() {
+            return;
+        }
+        let Some(account) = self.store().actor_info(&me()).await.hub_id else {
+            return;
+        };
+        let verified = crate::tunnel::did_key_to_verifying_key(source_runtime_id)
+            .map_err(|e| e.to_string())
+            .and_then(|key| verify_read_mark(&key, signature));
+        let agrees = verified.as_ref().is_ok_and(|p| {
+            p.request_id == request_id
+                && p.source_runtime_id == source_runtime_id
+                && p.source_principal_did == source_principal_did
+                && p.channel_id == channel_id
+                && p.msg_id == msg_id
+        });
+        if !agrees || source_principal_did != format!("user:hub:{account}") {
+            tracing::warn!(request_id, "read mark failed verification; dropped");
+            return;
+        }
+        if let Ok(channel) = self.person_channel(channel_id).await {
+            let _ = self.store().mark_person_read(&channel, msg_id).await;
+        }
+    }
+
+    /// The pekos hosted here that the person owns, with their names.
+    async fn owned_pekos(&self) -> Vec<(String, Arc<crate::principal::Principal>)> {
+        use peko_subject::ActorKeys as _;
+        let port: &dyn peko_channel::ChannelPort = self.tunnel_channel_port.as_ref();
+        let me = me();
+        let mut out = Vec::new();
+        for principal in self.principal_manager.list_all().await {
+            let (name, owner) = {
+                let config = principal.config.read().await;
+                (config.name.clone(), config.owner.clone())
+            };
+            if peko_channel::PortKeys(port).same_actor(&owner, &me) {
+                out.push((name, principal));
+            }
+        }
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
+    /// The approval requests waiting for the person on this computer.
+    async fn local_approvals(&self) -> Vec<Value> {
+        let mut out = Vec::new();
+        for (name, principal) in self.owned_pekos().await {
+            for record in crate::principal::policy_gate::pending_requests(&principal) {
+                // Who asked, by the name this computer knows them by.
+                let actor_name = match &record.call.stamp.name {
+                    Some(name) => Some(name.clone()),
+                    None => Some(self.display_name(&record.call.stamp.actor).await)
+                        .filter(|shown| *shown != record.call.stamp.actor),
+                };
+                out.push(json!({
+                    "peko": name,
+                    "id": record.id,
+                    "actor": record.call.stamp.actor,
+                    "actor_name": actor_name,
+                    "trust": record.call.stamp.trust.as_str(),
+                    "summary": crate::principal::policy_gate::request_summary(&record),
+                    "reason": record.reason,
+                    "created_at": record.created_at.to_rfc3339(),
+                    "expires_at": record.expires_at.to_rfc3339(),
+                    "kind": crate::principal::policy_gate::request_kind(&record),
+                }));
+            }
+        }
+        out
+    }
+
+    async fn verb_approvals(&self) -> Result<Value, String> {
+        let mut approvals = self.local_approvals().await;
+        // ADR-099: the person's pekos on their other computers, asked
+        // from this one. A computer that does not answer in time is left
+        // out and named.
+        let mut unreachable = Vec::new();
+        if let Some(account) = self.store().actor_info(&me()).await.hub_id {
+            let dms = self.store().remote_dms(&account).await.unwrap_or_default();
+            let asks = dms.into_iter().map(|channel| async move {
+                let asked = tokio::time::timeout(
+                    REMOTE_APPROVALS_WAIT,
+                    self.tunnel_channel_port.peko_approvals(&channel),
+                )
+                .await;
+                (channel, asked)
+            });
+            for (channel, asked) in futures::future::join_all(asks).await {
+                match asked {
+                    Ok(Ok(list)) => {
+                        for approval in list {
+                            let mut row = serde_json::to_value(&approval).unwrap_or_default();
+                            row["channel"] = json!(channel.as_str());
+                            approvals.push(row);
+                        }
+                    }
+                    // Not this person's own peko there: nothing to ask.
+                    Ok(Err(_)) => {}
+                    Err(_) => unreachable.push(channel.as_str().to_string()),
+                }
+            }
+        }
+        Ok(json!({ "approvals": approvals, "unreachable": unreachable }))
+    }
+
+    async fn verb_approval_decide(
+        &self,
+        device: &DeviceRecord,
+        args: &Value,
+    ) -> Result<Value, String> {
+        use crate::principal::policy_gate::{decide_request_via, Decision};
+        let id = arg_str(args, "id")?;
+        let approve = args
+            .get("approve")
+            .and_then(Value::as_bool)
+            .ok_or("[bad_request] `approve` is required")?;
+        let always = approve && args.get("always").and_then(Value::as_bool).unwrap_or(false);
+        let via = format!("device:{}", device.device_id);
+        // A peko on another of the person's computers is named by its DM.
+        if let Some(raw) = args.get("channel").and_then(Value::as_str) {
+            let channel = self.person_channel(raw).await?;
+            let message = self
+                .tunnel_channel_port
+                .decide_peko_approval(&channel, id, approve, always)
+                .await
+                .map_err(|e| format!("{e}"))?;
+            let _ = self
+                .observability
+                .audit_security(
+                    "policy.owner_decision",
+                    None,
+                    json!({
+                        "channel": channel.as_str(),
+                        "request_id": id,
+                        "via_device": device.device_id,
+                        "decision": if !approve { "deny" } else if always { "approve_always" } else { "approve" },
+                    }),
+                )
+                .await;
+            return Ok(json!({ "message": message }));
+        }
+        let name = arg_str(args, "peko")?;
+        let (_, principal) = self
+            .owned_pekos()
+            .await
+            .into_iter()
+            .find(|(owned, _)| owned == name)
+            .ok_or("[forbidden] Only the peko's owner decides its approval requests.")?;
+        let decision = if approve {
+            Decision::Approve { always }
+        } else {
+            Decision::Deny
+        };
+        let message = decide_request_via(
+            &self.principal_manager,
+            &principal,
+            id,
+            decision,
+            Some(&via),
+        )
+        .await
+        .map_err(|e| format!("{e}"))?;
+        Ok(json!({ "message": message }))
+    }
+
+    async fn verb_stop(&self, args: &Value) -> Result<Value, String> {
+        let channel = self.person_channel(arg_str(args, "channel")?).await?;
+        let kind = self
+            .channel_port
+            .conversation_kind(&channel)
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut stopped = false;
+        if kind == ConversationKind::Dm {
+            // The person's own thread with each peko bound here: the same
+            // stop the desktop's button sends.
+            for principal in self.human_dm_recipients(&channel).await {
+                let Some(principal) = self.principal_manager.get(principal).await else {
+                    continue;
+                };
+                let name = principal.config.read().await.name.clone();
+                if let Ok(ResponsePacket::Done { success: true, .. }) = self
+                    .as_local_user(RequestPacket::PrincipalStop {
+                        request_id: 1,
+                        name,
+                        peer: None,
+                        main: false,
+                    })
+                    .await
+                {
+                    stopped = true;
+                }
+            }
+            return Ok(json!({ "stopped": stopped }));
+        }
+        // A group: the person stops the pekos they own.
+        for (_, principal) in self.owned_pekos().await {
+            let mut sessions = peko_session::manager::SessionManager::new()
+                .with_sessions_dir_internal(principal.memory.sessions_dir());
+            let Ok(metas) = sessions.list_all_sessions(false).await else {
+                continue;
+            };
+            for meta in metas {
+                if meta.channel_id.as_deref() != Some(channel.as_str()) {
+                    continue;
+                }
+                let cancel = self
+                    .streaming_runs
+                    .lock()
+                    .expect("streaming runs")
+                    .get(&meta.session_id.to_string())
+                    .map(|run| run.cancel.clone());
+                if let Some(cancel) = cancel {
+                    cancel.cancel();
+                    stopped = true;
+                }
+            }
+        }
+        Ok(json!({ "stopped": stopped }))
+    }
+
+    // ── Live events and push ──────────────────────────────────────────
+
+    /// Send `event` to every watching device (ADR-108 D4).
+    async fn emit_device_event(&self, event: Value) {
+        let gate = &self.devices.gate;
+        for (device, seq) in gate.next_events() {
+            let signature = sign_event(
+                &self.runtime_signing_key,
+                &device.device_id,
+                gate.runtime_id(),
+                seq,
+                event.clone(),
+            );
+            self.send_to_hub(TunnelMessage::TunnelDeviceEvent {
+                device_id: device.device_id,
+                runtime_id: gate.runtime_id().to_string(),
+                signature,
+            })
+            .await;
+        }
+    }
+
+    /// Seal `notification` to each paired device and hand it to PekoHub.
+    async fn notify_devices(&self, collapse_key: &str, mut notification: DeviceNotifyPayload) {
+        let gate = &self.devices.gate;
+        for device in gate.devices() {
+            notification.device_id.clone_from(&device.device_id);
+            match seal_notification(
+                &self.runtime_signing_key,
+                &device.agreement_key,
+                &notification,
+            ) {
+                Ok(sealed) => {
+                    self.send_to_hub(TunnelMessage::TunnelDeviceNotify {
+                        device_id: device.device_id,
+                        runtime_id: gate.runtime_id().to_string(),
+                        collapse_key: collapse_key.to_string(),
+                        sealed: Some(sealed),
+                        clear: false,
+                    })
+                    .await;
+                }
+                Err(e) => {
+                    tracing::warn!(device = %device.device_id, "notification not sealed: {e}")
+                }
+            }
+        }
+        self.devices
+            .notified
+            .lock()
+            .expect("notified")
+            .insert(collapse_key.to_string());
+    }
+
+    fn notification(&self, title: String, body: String, channel: &str) -> DeviceNotifyPayload {
+        DeviceNotifyPayload {
+            v: DEVICE_NOTIFY_VERSION.into(),
+            device_id: String::new(),
+            runtime_id: self.devices.gate.runtime_id().to_string(),
+            title,
+            body: truncate(&body, NOTIFY_BODY_CHARS),
+            channel: channel.to_string(),
+            msg_id: None,
+            approval: None,
+            peko: None,
+            iat: chrono::Utc::now().timestamp(),
+        }
+    }
+
+    /// Whether a post by someone else is one the person is told about
+    /// while the app is closed (ADR-108 D6): any post in a DM; in a group,
+    /// one that mentions them or adds a board item for them.
+    async fn post_notifies(
+        &self,
+        channel: &ChannelId,
+        text: &str,
+        board: Option<&peko_protocol::channel::BoardOp>,
+    ) -> bool {
+        if self.channel_port.conversation_kind(channel).await.ok() == Some(ConversationKind::Dm) {
+            return true;
+        }
+        let me = me();
+        let info = self.channel_port.actor_info(&me).await;
+        if let Some(peko_protocol::channel::BoardOp::Add {
+            for_member: Some(member),
+            ..
+        }) = board
+        {
+            return member
+                .parse::<ActorRef>()
+                .is_ok_and(|m| self.channel_port.key_of(&m) == self.channel_port.key_of(&me));
+        }
+        let mut names = vec![info.address.clone()];
+        names.extend(info.hub_address());
+        names.extend(info.name.clone());
+        names.extend(self.store().person_display_name().await);
+        names.iter().any(|name| peko_channel::mentions(text, name))
+    }
+
+    /// Something was appended to a conversation.
+    async fn on_store_event(&self, channel: ChannelId, event: ChannelEvent) {
+        if matches!(event, ChannelEvent::Received { .. }) {
+            return;
+        }
+        if self.person_channel(channel.as_str()).await.is_err() {
+            return;
+        }
+        if self.devices.gate.has_watchers() {
+            self.emit_device_event(json!({
+                "kind": "event",
+                "channel": channel.as_str(),
+                "event": event,
+            }))
+            .await;
+        }
+        let ChannelEvent::Posted {
+            author,
+            text,
+            msg_id: Some(msg_id),
+            board,
+            ..
+        } = event
+        else {
+            return;
+        };
+        let own = self.store().actor_info(&me()).await;
+        if author == own.address || Some(&author) == own.hub_address().as_ref() {
+            return;
+        }
+        if !self.post_notifies(&channel, &text, board.as_ref()).await {
+            return;
+        }
+        let state = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(NOTIFY_HOLD).await;
+            if state
+                .store()
+                .person_has_read(&channel, &msg_id)
+                .await
+                .unwrap_or(false)
+            {
+                return;
+            }
+            // A peko's notice of an approval request: the request has a
+            // notification of its own, which opens the request.
+            if text.starts_with(crate::principal::policy_gate::APPROVAL_NOTICE_PREFIX) {
+                return;
+            }
+            let author_name = state.display_name(&author).await;
+            let dm = state.channel_port.conversation_kind(&channel).await.ok()
+                == Some(ConversationKind::Dm);
+            let (title, body) = if dm {
+                (author_name, text)
+            } else {
+                (
+                    state
+                        .store()
+                        .channel_name(&channel)
+                        .await
+                        .unwrap_or_default(),
+                    format!("{author_name}: {text}"),
+                )
+            };
+            let mut notification = state.notification(title, body, channel.as_str());
+            notification.msg_id = Some(msg_id);
+            state.notify_devices(channel.as_str(), notification).await;
+        });
+    }
+
+    /// The person's read mark moved, here or on another computer.
+    async fn on_person_read(&self, channel: ChannelId, msg_id: String) {
+        self.emit_device_event(json!({
+            "kind": "read",
+            "channel": channel.as_str(),
+            "msg_id": msg_id,
+        }))
+        .await;
+        let notified = self
+            .devices
+            .notified
+            .lock()
+            .expect("notified")
+            .remove(channel.as_str());
+        if !notified {
+            return;
+        }
+        let gate = &self.devices.gate;
+        for device in gate.devices() {
+            self.send_to_hub(TunnelMessage::TunnelDeviceNotify {
+                device_id: device.device_id,
+                runtime_id: gate.runtime_id().to_string(),
+                collapse_key: channel.as_str().to_string(),
+                sealed: None,
+                clear: true,
+            })
+            .await;
+        }
+    }
+
+    /// Runs and approval requests have no signal of their own: look at
+    /// them, and tell phones what changed since the last look.
+    async fn poll_for_devices(
+        &self,
+        working: &mut HashSet<String>,
+        pending: &mut Option<HashMap<String, Value>>,
+    ) {
+        if self.devices.gate.devices().is_empty() {
+            return;
+        }
+        let now: HashMap<String, Value> = self
+            .local_approvals()
+            .await
+            .into_iter()
+            .filter_map(|a| Some((a["id"].as_str()?.to_string(), a)))
+            .collect();
+        // The first look after a start only learns what is waiting.
+        if let Some(before) = pending.as_ref() {
+            let changed =
+                before.len() != now.len() || now.keys().any(|id| !before.contains_key(id));
+            if changed {
+                self.emit_device_event(json!({ "kind": "approvals" })).await;
+            }
+            for (id, approval) in now.iter().filter(|(id, _)| !before.contains_key(*id)) {
+                let peko = approval["peko"].as_str().unwrap_or_default().to_string();
+                let mut notification = self.notification(
+                    peko.clone(),
+                    format!(
+                        "Needs your approval: {}",
+                        approval["summary"].as_str().unwrap_or_default()
+                    ),
+                    "",
+                );
+                notification.approval = Some(id.clone());
+                notification.peko = Some(peko);
+                self.notify_devices(&format!("approval:{id}"), notification)
+                    .await;
+            }
+        }
+        *pending = Some(now);
+
+        if !self.devices.gate.has_watchers() {
+            working.clear();
+            return;
+        }
+        let now = self.working_channels().await;
+        for channel in now.symmetric_difference(working) {
+            if self.person_channel(channel).await.is_ok() {
+                self.emit_device_event(json!({
+                    "kind": "run",
+                    "channel": channel,
+                    "working": now.contains(channel),
+                }))
+                .await;
+            }
+        }
+        *working = now;
+    }
+
+    /// Start following conversations for paired phones. Idempotent.
+    pub(crate) fn start_device_pump(&self) {
+        if self.devices.pump_started.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let state = self.clone();
+        let mut signals = self.store().subscribe_all();
+        let mut shutdown = self.shutdown_tx.subscribe();
+        tokio::spawn(async move {
+            use tokio::sync::broadcast::error::RecvError;
+            let mut tick = tokio::time::interval(POLL);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut working = HashSet::new();
+            let mut pending = None;
+            loop {
+                tokio::select! {
+                    signal = signals.recv() => match signal {
+                        Ok(_) if state.devices.gate.devices().is_empty() => {}
+                        Ok(StoreSignal::Event { channel, event }) => {
+                            state.on_store_event(channel, event).await;
+                        }
+                        Ok(StoreSignal::PersonRead { channel, msg_id }) => {
+                            state.on_person_read(channel, msg_id).await;
+                        }
+                        // Events were missed: a watching phone reads again.
+                        Err(RecvError::Lagged(_)) => {
+                            state.emit_device_event(json!({ "kind": "resync" })).await;
+                        }
+                        Err(RecvError::Closed) => break,
+                    },
+                    _ = tick.tick() => state.poll_for_devices(&mut working, &mut pending).await,
+                    _ = shutdown.recv() => break,
+                }
+            }
+        });
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::ipc::handlers::device::DeviceHost for AppState {
+    fn pair_start(&self) -> Result<PairingOffer, String> {
+        self.start_device_pump();
+        self.device_pair_start()
+    }
+
+    fn paired_devices(&self) -> Vec<crate::ipc::packet::DeviceInfo> {
+        self.devices
+            .gate
+            .devices()
+            .into_iter()
+            .map(|d| crate::ipc::packet::DeviceInfo {
+                device_id: d.device_id,
+                name: d.name,
+                platform: d.platform,
+                paired_at: d.paired_at,
+                last_seen: d.last_seen,
+            })
+            .collect()
+    }
+
+    async fn remove_device(&self, device_id: &str) -> Result<bool, String> {
+        self.device_remove(device_id, "owner").await
+    }
+
+    async fn mark_read(&self, channel: &str, msg_id: &str) -> Result<bool, String> {
+        let channel = self.person_channel(channel).await?;
+        Ok(self.person_mark_read(&channel, msg_id).await? == peko_channel::PersonMarkMove::Moved)
+    }
+
+    async fn read_state(&self) -> Result<Vec<crate::ipc::packet::ChannelReadInfo>, String> {
+        let store = self.store();
+        let mut out = Vec::new();
+        for (channel, _) in store.person_channels().await.map_err(|e| e.to_string())? {
+            let read = store.person_read(&channel).await.unwrap_or_default();
+            out.push(crate::ipc::packet::ChannelReadInfo {
+                channel,
+                unread: read.unread,
+                read: read.mark,
+            });
+        }
+        Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::daemon::state::DaemonConfigSnapshot;
+    use crate::tunnel::devices::test_device::TestDevice;
+    use crate::tunnel::devices::{DeviceEventPayload, DevicePairedPayload, DeviceResponsePayload};
+    use crate::tunnel::{TunnelDispatcher, TunnelHandle};
+    use peko_channel::{CreateOpts, PostMsg};
+    use peko_subject::PrincipalId;
+    use tokio::sync::mpsc;
+
+    const ACCOUNT: &str = "0b6c7a4e-1d2f-4a3b-8c9d-0e1f2a3b4c5d";
+    const PEKO: &str = "156f1a95-d977-4c4a-979e-8ed4848ae6eb";
+
+    /// A runtime whose tunnel is captured, with one paired phone.
+    struct Rig {
+        _dir: tempfile::TempDir,
+        app: AppState,
+        outbound: mpsc::Receiver<TunnelMessage>,
+        phone: TestDevice,
+        runtime: String,
+        /// What `ask` saw go out besides its own answer.
+        seen: Vec<TunnelMessage>,
+    }
+
+    impl Rig {
+        async fn new() -> Self {
+            let dir = tempfile::TempDir::new().unwrap();
+            let data_dir = dir.path().to_path_buf();
+            let app = AppState::with_data_dir(
+                data_dir.clone(),
+                "127.0.0.1".to_string(),
+                11435,
+                DaemonConfigSnapshot {
+                    data_dir: data_dir.clone(),
+                    config_dir: data_dir.clone(),
+                    log_level: "info".to_string(),
+                    launch_mode: crate::daemon::LaunchMode::Headless,
+                },
+                data_dir,
+            )
+            .await
+            .unwrap();
+            let (tx, outbound) = mpsc::channel(256);
+            *app.tunnel_handle_slot().write().await = Some(TunnelHandle::new(tx));
+            let runtime = app.devices.gate.runtime_id().to_string();
+            app.store()
+                .link_local_user(&runtime, ACCOUNT)
+                .await
+                .unwrap();
+            let mut rig = Self {
+                _dir: dir,
+                app,
+                outbound,
+                phone: TestDevice::new(),
+                runtime,
+                seen: Vec::new(),
+            };
+            let offer = rig.app.devices.gate.start_pairing("https://hub.test");
+            let proof = rig.phone.pair_proof(&offer);
+            rig.app
+                .on_device_message(TunnelMessage::TunnelDevicePair {
+                    request_id: "pair-1".into(),
+                    runtime_id: rig.runtime.clone(),
+                    device_id: rig.phone.device_id.clone(),
+                    proof,
+                })
+                .await;
+            match rig.sent().pop() {
+                Some(TunnelMessage::TunnelDevicePaired { ok, signature, .. }) => {
+                    assert!(ok);
+                    let paired: DevicePairedPayload =
+                        TestDevice::read(&rig.runtime, &signature).unwrap();
+                    assert!(paired.ok && paired.device_id == rig.phone.device_id);
+                }
+                other => panic!("expected the pairing answer, got {other:?}"),
+            }
+            rig
+        }
+
+        fn sent(&mut self) -> Vec<TunnelMessage> {
+            let mut out = std::mem::take(&mut self.seen);
+            out.extend(std::iter::from_fn(|| self.outbound.try_recv().ok()));
+            out
+        }
+
+        /// Everything sent until `quiet` passes with nothing new.
+        async fn sent_within(&mut self, wait: Duration) -> Vec<TunnelMessage> {
+            let mut out = std::mem::take(&mut self.seen);
+            while let Ok(Some(message)) = tokio::time::timeout(wait, self.outbound.recv()).await {
+                out.push(message);
+            }
+            out
+        }
+
+        /// The phone asks `verb` and reads the runtime's signed answer.
+        async fn ask(&mut self, verb: &str, args: Value) -> Result<Value, String> {
+            let (request_id, signature) = self.phone.request(&self.runtime, verb, args);
+            self.app
+                .on_device_message(TunnelMessage::TunnelDeviceRequest {
+                    request_id: request_id.clone(),
+                    device_id: self.phone.device_id.clone(),
+                    runtime_id: self.runtime.clone(),
+                    signature,
+                })
+                .await;
+            let mut answer = None;
+            for message in self.sent() {
+                match message {
+                    TunnelMessage::TunnelDeviceResponse {
+                        request_id: answered,
+                        signature,
+                        ..
+                    } if answered == request_id => {
+                        let read: DeviceResponsePayload =
+                            TestDevice::read(&self.runtime, &signature).unwrap();
+                        answer = Some(match (read.ok, read.body, read.error) {
+                            (true, Some(body), _) => Ok(body),
+                            (_, _, Some(error)) => Err(error),
+                            other => panic!("malformed answer {other:?}"),
+                        });
+                    }
+                    other => self.seen.push(other),
+                }
+            }
+            answer.unwrap_or_else(|| panic!("no answer to `{verb}`"))
+        }
+
+        /// A group with the person and a peko in it.
+        async fn group(&self) -> (ChannelId, ActorRef) {
+            let peko = PrincipalId("prin_mochi".into());
+            let store = self.app.store();
+            let channel = store
+                .create(&peko, CreateOpts::runtime("trip"))
+                .await
+                .unwrap();
+            store.invite(&channel, &peko, &me()).await.unwrap();
+            (channel, ActorRef::from(&peko))
+        }
+
+        /// The person's DM with a peko on another computer.
+        async fn dm(&self) -> (ChannelId, ActorRef) {
+            let peer: ActorRef = format!("principal:hub:{PEKO}").parse().unwrap();
+            let channel = crate::tunnel::human_dm_channel_id(PEKO, &format!("user:hub:{ACCOUNT}"));
+            self.app
+                .store()
+                .ensure_human_dm(&me(), &peer, &channel, "Mochi", ACCOUNT)
+                .await
+                .unwrap();
+            (channel, peer)
+        }
+
+        async fn peer_posts(&self, channel: &ChannelId, peer: &ActorRef, text: &str) -> String {
+            let (_, event) = self
+                .app
+                .store()
+                .post_with_event(channel, peer, PostMsg::root(text))
+                .await
+                .unwrap();
+            match event {
+                ChannelEvent::Posted { msg_id, .. } => msg_id.unwrap(),
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_paired_phone_reads_posts_and_marks_read_as_the_person() {
+        let mut rig = Rig::new().await;
+        let (group, peko) = rig.group().await;
+        let first = rig.peer_posts(&group, &peko, "Where shall we go?").await;
+
+        let listed = rig.ask("conversations", json!({})).await.unwrap();
+        let row = &listed["conversations"][0];
+        assert_eq!(row["channel"], group.as_str());
+        assert_eq!(
+            (row["kind"].as_str(), row["name"].as_str()),
+            (Some("group"), Some("trip"))
+        );
+        assert_eq!(
+            (row["unread"].as_u64(), row["working"].as_bool()),
+            (Some(1), Some(false))
+        );
+        assert_eq!(row["last"]["text"], "Where shall we go?");
+
+        let page = rig
+            .ask("read", json!({ "channel": group.as_str(), "limit": 500 }))
+            .await
+            .unwrap();
+        assert_eq!(page["events"].as_array().unwrap().len(), 1);
+        assert_eq!(page["events"][0]["msg_id"], first.as_str());
+
+        // A post, and the same post sent again after a lost answer.
+        let post = json!({ "channel": group.as_str(), "text": "Lisbon", "client_msg_id": "c-1" });
+        let posted = rig.ask("post", post.clone()).await.unwrap();
+        assert_eq!(posted["repeated"], false);
+        let again = rig.ask("post", post).await.unwrap();
+        assert_eq!(
+            (again["repeated"].as_bool(), &again["msg_id"]),
+            (Some(true), &posted["msg_id"])
+        );
+        let page = rig
+            .ask("read", json!({ "channel": group.as_str(), "after": first }))
+            .await
+            .unwrap();
+        let events = page["events"].as_array().unwrap();
+        assert_eq!(events.len(), 1, "posted once");
+        let me = rig.app.store().actor_info(&me()).await;
+        assert_eq!(events[0]["author"].as_str(), Some(me.address.as_str()));
+
+        // Writing reads; the mark went to the person's other computers.
+        let read = rig.app.store().person_read(&group).await.unwrap();
+        assert_eq!(
+            (read.unread, read.mark.as_deref()),
+            (0, posted["msg_id"].as_str())
+        );
+        let second = rig.peer_posts(&group, &peko, "Booked.").await;
+        let moved = rig
+            .ask(
+                "mark_read",
+                json!({ "channel": group.as_str(), "msg_id": second }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(moved["moved"], true);
+        // Not a post's id: refused, and nothing is kept for later.
+        let refused = rig
+            .ask(
+                "mark_read",
+                json!({ "channel": group.as_str(), "msg_id": "" }),
+            )
+            .await
+            .unwrap_err();
+        assert!(refused.starts_with("[bad_request]"), "{refused}");
+        let marks: Vec<_> = rig
+            .sent()
+            .into_iter()
+            .filter_map(|m| match m {
+                TunnelMessage::TunnelReadMark {
+                    source_principal_did,
+                    channel_id,
+                    msg_id,
+                    ..
+                } => Some((source_principal_did, channel_id, msg_id)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            marks,
+            vec![(
+                format!("user:hub:{ACCOUNT}"),
+                group.as_str().to_string(),
+                second
+            )]
+        );
+
+        let board = rig
+            .ask("board", json!({ "channel": group.as_str() }))
+            .await
+            .unwrap();
+        assert!(board["items"].as_array().unwrap().is_empty());
+    }
+
+    /// The list is the whole of what a phone may ask, a conversation the
+    /// person is not in does not exist for it, and a request is carried
+    /// out once.
+    #[tokio::test]
+    async fn a_phone_asks_only_what_the_list_names() {
+        let mut rig = Rig::new().await;
+        for verb in [
+            "principal_remove",
+            "channel_create",
+            "credential_set",
+            "bash",
+        ] {
+            let refused = rig.ask(verb, json!({ "name": "mochi" })).await.unwrap_err();
+            assert!(refused.starts_with("[unknown_verb]"), "{verb}: {refused}");
+        }
+
+        let peko = PrincipalId("prin_mochi".into());
+        let private = rig
+            .app
+            .store()
+            .create(&peko, CreateOpts::runtime("not yours"))
+            .await
+            .unwrap();
+        for (verb, args) in [
+            ("read", json!({ "channel": private.as_str() })),
+            (
+                "post",
+                json!({ "channel": private.as_str(), "text": "hi", "client_msg_id": "x" }),
+            ),
+            ("stop", json!({ "channel": private.as_str() })),
+            ("board", json!({ "channel": private.as_str() })),
+        ] {
+            let refused = rig.ask(verb, args).await.unwrap_err();
+            assert!(refused.starts_with("[not_found]"), "{verb}: {refused}");
+        }
+        assert!(
+            rig.ask("conversations", json!({})).await.unwrap()["conversations"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+
+        // The same signed request, relayed twice.
+        let (request_id, signature) = rig.phone.request(&rig.runtime, "conversations", json!({}));
+        let mut answers = Vec::new();
+        for _ in 0..2 {
+            rig.app
+                .on_device_message(TunnelMessage::TunnelDeviceRequest {
+                    request_id: request_id.clone(),
+                    device_id: rig.phone.device_id.clone(),
+                    runtime_id: rig.runtime.clone(),
+                    signature: signature.clone(),
+                })
+                .await;
+            for message in rig.sent() {
+                if let TunnelMessage::TunnelDeviceResponse { signature, .. } = message {
+                    let answer: DeviceResponsePayload =
+                        TestDevice::read(&rig.runtime, &signature).unwrap();
+                    answers.push(answer.error);
+                }
+            }
+        }
+        assert!(answers[0].is_none());
+        assert!(answers[1].as_deref().unwrap().starts_with("[replayed]"));
+
+        // An approval decision names a peko the person owns.
+        let refused = rig
+            .ask(
+                "approval_decide",
+                json!({ "peko": "nobody", "id": "apr_1", "approve": true }),
+            )
+            .await
+            .unwrap_err();
+        assert!(refused.starts_with("[forbidden]"), "{refused}");
+        assert!(rig.ask("approvals", json!({})).await.unwrap()["approvals"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    /// While the app is open the phone gets signed events; while it is
+    /// closed, a sealed notification for a DM post it has not read, and a
+    /// clear once the person reads it elsewhere.
+    #[tokio::test]
+    async fn a_phone_is_told_live_and_notified_sealed() {
+        let mut rig = Rig::new().await;
+        let (dm, mochi) = rig.dm().await;
+        let (group, peko) = rig.group().await;
+        rig.ask("watch", json!({})).await.unwrap();
+
+        let msg_id = rig.peer_posts(&dm, &mochi, "Your report is ready.").await;
+        rig.peer_posts(&group, &peko, "No one is mentioned here.")
+            .await;
+        let sent = rig.sent_within(Duration::from_millis(400)).await;
+
+        let events: Vec<DeviceEventPayload> = sent
+            .iter()
+            .filter_map(|m| match m {
+                TunnelMessage::TunnelDeviceEvent { signature, .. } => {
+                    Some(TestDevice::read(&rig.runtime, signature).unwrap())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(events[0].event["kind"], "event");
+        assert_eq!(events[0].event["channel"], dm.as_str());
+        assert_eq!(events[0].event["event"]["text"], "Your report is ready.");
+
+        let notified: Vec<_> = sent
+            .iter()
+            .filter_map(|m| match m {
+                TunnelMessage::TunnelDeviceNotify {
+                    device_id,
+                    collapse_key,
+                    sealed: Some(sealed),
+                    clear: false,
+                    ..
+                } => Some((device_id.clone(), collapse_key.clone(), sealed.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(notified.len(), 1, "the DM post, not the group post");
+        assert_eq!(
+            (notified[0].0.as_str(), notified[0].1.as_str()),
+            (rig.phone.device_id.as_str(), dm.as_str())
+        );
+        let opened = rig
+            .phone
+            .open_notification(&rig.runtime, &notified[0].2)
+            .unwrap();
+        assert_eq!(opened.body, "Your report is ready.");
+        assert_eq!(opened.msg_id.as_deref(), Some(msg_id.as_str()));
+
+        // Read on the computer: the phone clears what it shows.
+        rig.app.person_mark_read(&dm, &msg_id).await.unwrap();
+        let sent = rig.sent_within(Duration::from_millis(300)).await;
+        assert!(sent.iter().any(|m| matches!(
+            m,
+            TunnelMessage::TunnelDeviceNotify { collapse_key, sealed: None, clear: true, .. }
+                if collapse_key == dm.as_str()
+        )));
+        assert!(sent.iter().any(|m| match m {
+            TunnelMessage::TunnelDeviceEvent { signature, .. } => {
+                let event: DeviceEventPayload = TestDevice::read(&rig.runtime, signature).unwrap();
+                event.event["kind"] == "read"
+            }
+            _ => false,
+        }));
+
+        // A post the person reads within the hold is never notified.
+        let quick = rig.peer_posts(&dm, &mochi, "One more thing.").await;
+        rig.app.person_mark_read(&dm, &quick).await.unwrap();
+        let sent = rig.sent_within(Duration::from_millis(300)).await;
+        assert!(!sent
+            .iter()
+            .any(|m| matches!(m, TunnelMessage::TunnelDeviceNotify { clear: false, .. })));
+
+        // A group post that mentions the person is notified.
+        rig.ask("unwatch", json!({})).await.unwrap();
+        let me = rig.app.store().actor_info(&me()).await;
+        rig.peer_posts(&group, &peko, &format!("@{} which day?", me.address))
+            .await;
+        let sent = rig.sent_within(Duration::from_millis(400)).await;
+        assert!(!sent
+            .iter()
+            .any(|m| matches!(m, TunnelMessage::TunnelDeviceEvent { .. })));
+        let sealed = sent
+            .iter()
+            .find_map(|m| match m {
+                TunnelMessage::TunnelDeviceNotify {
+                    sealed: Some(s), ..
+                } => Some(s.clone()),
+                _ => None,
+            })
+            .expect("a mention is notified");
+        assert_eq!(
+            rig.phone
+                .open_notification(&rig.runtime, &sealed)
+                .unwrap()
+                .title,
+            "trip"
+        );
+    }
+
+    /// A read mark from another of the person's runtimes moves the mark
+    /// here; one for another account, or not signed by the runtime it
+    /// names, does not.
+    #[tokio::test]
+    async fn a_read_mark_from_the_persons_other_runtime_moves_the_mark() {
+        let rig = Rig::new().await;
+        let (group, peko) = rig.group().await;
+        let msg_id = rig.peer_posts(&group, &peko, "hello").await;
+        let other = crate::tunnel::devices::fresh_signing_key();
+        let other_id = crate::tunnel::verifying_key_to_did_key(&other.verifying_key());
+        let mark = |account: &str, key: &ed25519_dalek::SigningKey| {
+            let iat = chrono::Utc::now().timestamp();
+            let payload = ReadMarkPayload {
+                v: READ_MARK_VERSION.into(),
+                request_id: uuid::Uuid::new_v4().to_string(),
+                source_runtime_id: other_id.clone(),
+                source_principal_did: format!("user:hub:{account}"),
+                channel_id: group.as_str().to_string(),
+                msg_id: msg_id.clone(),
+                iat,
+                exp: iat + 300,
+            };
+            TunnelMessage::TunnelReadMark {
+                signature: sign_read_mark(key, &payload),
+                request_id: payload.request_id,
+                source_runtime_id: payload.source_runtime_id,
+                source_principal_did: payload.source_principal_did,
+                channel_id: payload.channel_id,
+                msg_id: payload.msg_id,
+            }
+        };
+        let unread = || async { rig.app.store().person_read(&group).await.unwrap().unread };
+
+        rig.app
+            .on_device_message(mark("someone-else", &other))
+            .await;
+        assert_eq!(unread().await, 1);
+        let forger = crate::tunnel::devices::fresh_signing_key();
+        rig.app.on_device_message(mark(ACCOUNT, &forger)).await;
+        assert_eq!(unread().await, 1);
+
+        // Through the dispatcher, as PekoHub delivers it.
+        let dispatcher = TunnelDispatcher::new(Arc::new(rig.app.clone()));
+        let handle = rig.app.tunnel_handle_slot().read().await.clone().unwrap();
+        dispatcher
+            .handle_message(mark(ACCOUNT, &other), handle)
+            .await;
+        for _ in 0..50 {
+            if unread().await == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(unread().await, 0);
+    }
+
+    /// Only someone at the computer adds or removes a phone; a removed
+    /// phone is refused and PekoHub is told.
+    #[tokio::test]
+    async fn the_owner_lists_and_removes_phones_on_the_computer() {
+        use crate::ipc::handlers::RequestDispatcher;
+        let mut rig = Rig::new().await;
+        let peer = crate::ipc::server::PeerAddr::Ip(([127, 0, 0, 1], 0).into());
+        let ask = |request: RequestPacket, caller: CallerContext| {
+            let app = rig.app.clone();
+            let peer = peer.clone();
+            async move {
+                let sink = Collect(Mutex::new(Vec::new()));
+                RequestDispatcher::dispatch(app, request, &caller, &sink, &peer)
+                    .await
+                    .unwrap();
+                sink.0.into_inner().unwrap().pop().unwrap()
+            }
+        };
+        for request in [
+            RequestPacket::DevicePairStart { request_id: 1 },
+            RequestPacket::DeviceList { request_id: 1 },
+            RequestPacket::DeviceRemove {
+                request_id: 1,
+                device_id: rig.phone.device_id.clone(),
+            },
+            RequestPacket::ChannelReadState { request_id: 1 },
+        ] {
+            match ask(request, CallerContext::from_jwt(ACCOUNT.into())).await {
+                ResponsePacket::Error { message, .. } => {
+                    assert!(message.starts_with("[permission_denied]"), "{message}");
+                }
+                other => panic!("a remote caller got {other:?}"),
+            }
+        }
+        match ask(
+            RequestPacket::DevicePairStart { request_id: 1 },
+            CallerContext::local(),
+        )
+        .await
+        {
+            ResponsePacket::Error { message, .. } => {
+                assert!(message.starts_with("[not_registered]"), "{message}");
+            }
+            other => panic!("an unregistered runtime offered {other:?}"),
+        }
+        match ask(
+            RequestPacket::DeviceList { request_id: 1 },
+            CallerContext::local(),
+        )
+        .await
+        {
+            ResponsePacket::DeviceListResult { devices, .. } => {
+                assert_eq!(devices.len(), 1);
+                assert_eq!(devices[0].device_id, rig.phone.device_id);
+            }
+            other => panic!("{other:?}"),
+        }
+        let removed = ask(
+            RequestPacket::DeviceRemove {
+                request_id: 1,
+                device_id: rig.phone.device_id.clone(),
+            },
+            CallerContext::local(),
+        )
+        .await;
+        assert!(matches!(
+            removed,
+            ResponsePacket::Done { success: true, .. }
+        ));
+        assert!(rig.sent().iter().any(|m| matches!(
+            m,
+            TunnelMessage::TunnelDeviceRemoved { device_id, .. } if *device_id == rig.phone.device_id
+        )));
+        let refused = rig.ask("conversations", json!({})).await.unwrap_err();
+        assert!(refused.starts_with("[unpaired]"), "{refused}");
+    }
+
+    /// The phone lists the requests waiting for the person on this
+    /// computer and decides one: the owner's own action, audited with the
+    /// device it came from.
+    #[tokio::test]
+    async fn a_phone_decides_an_approval_request_as_the_owner() {
+        use crate::principal::config::{
+            PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig,
+            PrincipalIntentConfig, PrincipalRoutingConfig,
+        };
+        use crate::principal::policy_gate::{pending_requests, PrincipalPolicyGate};
+        use crate::security::judge::{GatedCall, PolicyGate as _};
+        use peko_tools_core::{ActingFor, Compartment, Origin, Trust};
+
+        let mut rig = Rig::new().await;
+        let roles = rig
+            .app
+            .config
+            .data_dir
+            .join("pekos")
+            .join("mochi")
+            .join("roles");
+        tokio::fs::create_dir_all(&roles).await.unwrap();
+        tokio::fs::write(
+            roles.join("primary.md"),
+            "---\ndescription: \"Test\"\n---\n\nYou are mochi.\n",
+        )
+        .await
+        .unwrap();
+        let peko = rig
+            .app
+            .principal_manager()
+            .create(PrincipalConfig {
+                actor_key: None,
+                name: "mochi".into(),
+                id: None,
+                did: None,
+                owner: me(),
+                identity: PrincipalIdentityConfig {
+                    display_name: Some("mochi".into()),
+                    description: None,
+                    avatar: None,
+                },
+                intent: PrincipalIntentConfig::default(),
+                governance: PrincipalGovernanceConfig::default(),
+                routing: PrincipalRoutingConfig::default(),
+                exposure: peko_auth::Exposure::LocalOnly,
+                status: None,
+                boot_state: None,
+                permissions: Vec::new(),
+                preferred_model_id: None,
+                quota: None,
+                children: Default::default(),
+            })
+            .await
+            .unwrap();
+        let gate = PrincipalPolicyGate::new(Arc::downgrade(rig.app.principal_manager()));
+        let id = gate
+            .ask_owner(
+                &GatedCall {
+                    call_id: Some("call_gated".into()),
+                    principal_id: peko.id.0.clone(),
+                    principal_name: None,
+                    session_id: Some("guest-session".into()),
+                    agent_id: None,
+                    workspace: None,
+                    stamp: ActingFor {
+                        actor: "user:hub:noah".into(),
+                        name: Some("Noah".into()),
+                        trust: Trust::Untrusted,
+                        compartment: Compartment::Conversation {
+                            channel: "dm_x".into(),
+                        },
+                        origin: Origin::Ingress { channel: None },
+                        owner_request: false,
+                    },
+                    tool_name: "Read".into(),
+                    params: json!({ "file_path": "finances/q3.md" }),
+                },
+                "finances are private",
+            )
+            .await
+            .unwrap();
+
+        let listed = rig.ask("approvals", json!({})).await.unwrap();
+        let waiting = listed["approvals"].as_array().unwrap();
+        assert_eq!(waiting.len(), 1);
+        assert_eq!(
+            (waiting[0]["peko"].as_str(), waiting[0]["id"].as_str()),
+            (Some("mochi"), Some(id.as_str()))
+        );
+        assert_eq!(waiting[0]["actor_name"], "Noah");
+
+        let decided = rig
+            .ask(
+                "approval_decide",
+                json!({ "peko": "mochi", "id": id, "approve": false }),
+            )
+            .await
+            .unwrap();
+        assert!(
+            decided["message"].as_str().unwrap().starts_with("Denied"),
+            "{decided}"
+        );
+        assert!(pending_requests(&peko).is_empty());
+        let again = rig
+            .ask(
+                "approval_decide",
+                json!({ "peko": "mochi", "id": id, "approve": true }),
+            )
+            .await
+            .unwrap_err();
+        assert!(again.contains("already decided"), "{again}");
+    }
+
+    #[tokio::test]
+    async fn a_phone_signs_itself_out() {
+        let mut rig = Rig::new().await;
+        assert_eq!(rig.ask("unpair", json!({})).await.unwrap()["paired"], false);
+        assert!(rig.app.devices.gate.devices().is_empty());
+        assert!(rig
+            .ask("conversations", json!({}))
+            .await
+            .unwrap_err()
+            .starts_with("[unpaired]"));
+    }
+}

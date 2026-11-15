@@ -12,6 +12,25 @@ This document defines the public API surface for Peko, including the new Unified
 
 ---
 
+## Paired phones (ADR-108)
+
+IPC, local callers only: `device_pair_start` → `device_pair_started
+{ code, qr, expires_at }`; `device_list` → `device_list_result { devices }`;
+`device_remove { device_id }` → `done`; `channel_mark_read { channel,
+msg_id }` → `channel_read_marked { channel, moved }`; `channel_read_state`
+→ `channel_read_state_result { channels: [{ channel, unread, read? }] }`.
+CLI: `peko device pair | list | remove <id>`.
+
+A phone's own requests never use IPC. They arrive as `tunnel_device_request`
+and are carried out by the verb table in `daemon/state/devices.rs`:
+`conversations`, `read`, `post`, `mark_read`, `approvals`,
+`approval_decide`, `stop`, `board`, `watch`, `unwatch`, `unpair`.
+`tunnel::devices::DeviceGate` decides whether a device message is believed;
+`TunnelHost::device_message` is the dispatcher's way in.
+`peko_channel::ChannelStore` gains `mark_person_read`, `person_read`,
+`person_has_read`, `person_channels`, `newest_post` and `subscribe_all`
+(`StoreSignal`).
+
 ## The local user's DM with a peko on another runtime (ADR-090)
 
 | Component | Module | Status | Purpose |

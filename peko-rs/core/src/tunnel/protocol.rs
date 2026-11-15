@@ -758,6 +758,111 @@ pub enum TunnelMessage {
         signature: String,
     },
 
+    /// ADR-108 D2: a phone enrolls its keys with the runtime `runtime_id`.
+    /// PekoHub relays it only from a device signed in to the account that
+    /// runtime is registered to. `proof` is a compact JWS by the phone's
+    /// signing key (`DevicePairPayload`), carrying a MAC under the pairing
+    /// secret the phone read from the computer's screen.
+    #[serde(rename = "tunnel_device_pair", rename_all = "camelCase")]
+    TunnelDevicePair {
+        request_id: String,
+        runtime_id: String,
+        device_id: String,
+        proof: String,
+    },
+
+    /// ADR-108 D2: the runtime's answer to a pairing. `signature` is the
+    /// runtime's compact JWS (`DevicePairedPayload`); `ok` and `error`
+    /// repeat it in the clear so PekoHub can record the pairing.
+    #[serde(rename = "tunnel_device_paired", rename_all = "camelCase")]
+    TunnelDevicePaired {
+        request_id: String,
+        device_id: String,
+        runtime_id: String,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+        signature: String,
+    },
+
+    /// ADR-108 D3: one device verb for the runtime `runtime_id`, from a
+    /// paired phone. Relayed like `TunnelDevicePair`. `signature` is the
+    /// device key's compact JWS (`DeviceRequestPayload`) and carries the
+    /// verb and its arguments.
+    #[serde(rename = "tunnel_device_request", rename_all = "camelCase")]
+    TunnelDeviceRequest {
+        request_id: String,
+        device_id: String,
+        runtime_id: String,
+        signature: String,
+    },
+
+    /// ADR-108 D3: the runtime's answer to a device verb. `signature` is
+    /// the runtime's compact JWS (`DeviceResponsePayload`) and carries
+    /// the result.
+    #[serde(rename = "tunnel_device_response", rename_all = "camelCase")]
+    TunnelDeviceResponse {
+        request_id: String,
+        device_id: String,
+        runtime_id: String,
+        signature: String,
+    },
+
+    /// ADR-108 D4: something changed that a watching phone shows.
+    /// `signature` is the runtime's compact JWS (`DeviceEventPayload`)
+    /// and carries the event. PekoHub forwards it to the device's open
+    /// stream and drops it otherwise.
+    #[serde(rename = "tunnel_device_event", rename_all = "camelCase")]
+    TunnelDeviceEvent {
+        device_id: String,
+        runtime_id: String,
+        signature: String,
+    },
+
+    /// ADR-108 D4: PekoHub tells a runtime that a device's stream closed;
+    /// the runtime ends its watch.
+    #[serde(rename = "tunnel_device_gone", rename_all = "camelCase")]
+    TunnelDeviceGone { device_id: String },
+
+    /// ADR-108 D2: the runtime removed a device's record. PekoHub drops
+    /// the pairing and tells the phone.
+    #[serde(rename = "tunnel_device_removed", rename_all = "camelCase")]
+    TunnelDeviceRemoved {
+        device_id: String,
+        runtime_id: String,
+    },
+
+    /// ADR-108 D6: a push notification for a paired phone. `sealed` is
+    /// the notification, signed by the runtime and sealed to the device's
+    /// agreement key (HPKE), base64url; PekoHub hands it to APNs or FCM
+    /// unread. With `clear`, there is no `sealed`: the phone removes what
+    /// it shows for `collapse_key`.
+    #[serde(rename = "tunnel_device_notify", rename_all = "camelCase")]
+    TunnelDeviceNotify {
+        device_id: String,
+        runtime_id: String,
+        collapse_key: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sealed: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        clear: bool,
+    },
+
+    /// ADR-108 D5: the person (`source_principal_did`, `user:hub:<id>`)
+    /// read `channel_id` up to the post `msg_id` on `source_runtime_id`.
+    /// PekoHub delivers it to the other runtimes registered to that
+    /// account, only from a runtime that speaks for it. It wakes nothing.
+    /// `signature` covers every other field (`ReadMarkPayload`).
+    #[serde(rename = "tunnel_read_mark", rename_all = "camelCase")]
+    TunnelReadMark {
+        request_id: String,
+        source_runtime_id: String,
+        source_principal_did: String,
+        channel_id: String,
+        msg_id: String,
+        signature: String,
+    },
+
     /// ADR-092 D2: a group's home invites a person by Hub account.
     /// PekoHub delivers it to every runtime registered to
     /// `recipient_account` (`user:hub:<id>`); each keeps it as a pending

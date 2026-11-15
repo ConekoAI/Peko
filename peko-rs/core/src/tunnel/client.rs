@@ -700,6 +700,15 @@ impl TunnelClient {
             | TunnelMessage::TunnelPekoApprovals { .. }
             | TunnelMessage::TunnelPekoApprovalDecide { .. }
             | TunnelMessage::TunnelPekoApprovalDecided { .. }
+            | TunnelMessage::TunnelDevicePair { .. }
+            | TunnelMessage::TunnelDevicePaired { .. }
+            | TunnelMessage::TunnelDeviceRequest { .. }
+            | TunnelMessage::TunnelDeviceResponse { .. }
+            | TunnelMessage::TunnelDeviceEvent { .. }
+            | TunnelMessage::TunnelDeviceGone { .. }
+            | TunnelMessage::TunnelDeviceRemoved { .. }
+            | TunnelMessage::TunnelDeviceNotify { .. }
+            | TunnelMessage::TunnelReadMark { .. }
             | TunnelMessage::GroupRegistered { .. }
             | TunnelMessage::GroupRegisterRejected { .. }
             | TunnelMessage::AccountGroups { .. }

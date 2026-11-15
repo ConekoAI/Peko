@@ -695,7 +695,7 @@ impl PeerTurnDriver {
 /// Removes this turn's entry from the streaming-run registry when the
 /// turn ends — only if the entry is still this turn's (identified by
 /// its `interrupt_acked` handle), never another run's.
-struct RunRegistration {
+pub(crate) struct RunRegistration {
     runs: StreamingRuns,
     session_id: String,
     marker: Arc<tokio::sync::Notify>,
@@ -716,6 +716,41 @@ impl Drop for RunRegistration {
     }
 }
 
+/// Make a turn in `session_id` stoppable: `PrincipalStop` cancels the
+/// returned token through `runs`. The registration is `None` when
+/// another run already holds the session's entry (that run's preflight
+/// refusal follows); hold it for as long as the turn runs.
+pub(crate) fn register_run(
+    runs: &StreamingRuns,
+    session_id: &str,
+    principal_name: &str,
+) -> (tokio_util::sync::CancellationToken, Option<RunRegistration>) {
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let marker = Arc::new(tokio::sync::Notify::new());
+    let mut guard = runs
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if guard.contains_key(session_id) {
+        return (cancel, None);
+    }
+    guard.insert(
+        session_id.to_string(),
+        StreamingRunHandle {
+            principal_name: principal_name.to_string(),
+            peer: None,
+            cancel: cancel.clone(),
+            interrupt_acked: Arc::clone(&marker),
+        },
+    );
+    drop(guard);
+    let registration = RunRegistration {
+        runs: Arc::clone(runs),
+        session_id: session_id.to_string(),
+        marker,
+    };
+    (cancel, Some(registration))
+}
+
 #[async_trait]
 impl BoundTurnDriver for PeerTurnDriver {
     async fn drive_turn(
@@ -724,32 +759,10 @@ impl BoundTurnDriver for PeerTurnDriver {
         message: &str,
         author: Option<&ActorRef>,
     ) -> anyhow::Result<String> {
-        let cancel = tokio_util::sync::CancellationToken::new();
-        // Register a stop handle unless another run already holds the
-        // session's entry (that run's preflight refusal follows below).
-        let _registration = self.runs.as_ref().and_then(|runs| {
-            let marker = Arc::new(tokio::sync::Notify::new());
-            let mut guard = runs
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if guard.contains_key(session_id) {
-                return None;
-            }
-            guard.insert(
-                session_id.to_string(),
-                StreamingRunHandle {
-                    principal_name: self.principal_name.clone(),
-                    peer: None,
-                    cancel: cancel.clone(),
-                    interrupt_acked: Arc::clone(&marker),
-                },
-            );
-            Some(RunRegistration {
-                runs: Arc::clone(runs),
-                session_id: session_id.to_string(),
-                marker,
-            })
-        });
+        let (cancel, _registration) = match self.runs.as_ref() {
+            Some(runs) => register_run(runs, session_id, &self.principal_name),
+            None => (tokio_util::sync::CancellationToken::new(), None),
+        };
         // ADR-078: a group member's mention passes membership, not a
         // permission check, so the member is also the authority.
         let driver = match author {
@@ -2693,6 +2706,24 @@ mod tests {
             "the channel message must reach the turn body: {reply}"
         );
         assert!(runs.lock().unwrap().is_empty(), "stop handle removed");
+    }
+
+    /// A registered turn is cancelled through the registry and leaves it
+    /// when its guard drops; a session that already has a run keeps that
+    /// run's handle.
+    #[test]
+    fn register_run_makes_a_turn_stoppable_once() {
+        let runs: StreamingRuns = Arc::default();
+        let (cancel, registration) = register_run(&runs, "sess-1", "kit");
+        assert!(registration.is_some());
+        let (other, second) = register_run(&runs, "sess-1", "kit");
+        assert!(second.is_none(), "the session already has a run");
+        runs.lock().unwrap()["sess-1"].cancel.cancel();
+        assert!(cancel.is_cancelled() && !other.is_cancelled());
+        drop(second);
+        assert!(runs.lock().unwrap().contains_key("sess-1"));
+        drop(registration);
+        assert!(runs.lock().unwrap().is_empty());
     }
 
     /// Another run's stop handle is neither replaced nor removed by a
