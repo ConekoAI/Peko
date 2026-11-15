@@ -1,6 +1,6 @@
 # ADR-108: A phone is a paired window onto your own computer: it reads and posts through your runtime over the Hub, and push wakes it
 
-**Status:** Proposed. Runtime and Hub side implemented (phases 1–3); desktop and the app are not.
+**Status:** Proposed. Runtime and Hub side implemented (phases 1–3, runtime 0.1.3). Desktop (phase 4): Peko Desktop has the Phones screen (pair by code, list, remove); it still keeps its own read positions. The app is not started.
 **Date:** 2026-11-14
 **Builds on:** [ADR-095](ADR-095-symmetric-dms-that-follow-devices-and-moves.md) (a person's DMs are kept whole on every runtime of their account; D7, your own peko is one conversation everywhere), [ADR-099](ADR-099-owner-decides-approvals-from-any-of-their-computers.md) (the owner decides approvals from any of their computers), [ADR-091](ADR-091-remote-dm-history-from-the-host.md) (D6, the Hub's proxy for clients without a runtime; D7, the Hub only relays), [ADR-078](ADR-078-acting-for-stamps-and-trust-floor.md) (D7, approvals are the owner's own action, never a message), [ADR-081](ADR-081-actor-identity-ownership-and-single-online-copy.md) (the local user and their Hub account are one actor).
 **Counterpart:** PekoHub (device records, a device stream, relay of the device messages, push delivery; a hub ADR of its own). Peko desktop (pairing, a Devices list, read state from the runtime). A new mobile client.
