@@ -90,7 +90,12 @@ cmd_check() {
     done
 
     step "peko --version"
-    peko --version | grep -q '^peko ' || die "unexpected --version output"
+    # Captured first, not piped: `grep -q` closes the pipe at its first
+    # match, and under `pipefail` the writer's broken-pipe exit would fail
+    # a step that had passed.
+    local out
+    out="$(peko --version)"
+    grep -q '^peko ' <<<"$out" || die "unexpected --version output"
 
     step "peko model add --no-key"
     peko model add --id smoke --api-format openai_completions \
@@ -101,7 +106,8 @@ cmd_check() {
 
     step "peko daemon start"
     (cd "$work/daemon-cwd" && peko daemon start)
-    peko daemon status | grep -q 'Running' || die "daemon not running"
+    out="$(peko daemon status)"
+    grep -q 'Running' <<<"$out" || die "daemon not running"
 
     step "peko create"
     peko create smoke-peko --model smoke --wait-timeout 240
