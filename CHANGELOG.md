@@ -4,6 +4,13 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A message sent right after Stop is answered.** A stopped run ends at
+  its next step, which can be a whole model call away. A message sent in
+  between was queued for that run and got no reply until you wrote
+  again. It is now answered as soon as the stopped run has ended.
+
 ## [0.1.4] - 2026-11-15
 
 ### Added
