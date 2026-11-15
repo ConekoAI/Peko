@@ -4,6 +4,8 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-15
+
 ### Added
 
 - **A phone can be paired with this computer (ADR-108).** `peko device
