@@ -1173,15 +1173,20 @@ pub enum RequestPacket {
     #[serde(rename = "device_remove")]
     DeviceRemove { request_id: u64, device_id: String },
 
-    /// ADR-108 D5: the person has seen `channel` up to the post
-    /// `msg_id`. Moves their read mark forward (never back) and tells
-    /// their other computers. Local callers only. Answered with
-    /// `ChannelReadMarked`.
+    /// ADR-108 D5: the person has seen `channel` up to a post. Name it by
+    /// `msg_id`, or give `at` (RFC 3339) for the newest post at or before
+    /// that time, which is what a client that shows a thread by time
+    /// knows. Exactly one of the two. Moves their read mark forward (never
+    /// back) and tells their other computers. Local callers only. Answered
+    /// with `ChannelReadMarked`.
     #[serde(rename = "channel_mark_read")]
     ChannelMarkRead {
         request_id: u64,
         channel: String,
-        msg_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        msg_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<String>,
     },
 
     /// ADR-108 D5: the person's read mark and unread count in each of
@@ -1580,6 +1585,12 @@ pub struct DeviceInfo {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChannelReadInfo {
     pub channel: peko_protocol::channel::ChannelId,
+    /// `dm` or `group`.
+    pub kind: peko_protocol::channel::ConversationKind,
+    /// A DM's other member, so a client can tell which conversation this
+    /// is (a peko by `local_id` or `hub_id`, a person by `hub_id`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer: Option<peko_channel::ActorInfo>,
     /// Posts after the mark that the person did not write.
     pub unread: usize,
     /// The newest post the person has seen, by `msg_id`.

@@ -1154,18 +1154,68 @@ impl crate::ipc::handlers::device::DeviceHost for AppState {
         self.device_remove(device_id, "owner").await
     }
 
-    async fn mark_read(&self, channel: &str, msg_id: &str) -> Result<bool, String> {
+    async fn mark_read(
+        &self,
+        channel: &str,
+        msg_id: Option<&str>,
+        at: Option<&str>,
+    ) -> Result<bool, String> {
         let channel = self.person_channel(channel).await?;
-        Ok(self.person_mark_read(&channel, msg_id).await? == peko_channel::PersonMarkMove::Moved)
+        let msg_id = match (msg_id, at) {
+            (Some(msg_id), None) => msg_id.to_string(),
+            (None, Some(at)) => {
+                let at = chrono::DateTime::parse_from_rfc3339(at)
+                    .map_err(|_| "[bad_request] `at` is not an RFC 3339 time".to_string())?
+                    .with_timezone(&chrono::Utc);
+                match self
+                    .store()
+                    .newest_post_by(&channel, at)
+                    .await
+                    .map_err(|e| e.to_string())?
+                {
+                    Some(msg_id) => msg_id,
+                    // Nothing was posted by then: nothing to have seen.
+                    None => return Ok(false),
+                }
+            }
+            _ => return Err("[bad_request] give `msg_id` or `at`, one of them".into()),
+        };
+        Ok(self.person_mark_read(&channel, &msg_id).await? == peko_channel::PersonMarkMove::Moved)
     }
 
     async fn read_state(&self) -> Result<Vec<crate::ipc::packet::ChannelReadInfo>, String> {
         let store = self.store();
+        let own = me();
         let mut out = Vec::new();
-        for (channel, _) in store.person_channels().await.map_err(|e| e.to_string())? {
+        for (channel, kind) in store.person_channels().await.map_err(|e| e.to_string())? {
+            if self
+                .tunnel_channel_port
+                .belongs_to_another_account(&channel)
+                .await
+            {
+                continue;
+            }
             let read = store.person_read(&channel).await.unwrap_or_default();
+            let peer = match kind {
+                ConversationKind::Dm => {
+                    let other = self
+                        .channel_port
+                        .list_members(&channel)
+                        .await
+                        .unwrap_or_default()
+                        .into_iter()
+                        .find(|m| *m != own);
+                    match other {
+                        Some(other) => Some(self.channel_port.actor_info(&other).await),
+                        None => None,
+                    }
+                }
+                ConversationKind::Group => None,
+            };
             out.push(crate::ipc::packet::ChannelReadInfo {
                 channel,
+                kind,
+                peer,
                 unread: read.unread,
                 read: read.mark,
             });
@@ -1677,6 +1727,89 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert_eq!(unread().await, 0);
+    }
+
+    /// The app on this computer (ADR-108 D5): read state names each
+    /// conversation's other side, and what has been shown is named by
+    /// time, the way an app that draws a thread knows it.
+    #[tokio::test]
+    async fn the_app_reads_and_moves_the_mark_by_time() {
+        use crate::ipc::handlers::RequestDispatcher;
+        let rig = Rig::new().await;
+        let (dm, peko) = rig.dm().await;
+        let peer = crate::ipc::server::PeerAddr::Ip(([127, 0, 0, 1], 0).into());
+        let ask = |request: RequestPacket| {
+            let app = rig.app.clone();
+            let peer = peer.clone();
+            async move {
+                let sink = Collect(Mutex::new(Vec::new()));
+                RequestDispatcher::dispatch(app, request, &CallerContext::local(), &sink, &peer)
+                    .await
+                    .unwrap();
+                sink.0.into_inner().unwrap().pop().unwrap()
+            }
+        };
+        let state = || async {
+            match ask(RequestPacket::ChannelReadState { request_id: 1 }).await {
+                ResponsePacket::ChannelReadStateResult { channels, .. } => channels
+                    .into_iter()
+                    .find(|c| c.channel == dm)
+                    .expect("the DM is listed"),
+                other => panic!("{other:?}"),
+            }
+        };
+        let mark = |msg_id: Option<String>, at: Option<String>| {
+            ask(RequestPacket::ChannelMarkRead {
+                request_id: 1,
+                channel: dm.as_str().to_string(),
+                msg_id,
+                at,
+            })
+        };
+
+        let first = rig.peer_posts(&dm, &peko, "one").await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let between = chrono::Utc::now();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        rig.peer_posts(&dm, &peko, "two").await;
+
+        let before = state().await;
+        assert_eq!(before.kind, ConversationKind::Dm);
+        assert_eq!((before.unread, before.read.clone()), (2, None));
+        let other = before.peer.expect("a DM names its other member");
+        assert_eq!(other.kind, "principal");
+        assert_eq!(other.hub_id.as_deref(), Some(PEKO));
+
+        // Seen up to a moment between the two posts: the first is read.
+        match mark(None, Some(between.to_rfc3339())).await {
+            ResponsePacket::ChannelReadMarked { moved, .. } => assert!(moved),
+            other => panic!("{other:?}"),
+        }
+        let after = state().await;
+        assert_eq!((after.unread, after.read), (1, Some(first)));
+        // A time before anything was posted moves nothing.
+        let early = (between - chrono::Duration::hours(1)).to_rfc3339();
+        match mark(None, Some(early)).await {
+            ResponsePacket::ChannelReadMarked { moved, .. } => assert!(!moved),
+            other => panic!("{other:?}"),
+        }
+        // Seen up to now: nothing is unread.
+        mark(None, Some(chrono::Utc::now().to_rfc3339())).await;
+        assert_eq!(state().await.unread, 0);
+
+        // One of the two, and a real time.
+        for (msg_id, at) in [
+            (None, None),
+            (Some("msg_a".to_string()), Some(between.to_rfc3339())),
+            (None, Some("yesterday".to_string())),
+        ] {
+            match mark(msg_id, at).await {
+                ResponsePacket::Error { message, .. } => {
+                    assert!(message.starts_with("[bad_request]"), "{message}");
+                }
+                other => panic!("{other:?}"),
+            }
+        }
     }
 
     /// Only someone at the computer adds or removes a phone; a removed

@@ -82,5 +82,7 @@
   {"type": "channel_blocked", "protocol_version": 1, "request_id": 1},
   {"type": "device_pair_start", "protocol_version": 1, "request_id": 1},
   {"type": "device_list", "protocol_version": 1, "request_id": 1},
-  {"type": "device_remove", "protocol_version": 1, "request_id": 1, "device_id": "dev_5f0c1c1e9a7b4f52"}
+  {"type": "device_remove", "protocol_version": 1, "request_id": 1, "device_id": "dev_5f0c1c1e9a7b4f52"},
+  {"type": "channel_mark_read", "protocol_version": 1, "request_id": 1, "channel": "dm_0000000000000000000000000000000000000000000000000000000000000000", "at": "2026-11-15T00:30:16Z"},
+  {"type": "channel_read_state", "protocol_version": 1, "request_id": 1}
 ]

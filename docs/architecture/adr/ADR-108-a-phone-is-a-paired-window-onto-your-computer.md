@@ -83,6 +83,8 @@ Unread counts are worked out on the runtime, not in a webview (F6), so the phone
 - A person reading on one computer marks it read on their others: the runtime sends `tunnel_read_mark { channel, msg_id }` to the account's other routes for that channel. The Hub checks it like a person's post (the source runtime speaks for the account). It wakes nothing and is never shown in the conversation. A mark that names a post the receiving runtime does not have yet is kept and applied when the post arrives.
 - **Unread** means posts after the mark that the person did not write.
 
+**Amended 2026-11-15, for the desktop.** An app that draws a thread knows its rows by time, not by `msg_id`, and knows a conversation by who it is with. So `channel_mark_read` also takes `at` (the newest post at or before that time), and each `channel_read_state` row carries the conversation's `kind` and, for a DM, its other member. The device verbs are unchanged.
+
 ### D6 — Push when closed: the runtime decides, the Hub delivers ciphertext
 
 The phone registers its push token with the Hub (`PUT /v1/me/devices/:deviceId { platform, pushToken }`). Nothing else about the phone's conversations is stored there.

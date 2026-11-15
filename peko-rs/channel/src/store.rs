@@ -2742,6 +2742,27 @@ impl ChannelStore {
         Ok(PersonMarkMove::Moved)
     }
 
+    /// The `msg_id` of `channel`'s newest post made at or before `at`
+    /// (ADR-108 D5: a client that knows a thread by time names what it
+    /// has shown this way).
+    pub async fn newest_post_by(
+        &self,
+        channel: &ChannelId,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Option<String>> {
+        Ok(self
+            .posts_by_time(channel)
+            .await?
+            .iter()
+            .rev()
+            .find(|ev| {
+                chrono::DateTime::parse_from_rfc3339(ev.at())
+                    .is_ok_and(|posted| posted.with_timezone(&chrono::Utc) <= at)
+            })
+            .and_then(posted_msg_id)
+            .map(str::to_string))
+    }
+
     /// ADR-108 D5: the person's read mark on `channel` and how many posts
     /// after it they did not write. With no mark, every post by someone
     /// else is unread. A kept mark whose post has arrived is applied
