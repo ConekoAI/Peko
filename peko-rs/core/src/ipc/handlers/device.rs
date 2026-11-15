@@ -32,8 +32,14 @@ pub(crate) trait DeviceHost: Send + Sync {
     /// Remove a paired phone. `Ok(false)` when none has that id.
     async fn remove_device(&self, device_id: &str) -> Result<bool, String>;
 
-    /// Move the person's read mark; whether it moved.
-    async fn mark_read(&self, channel: &str, msg_id: &str) -> Result<bool, String>;
+    /// Move the person's read mark to the post `msg_id`, or to the newest
+    /// post at or before `at`; whether it moved.
+    async fn mark_read(
+        &self,
+        channel: &str,
+        msg_id: Option<&str>,
+        at: Option<&str>,
+    ) -> Result<bool, String>;
 
     /// The person's read state in each of their conversations.
     async fn read_state(&self) -> Result<Vec<ChannelReadInfo>, String>;
@@ -111,8 +117,15 @@ impl RequestHandler for DeviceHandler {
                 }
             }
             RequestPacket::ChannelMarkRead {
-                channel, msg_id, ..
-            } => match self.host.mark_read(&channel, &msg_id).await {
+                channel,
+                msg_id,
+                at,
+                ..
+            } => match self
+                .host
+                .mark_read(&channel, msg_id.as_deref(), at.as_deref())
+                .await
+            {
                 Ok(moved) => match peko_protocol::channel::ChannelId::parse(&channel) {
                     Some(channel) => ResponsePacket::ChannelReadMarked {
                         request_id,

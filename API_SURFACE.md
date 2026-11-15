@@ -17,8 +17,10 @@ This document defines the public API surface for Peko, including the new Unified
 IPC, local callers only: `device_pair_start` → `device_pair_started
 { code, qr, expires_at }`; `device_list` → `device_list_result { devices }`;
 `device_remove { device_id }` → `done`; `channel_mark_read { channel,
-msg_id }` → `channel_read_marked { channel, moved }`; `channel_read_state`
-→ `channel_read_state_result { channels: [{ channel, unread, read? }] }`.
+msg_id | at }` (a post by id, or the newest post at or before an RFC 3339
+time) → `channel_read_marked { channel, moved }`; `channel_read_state`
+→ `channel_read_state_result { channels: [{ channel, kind, peer?, unread,
+read? }] }` (`peer` is a DM's other member).
 CLI: `peko device pair | list | remove <id>`.
 
 A phone's own requests never use IPC. They arrive as `tunnel_device_request`

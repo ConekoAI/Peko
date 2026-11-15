@@ -4,6 +4,14 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Added
+
+- **Read state an app can use (ADR-108 D5).** `channel_read_state` says
+  what kind each conversation is and, for a DM, who the other member is.
+  `channel_mark_read` takes `at` (a time) in place of `msg_id`: the
+  newest post at or before it. Peko Desktop uses both to keep its unread
+  counts in step with your phone and your other computers.
+
 ## [0.1.3] - 2026-11-15
 
 ### Added
