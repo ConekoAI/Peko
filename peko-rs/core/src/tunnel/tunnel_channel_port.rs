@@ -1828,7 +1828,25 @@ impl ChannelPort for TunnelChannelPort {
         // 2. Outbound fan-out. Failures here never error the local
         // post — the local mirror is authoritative; remote runtimes
         // hydrate off the next event or via `peek` reconciliation.
-        if let Err(e) = self.fanout_event(channel, &ev, sender).await {
+        //
+        // What this runtime's own person wrote goes out as theirs,
+        // vouched for by this runtime (ADR-090 D3), not as the peko that
+        // recorded it: a receiver refuses a post whose author is not the
+        // actor its envelope speaks for.
+        let person = ActorRef::User("local".into());
+        let mine = self.local.actor_info(&person).await;
+        let source = match author.parse::<ActorRef>() {
+            Ok(written_by)
+                if mine.hub_id.is_some() && {
+                    let theirs = self.local.actor_info(&written_by).await;
+                    theirs.kind == mine.kind && theirs.identity_key == mine.identity_key
+                } =>
+            {
+                &person
+            }
+            _ => sender,
+        };
+        if let Err(e) = self.fanout_event(channel, &ev, source).await {
             warn!(
                 "outbound TunnelChannelEvent fan-out partial-failure for channel={} \
                  (local attributed post succeeded at line {}): {}",

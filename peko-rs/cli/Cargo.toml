@@ -56,6 +56,8 @@ cron = "0.12"
 # daemon-side drift detector, and hex to format the digest.
 walkdir = "2"
 sha2 = "0.10"
+# ADR-108: `peko device pair` shows the pairing code in the terminal.
+qrcode = { version = "0.14", default-features = false }
 hex = "0.4"
 
 [dev-dependencies]

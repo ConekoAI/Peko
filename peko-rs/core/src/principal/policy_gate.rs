@@ -32,6 +32,10 @@ use crate::principal::Principal;
 use crate::security::judge::{self, GatedCall, PolicyGate, Verdict};
 use crate::security::policy;
 
+/// How a peko's notice of an approval request starts, in the owner's
+/// conversation with it.
+pub(crate) const APPROVAL_NOTICE_PREFIX: &str = "📋 Approval needed";
+
 /// How long a request waits for the owner.
 pub const APPROVAL_TTL_HOURS: i64 = 24;
 
@@ -292,7 +296,7 @@ impl PrincipalPolicyGate {
         let peko = principal.name().await;
         let note = if is_owner_task(call) {
             format!(
-                "📋 Approval needed ({id}): you asked {peko} for something {reason}, and it \
+                "{APPROVAL_NOTICE_PREFIX} ({id}): you asked {peko} for something {reason}, and it \
                  needs your full access. Approved, it runs as you, outside that conversation, \
                  with only this brief, and its report goes back there:\n\n{brief}\n\nApprove or \
                  deny it in the Peko app, or with `peko approve {peko} {id}` / `peko deny {peko} \
@@ -304,7 +308,7 @@ impl PrincipalPolicyGate {
             )
         } else {
             format!(
-            "📋 Approval needed ({id}): {actor}{name} ({trust}) wants to run {what}. Reviewer: \
+            "{APPROVAL_NOTICE_PREFIX} ({id}): {actor}{name} ({trust}) wants to run {what}. Reviewer: \
              {reason}. Approve or deny it in the Peko app, or with `peko approve {peko} {id}` \
              / `peko deny {peko} {id}`. Expires {exp}.",
             id = record.id,
@@ -863,7 +867,10 @@ pub async fn decide_request_via(
                 serde_json::json!({
                     "principal_id": principal.id.0,
                     "request_id": id,
-                    "via_runtime": via,
+                    // ADR-108 D3: a decision made on a paired phone names
+                    // the device; one from another computer, its runtime.
+                    "via_runtime": via.filter(|v| !v.starts_with("device:")),
+                    "via_device": via.and_then(|v| v.strip_prefix("device:")),
                     "decision": match decision {
                         Decision::Approve { always: true } => "approve_always",
                         Decision::Approve { always: false } => "approve",

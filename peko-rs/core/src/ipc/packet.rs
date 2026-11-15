@@ -1154,6 +1154,41 @@ pub enum RequestPacket {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         op: Option<peko_protocol::channel::BoardOp>,
     },
+
+    /// ADR-108 D2: open a pairing for a phone to scan from this
+    /// computer's screen: single use, ten minutes. Local callers only;
+    /// the runtime must be registered with PekoHub. Answered with
+    /// `DevicePairStarted`.
+    #[serde(rename = "device_pair_start")]
+    DevicePairStart { request_id: u64 },
+
+    /// ADR-108 D2: the phones paired with this runtime. Local callers
+    /// only. Answered with `DeviceListResult`.
+    #[serde(rename = "device_list")]
+    DeviceList { request_id: u64 },
+
+    /// ADR-108 D2: remove a paired phone; its next request is refused.
+    /// Local callers only. Answers `done`, `success: false` when no such
+    /// phone is paired.
+    #[serde(rename = "device_remove")]
+    DeviceRemove { request_id: u64, device_id: String },
+
+    /// ADR-108 D5: the person has seen `channel` up to the post
+    /// `msg_id`. Moves their read mark forward (never back) and tells
+    /// their other computers. Local callers only. Answered with
+    /// `ChannelReadMarked`.
+    #[serde(rename = "channel_mark_read")]
+    ChannelMarkRead {
+        request_id: u64,
+        channel: String,
+        msg_id: String,
+    },
+
+    /// ADR-108 D5: the person's read mark and unread count in each of
+    /// their conversations. Local callers only. Answered with
+    /// `ChannelReadStateResult`.
+    #[serde(rename = "channel_read_state")]
+    ChannelReadState { request_id: u64 },
 }
 
 impl RequestPacket {
@@ -1257,7 +1292,12 @@ impl RequestPacket {
             | Self::ChannelGroupLink { request_id, .. }
             | Self::ChannelSetWake { request_id, .. }
             | Self::ChannelBoard { request_id, .. }
-            | Self::ChannelUndelivered { request_id, .. } => *request_id,
+            | Self::ChannelUndelivered { request_id, .. }
+            | Self::DevicePairStart { request_id }
+            | Self::DeviceList { request_id }
+            | Self::DeviceRemove { request_id, .. }
+            | Self::ChannelMarkRead { request_id, .. }
+            | Self::ChannelReadState { request_id } => *request_id,
         }
     }
 
@@ -1517,6 +1557,34 @@ pub struct PersonDmSummary {
     /// No runtime of theirs is known yet: they have not accepted, so
     /// nothing written here has reached them.
     pub waiting: bool,
+}
+
+/// A phone paired with this runtime, as `device_list` reports it
+/// (ADR-108 D2). Its keys stay in `devices.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceInfo {
+    pub device_id: String,
+    /// What the phone calls itself.
+    pub name: String,
+    /// `ios` or `android`.
+    pub platform: String,
+    /// RFC 3339.
+    pub paired_at: String,
+    /// RFC 3339, to the minute; absent until the phone first asks for
+    /// something.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen: Option<String>,
+}
+
+/// The person's read state in one conversation (ADR-108 D5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelReadInfo {
+    pub channel: peko_protocol::channel::ChannelId,
+    /// Posts after the mark that the person did not write.
+    pub unread: usize,
+    /// The newest post the person has seen, by `msg_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1881,6 +1949,42 @@ pub enum ResponsePacket {
         request_id: u64,
         channel: peko_protocol::channel::ChannelId,
         items: Vec<serde_json::Value>,
+    },
+
+    /// Response to `DevicePairStart` (ADR-108 D2). `qr` is the text to
+    /// show as a QR code; it holds the pairing secret, so it is shown on
+    /// this computer's screen and nowhere else. `code` names the pairing.
+    #[serde(rename = "device_pair_started")]
+    DevicePairStarted {
+        request_id: u64,
+        code: String,
+        qr: String,
+        /// RFC 3339.
+        expires_at: String,
+    },
+
+    /// Response to `DeviceList` (ADR-108 D2), oldest pairing first.
+    #[serde(rename = "device_list_result")]
+    DeviceListResult {
+        request_id: u64,
+        devices: Vec<DeviceInfo>,
+    },
+
+    /// Response to `ChannelMarkRead` (ADR-108 D5): whether the mark
+    /// moved (`false` when it already covered that post, or the post has
+    /// not arrived here yet).
+    #[serde(rename = "channel_read_marked")]
+    ChannelReadMarked {
+        request_id: u64,
+        channel: peko_protocol::channel::ChannelId,
+        moved: bool,
+    },
+
+    /// Response to `ChannelReadState` (ADR-108 D5).
+    #[serde(rename = "channel_read_state_result")]
+    ChannelReadStateResult {
+        request_id: u64,
+        channels: Vec<ChannelReadInfo>,
     },
 
     /// Response to `ChannelSetWake`: the policy now stored.
@@ -3254,7 +3358,11 @@ impl ResponsePacket {
             | Self::ChannelGroupLinkResult { request_id, .. }
             | Self::ChannelWakeSet { request_id, .. }
             | Self::ChannelBoardResult { request_id, .. }
-            | Self::ChannelUndeliveredResult { request_id, .. } => *request_id,
+            | Self::ChannelUndeliveredResult { request_id, .. }
+            | Self::DevicePairStarted { request_id, .. }
+            | Self::DeviceListResult { request_id, .. }
+            | Self::ChannelReadMarked { request_id, .. }
+            | Self::ChannelReadStateResult { request_id, .. } => *request_id,
         }
     }
 
@@ -3359,6 +3467,10 @@ impl ResponsePacket {
             Self::ChannelWakeSet { .. } => "ChannelWakeSet",
             Self::ChannelBoardResult { .. } => "ChannelBoardResult",
             Self::ChannelUndeliveredResult { .. } => "ChannelUndeliveredResult",
+            Self::DevicePairStarted { .. } => "DevicePairStarted",
+            Self::DeviceListResult { .. } => "DeviceListResult",
+            Self::ChannelReadMarked { .. } => "ChannelReadMarked",
+            Self::ChannelReadStateResult { .. } => "ChannelReadStateResult",
         }
     }
 

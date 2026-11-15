@@ -102,8 +102,9 @@ pub use port::{
 pub use read_marks::ChannelReadMarks;
 pub use responder::{mentions, ChannelResponder, NoopChannelResponder, RespondCtx};
 pub use store::{
-    member_row, new_msg_id, BlockDecision, ChannelConfig, ChannelStore, DmRequest, GroupHome,
-    GroupInfo, GroupInvitation, GroupVisibility, HubGroup, InviteLink, PekoJoinRequest,
+    is_post_id, member_row, new_msg_id, BlockDecision, ChannelConfig, ChannelStore, DmRequest,
+    GroupHome, GroupInfo, GroupInvitation, GroupVisibility, HubGroup, InviteLink, PekoJoinRequest,
+    PersonMarkMove, PersonRead, StoreSignal,
 };
 pub use subscription::{ChannelSubscriber, SubscriptionConfig};
 

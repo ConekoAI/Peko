@@ -17,6 +17,7 @@ pub mod credential;
 // 2026-08-25: `peko cron` retired. The cron module was deleted;
 // principals manage schedules through the `tool:Cron*` grants.
 pub mod daemon;
+pub mod device;
 pub mod log;
 pub mod model;
 pub mod principal;
@@ -161,6 +162,17 @@ pub enum Commands {
     /// PekoHub connection (advanced)
     #[command(subcommand, hide = true)]
     Tunnel(tunnel::TunnelCommands),
+
+    /// Phones paired with this computer
+    ///
+    /// A paired phone reads and posts as you through this computer.
+    ///
+    /// Examples:
+    ///   peko device pair
+    ///   peko device list
+    ///   peko device remove dev_5f0c1c1e9a7b4f52
+    #[command(subcommand)]
+    Device(device::DeviceCommands),
 
     /// How many tokens and requests a peko may use
     ///

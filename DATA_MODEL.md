@@ -22,6 +22,48 @@ This document defines every on-disk and in-memory data format used by the Peko r
 
 ---
 
+## Paired phones and the person's read mark (ADR-108)
+
+**`<config>/runtime/devices.json`** — the phones paired with this runtime,
+mode `0600`. A missing file is no phones; an unreadable one is read as
+none, so every phone must pair again.
+
+```json
+{ "devices": [ {
+  "deviceId": "dev_5f0c1c1e9a7b4f52",
+  "name": "Mira's iPhone",
+  "platform": "ios",
+  "signingKey": "<ed25519 public key, 32 bytes, base64url>",
+  "agreementKey": "<X25519 public key, 32 bytes, base64url>",
+  "pairedAt": "2026-11-14T10:00:00+00:00",
+  "lastSeen": "2026-11-14T10:05:00Z"
+} ] }
+```
+
+`lastSeen` is kept to the minute. At most 16 devices. Open pairings, the
+seen request ids and watches are in memory only.
+
+**`read_marks.json`** (per channel) gains two keys beside the session
+keys: `person`, the `msg_id` of the newest post this runtime's person has
+seen, and `person_pending`, a mark that names a post this copy does not
+hold yet (applied when it arrives). Unread = posts after `person`, by
+post time, that the person did not write; with no mark, every post by
+someone else.
+
+**The pairing QR code** is the text
+`peko://pair?v=1&hub=<Hub URL>&runtime=<runtime did:key>&id=<pairing id>&secret=<32 bytes, base64url>`.
+The secret is never sent anywhere.
+
+**Signed payloads** (compact JWS, EdDSA, snake_case fields, as the other
+tunnel payloads): `peko-device-pair/1` and `peko-device-request/1` by the
+device key; `peko-device-paired/1`, `peko-device-response/1`,
+`peko-device-event/1`, `peko-device-notify/1` and `peko-read-mark/1` by
+the runtime key. A notification is the signed `peko-device-notify/1`
+sealed with HPKE (RFC 9180 base mode, DHKEM(X25519, HKDF-SHA256),
+HKDF-SHA256, ChaCha20-Poly1305, `info` = `peko-device-notify/1`), sent as
+base64url of the encapsulated key followed by the ciphertext. Types:
+`peko-rs/core/src/tunnel/devices.rs`.
+
 ## Peko folders, file names, and address spellings (0.1.0)
 
 - Each peko lives in `{config_dir}/pekos/<name>/` (definition `peko.toml`,

@@ -161,6 +161,12 @@ pub trait TunnelHost: Send + Sync {
         model: Option<String>,
     );
 
+    /// ADR-108: a paired phone's message that PekoHub relayed
+    /// (`TunnelDevicePair`, `TunnelDeviceRequest`, `TunnelDeviceGone`), or
+    /// a `TunnelReadMark` from another of the person's runtimes. The host
+    /// checks it, carries it out, and sends the signed answer itself.
+    async fn device_message(&self, message: super::TunnelMessage);
+
     /// ADR-097 D1: the models `person` (`user:hub:<account>`) may pick for
     /// the peko hosted here whose signing DID is `principal_did` — this
     /// runtime's enabled models, when `person` is the peko's owner; none

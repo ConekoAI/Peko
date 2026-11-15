@@ -154,19 +154,25 @@ impl TunnelChannelPort {
             resolved.exposure != ResolvedExposure::LocalOnly,
             "This peko is local-only"
         );
-        self.open_resolved_hub_dm(
-            &ctx,
-            &user,
-            &ResolvedPeko {
-                hub_id,
-                signing_did: resolved.agent_did,
-                identity_key: resolved.identity_key,
-                name: resolved.name,
-                runtime_id: resolved.runtime_id,
-                public: resolved.exposure == ResolvedExposure::Public,
-            },
-        )
-        .await
+        let opened = self
+            .open_resolved_hub_dm(
+                &ctx,
+                &user,
+                &ResolvedPeko {
+                    hub_id,
+                    signing_did: resolved.agent_did,
+                    identity_key: resolved.identity_key,
+                    name: resolved.name,
+                    runtime_id: resolved.runtime_id,
+                    public: resolved.exposure == ResolvedExposure::Public,
+                },
+            )
+            .await?;
+        // The person's other computers that hold this DM become routes
+        // for them here, and this one there (ADR-095 D5), so what they
+        // write on any of them shows on all.
+        self.sync_account_dms().await;
+        Ok(opened)
     }
 
     /// Open, or find, the local user's DM with a peko already resolved —

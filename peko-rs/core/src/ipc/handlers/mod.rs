@@ -27,6 +27,7 @@ pub(crate) mod audit;
 pub(crate) mod auth;
 pub(crate) mod channel;
 pub(crate) mod credential;
+pub(crate) mod device;
 pub(crate) mod instance;
 pub(crate) mod principal;
 pub(crate) mod provider_add;
@@ -43,6 +44,7 @@ use audit::AuditHandler;
 use auth::AuthHandler;
 use channel::ChannelHandler;
 use credential::CredentialHandler;
+use device::DeviceHandler;
 use instance::InstanceHandler;
 use principal::PrincipalHandler;
 use provider_add::ProviderAddHandler;
@@ -113,7 +115,7 @@ impl RequestDispatcher {
         peer: &PeerAddr,
     ) -> anyhow::Result<()> {
         let host = Arc::new(state);
-        let handlers: [Arc<dyn RequestHandler>; 15] = [
+        let handlers: [Arc<dyn RequestHandler>; 16] = [
             Arc::new(SystemHandler::new(host.clone())),
             Arc::new(AuthHandler::new(host.clone())),
             Arc::new(ToolHandler::new(host.clone())),
@@ -140,6 +142,9 @@ impl RequestDispatcher {
             // post / peek / members / list / leave / pin-to-shared)
             // over IPC.
             Arc::new(ChannelHandler::new(host.clone())),
+            // ADR-108: pairing phones with this computer, and the
+            // person's read mark.
+            Arc::new(DeviceHandler::new(host.clone())),
             // ADR-046: the `audit` IPC query handler reads from
             // the daemon's in-memory ring buffer. The CLI falls
             // back to direct JSONL reads for cross-session

@@ -4,6 +4,40 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Added
+
+- **A phone can be paired with this computer (ADR-108).** `peko device
+  pair` shows a code for the Peko phone app to scan; `peko device list`
+  and `peko device remove <id>` manage paired phones. A paired phone reads
+  and posts as you through this computer over PekoHub, lists and decides
+  approval requests, and stops runs. It asks through a short fixed list of
+  verbs, each request signed with a key enrolled from the code on this
+  computer's screen, and everything the computer answers is signed. IPC:
+  `device_pair_start`, `device_list`, `device_remove`. Paired phones are
+  kept in `runtime/devices.json`.
+- **Read state is kept by the runtime (ADR-108 D5).** Each conversation
+  has the person's read mark; reading on one computer marks it read on
+  their others. IPC: `channel_mark_read`, `channel_read_state`.
+- **Push for paired phones (ADR-108 D6).** The runtime decides when a
+  closed phone is told (a DM post, a mention or a board item for you in a
+  group, an approval request) and seals the notification to the phone's
+  key, so PekoHub, Apple and Google cannot read it.
+- Tunnel messages `tunnel_device_pair`, `tunnel_device_paired`,
+  `tunnel_device_request`, `tunnel_device_response`, `tunnel_device_event`,
+  `tunnel_device_gone`, `tunnel_device_removed`, `tunnel_device_notify`
+  and `tunnel_read_mark`. All are new; nothing existing changed shape.
+
+### Fixed
+
+- A turn started by your post from another computer (or a paired phone)
+  can be stopped, and shows as working, like one started on this computer.
+- What you write to your own peko on one computer now shows on your other
+  computers right away. Before, the other computer refused your own post
+  and showed it only after its next history sync. Each computer now keeps
+  your other computers as routes for you in those conversations (ADR-095
+  D5), and a post you make on the peko's own computer is forwarded as
+  yours, not as the peko's.
+
 ## [0.1.2] - 2026-11-13
 
 ### Added
