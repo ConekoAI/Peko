@@ -1,6 +1,6 @@
 [package]
 name = "peko-engine"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 authors = ["Peko <peko@coneko.ai>"]
 description = "Agentic loop, prompt renderer, compaction orchestration, and host tooling ports"

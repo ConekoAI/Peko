@@ -1,6 +1,6 @@
 [package]
 name = "peko"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 authors = ["Peko <peko@coneko.ai>"]
 description = "Lightweight multi-agent runtime with optional Coneko network"

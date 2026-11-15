@@ -4,6 +4,8 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-11-15
+
 ### Added
 
 - **Read state an app can use (ADR-108 D5).** `channel_read_state` says
