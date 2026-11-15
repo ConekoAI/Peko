@@ -136,15 +136,15 @@ pub struct AgenticLoop {
     /// `Arc::new(AsyncInboxAdapter::new(...))` before calling
     /// [`AgenticLoop::with_async_completion_queue`].
     async_completion_queue: Option<Arc<dyn AsyncInboxLike>>,
-    /// Optional soft-interrupt token. When set, the loop checks
-    /// `is_cancelled()` at the start of each iteration and just
-    /// before delivering the final answer; if cancelled, it emits a
-    /// `Lifecycle::Interrupted` event and returns `interrupted: true`
-    /// without committing the final answer to the session. The
-    /// current in-flight step (LLM stream chunk, tool call) always
-    /// runs to completion — this is a *soft* interrupt, not a hard
-    /// kill. Set by the streaming IPC handler via `with_cancel_token`
-    /// so the `PrincipalStop` IPC can signal cancellation.
+    /// Optional stop token. When set, the loop checks it at the start
+    /// of each iteration and just before delivering the final answer,
+    /// and every wait for the model ends when it fires. A stopped run
+    /// emits a `Lifecycle::Interrupted` event and returns
+    /// `interrupted: true`; the answer the model was giving is not
+    /// kept. A tool that is running gets the token too and finishes
+    /// or stops itself before the loop sees the stop. Set by the
+    /// streaming IPC handler via `with_cancel_token` so the
+    /// `PrincipalStop` IPC can signal cancellation.
     cancel: Option<tokio_util::sync::CancellationToken>,
     /// Catalog id picked by `LlmResolver::build` for this session,
     /// cached at construction. Surfaces in `{{runtime}}`'s `Model:`
@@ -477,12 +477,10 @@ impl AgenticLoop {
         }
     }
 
-    /// Set the soft-interrupt cancel token. When set, the loop checks
-    /// `is_cancelled()` at iteration boundaries and exits cleanly via
-    /// `Lifecycle::Interrupted` + `AgenticResult { interrupted: true }`
-    /// when the token is signalled. The in-flight LLM stream chunk or
-    /// tool call always finishes first — this is cooperative
-    /// cancellation, not a hard kill.
+    /// Set the stop token. When it fires the loop exits cleanly via
+    /// `Lifecycle::Interrupted` + `AgenticResult { interrupted: true }`:
+    /// at once if it is waiting for the model, otherwise at the next
+    /// iteration boundary, after the running tool call has returned.
     #[must_use]
     pub fn with_cancel_token(mut self, token: tokio_util::sync::CancellationToken) -> Self {
         self.cancel = Some(token);
@@ -1507,17 +1505,22 @@ impl AgenticLoop {
             // string-parsing.
             let mut stream_attempt: u32 = 0;
             let mut stream = 'stream_retry: loop {
-                match self
-                    .stream_with_eviction(
+                let started = self
+                    .unless_stopped(self.stream_with_eviction(
                         &provider,
                         &model_id,
                         &messages,
                         &tool_defs,
                         &options,
                         context_window,
-                    )
-                    .await
-                {
+                    ))
+                    .await;
+                let Some(started) = started else {
+                    return Ok(self
+                        .interrupted(&run_id, iteration, total_usage, &on_event)
+                        .await);
+                };
+                match started {
                     Ok(s) => break 'stream_retry s,
                     Err(e) => {
                         let classification = self.classify_error(&e);
@@ -1556,7 +1559,15 @@ impl AgenticLoop {
                                 classification,
                                 e
                             );
-                            tokio::time::sleep(delay).await;
+                            if self
+                                .unless_stopped(tokio::time::sleep(delay))
+                                .await
+                                .is_none()
+                            {
+                                return Ok(self
+                                    .interrupted(&run_id, iteration, total_usage, &on_event)
+                                    .await);
+                            }
                             stream_attempt += 1;
                             continue 'stream_retry;
                         }
@@ -1607,7 +1618,12 @@ impl AgenticLoop {
             // (labeled loop retained for the `continue 'inner_stream` below)
             #[allow(clippy::while_let_loop)]
             'inner_stream: loop {
-                match stream.next().await {
+                let Some(next) = self.unless_stopped(stream.next()).await else {
+                    return Ok(self
+                        .interrupted(&run_id, iteration, total_usage, &on_event)
+                        .await);
+                };
+                match next {
                     Some(result) => {
                         stream_event_count += 1;
                         match result {
@@ -1763,7 +1779,15 @@ impl AgenticLoop {
                                         classification,
                                         e
                                     );
-                                    tokio::time::sleep(delay).await;
+                                    if self
+                                        .unless_stopped(tokio::time::sleep(delay))
+                                        .await
+                                        .is_none()
+                                    {
+                                        return Ok(self
+                                            .interrupted(&run_id, iteration, total_usage, &on_event)
+                                            .await);
+                                    }
                                     stream_attempt += 1;
                                     // Re-issue the stream with the same
                                     // `messages` / `options` checkpoint.
@@ -1771,17 +1795,22 @@ impl AgenticLoop {
                                     // `ContextWindowExceeded` for the
                                     // new attempt; transient 5xx simply
                                     // round-trips again.
-                                    match self
-                                        .stream_with_eviction(
+                                    let reissued = self
+                                        .unless_stopped(self.stream_with_eviction(
                                             &provider,
                                             &model_id,
                                             &messages,
                                             &tool_defs,
                                             &options,
                                             context_window,
-                                        )
-                                        .await
-                                    {
+                                        ))
+                                        .await;
+                                    let Some(reissued) = reissued else {
+                                        return Ok(self
+                                            .interrupted(&run_id, iteration, total_usage, &on_event)
+                                            .await);
+                                    };
+                                    match reissued {
                                         Ok(new_stream) => {
                                             stream = new_stream;
                                             continue 'inner_stream;
@@ -2384,6 +2413,54 @@ impl AgenticLoop {
             soft_cancel_pending: self.cancel.as_ref().is_some_and(|t| t.is_cancelled()),
 
             tool_definitions: tool_defs.to_vec(),
+        }
+    }
+
+    /// Wait for `wait`, unless the run is stopped first: `None` then.
+    /// A stop ends a wait for the model at once; a run with no stop
+    /// token just waits.
+    async fn unless_stopped<T>(&self, wait: impl std::future::Future<Output = T>) -> Option<T> {
+        match &self.cancel {
+            Some(cancel) => tokio::select! {
+                biased;
+                () = cancel.cancelled() => None,
+                out = wait => Some(out),
+            },
+            None => Some(wait.await),
+        }
+    }
+
+    /// What a run stopped while it waited for the model ends with: the
+    /// same as a stop seen between steps. Whatever the model had sent of
+    /// the unfinished answer is not kept.
+    async fn interrupted(
+        &self,
+        run_id: &str,
+        iteration: usize,
+        usage: TokenUsage,
+        on_event: &(impl Fn(AgenticEvent) + Send + Sync),
+    ) -> AgenticResult {
+        info!(
+            "AgenticLoop: stopped while waiting for the model at iteration {}",
+            iteration
+        );
+        on_event(AgenticEvent::Lifecycle {
+            run_id: run_id.to_string(),
+            phase: LifecyclePhase::Interrupted,
+            error: Some("cancelled by PrincipalStop".to_string()),
+        });
+        self.fire_stop_hook(
+            run_id,
+            serde_json::json!({ "reason": "interrupted", "iterations": iteration }),
+        )
+        .await;
+        AgenticResult {
+            success: false,
+            final_answer: String::new(),
+            tool_calls: vec![],
+            iterations: iteration,
+            usage,
+            interrupted: true,
         }
     }
 

@@ -22,6 +22,9 @@ pub enum MockResponse {
     Error(String),
     /// Return a stream of events
     Stream(Vec<StreamEvent>),
+    /// Return a stream that sends these events and then says nothing
+    /// more, without ending: a model that is still answering.
+    Silent(Vec<StreamEvent>),
 }
 
 /// Mock adapter for unit testing
@@ -128,6 +131,21 @@ impl MockAdapter {
             },
         ];
         self.queue_stream_response(MockResponse::Stream(stream_events));
+    }
+
+    /// Queue a stream that sends `text` and then stays open, saying
+    /// nothing more: a model in the middle of its answer.
+    pub fn queue_unfinished_text(&self, text: impl Into<String>) {
+        self.queue_stream_response(MockResponse::Silent(vec![
+            StreamEvent::Start {
+                provider: "mock".to_string(),
+                model: self.model.clone(),
+            },
+            StreamEvent::TextDelta {
+                content_index: 0,
+                delta: text.into(),
+            },
+        ]));
     }
 
     /// Queue a tool call response
@@ -277,6 +295,9 @@ impl MockAdapter {
                 Ok(response)
             }
             Some(MockResponse::Error(msg)) => Err(anyhow::anyhow!(msg)),
+            Some(MockResponse::Silent(_)) => {
+                Err(anyhow::anyhow!("a stream that stays open has no chat form"))
+            }
             Some(MockResponse::Stream(events)) => {
                 // Convert stream events to a ChatResponse
                 let text: String = events
@@ -376,6 +397,13 @@ impl MockAdapter {
                     stop_reason: response.stop_reason,
                 });
                 evs
+            }
+            Some(MockResponse::Silent(events)) => {
+                use futures::StreamExt;
+                return Ok(Box::pin(
+                    futures::stream::iter(events.into_iter().map(Ok))
+                        .chain(futures::stream::pending()),
+                ));
             }
             Some(MockResponse::Error(msg)) => {
                 return Err(anyhow::anyhow!(msg));

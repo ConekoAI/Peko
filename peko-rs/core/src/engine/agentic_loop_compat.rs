@@ -2170,6 +2170,86 @@ mod tests {
     // `Interrupted` lifecycle event. The LLM call should NOT be made
     // because the cancel check fires before the LLM iteration.
     // ===================================================================
+    /// A stop that arrives while the model is in the middle of its
+    /// answer ends the run then, not when the answer is complete, and
+    /// nothing of the unfinished answer is kept.
+    #[tokio::test]
+    #[serial_test::serial(core)]
+    async fn a_stop_ends_the_wait_for_the_model() {
+        peko_identity::init_test_env();
+        let tooling = test_tooling().await;
+        let temp_dir = TempDir::new().unwrap();
+        let (provider, mock) = mock_provider();
+        // The model starts answering and then never finishes.
+        mock.queue_unfinished_text("half an ans");
+
+        let config = test_agent_config("stop-mid-answer-agent");
+        let agent = Arc::new(
+            Agent::new_for_test(config, temp_dir.path(), tooling.clone())
+                .await
+                .unwrap(),
+        );
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let loop_ = AgenticLoop::new(
+        agent.clone(),
+        provider.clone(),
+        tooling.clone(),
+        std::sync::Arc::new(
+            crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+            ),
+        ),
+        peko_engine::CompactionConfig::default(),
+    )
+        .await
+        .with_cancel_token(cancel.clone());
+
+        let session = test_session("stop-mid-answer-agent", temp_dir.path()).await;
+        let events: Arc<Mutex<Vec<AgenticEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_clone = events.clone();
+        let stop = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            cancel.cancel();
+        });
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            loop_.run_with_resume(
+                "Will be stopped mid-answer",
+                Vec::new(),
+                move |event| {
+                    events_clone.lock().unwrap().push(event);
+                },
+                &session,
+                None,
+            ),
+        )
+        .await
+        .expect("the stop must end the run while the model is still answering")
+        .expect("a stopped run returns Ok with interrupted=true");
+        stop.await.unwrap();
+
+        assert!(result.interrupted && !result.success, "got {result:?}");
+        assert_eq!(result.final_answer, "");
+        assert!(
+            events.lock().unwrap().iter().any(|e| matches!(
+                e,
+                AgenticEvent::Lifecycle {
+                    phase: LifecyclePhase::Interrupted,
+                    ..
+                }
+            )),
+            "the run says it was interrupted"
+        );
+        let history = session.read().await.load_history().await.unwrap();
+        assert!(
+            !history
+                .iter()
+                .any(|m| matches!(m.role, peko_message::MessageRole::Assistant)),
+            "nothing of the unfinished answer is kept; got {history:?}"
+        );
+    }
+
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_interrupt_pre_cancelled_token_short_circuits() {

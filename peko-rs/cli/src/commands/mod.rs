@@ -104,8 +104,9 @@ pub enum Commands {
 
     /// Stop what a peko is doing in your conversation
     ///
-    /// The peko stops at its next step and the conversation shows
-    /// `⏹ stopped by user`. If it isn't working on anything, this says so
+    /// The peko stops waiting for the model at once (a running tool
+    /// returns first) and the conversation shows `⏹ stopped by user`.
+    /// If it isn't working on anything, this says so
     /// and exits 0. With `--peer <address>` (owner only), such as
     /// `user:hub:<id>`, stop it in someone else's conversation instead.
     Stop(stop::StopArgs),

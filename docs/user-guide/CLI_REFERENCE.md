@@ -412,7 +412,7 @@ Options:
 ```text
 Stop what a peko is doing in your conversation
 
-The peko stops at its next step and the conversation shows `⏹ stopped by user`. If it isn't working on anything, this says so and exits 0. With `--peer <address>` (owner only), such as `user:hub:<id>`, stop it in someone else's conversation instead.
+The peko stops at once if it is waiting for the model (a tool that is running returns first), what it was in the middle of saying is not kept, and the conversation shows `⏹ stopped by user`. If it isn't working on anything, this says so and exits 0. With `--peer <address>` (owner only), such as `user:hub:<id>`, stop it in someone else's conversation instead.
 
 Usage: peko stop [OPTIONS] <PEKO>
 

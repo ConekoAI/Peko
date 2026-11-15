@@ -2119,8 +2119,9 @@ const STOP_NOTE: &str = "The user stopped your previous turn. When you next resp
 
 /// Take what someone wrote after the stop out of the inbox.
 ///
-/// A stopped run ends at its next step, which can be a whole model call
-/// away. A message that arrives in between finds the session busy and
+/// A stopped run does not end the instant Stop is pressed: a running
+/// tool returns first. A message that arrives in between finds the
+/// session busy and
 /// is queued for that run, which never reads it. The caller answers
 /// each of these once the run has ended. The stop note and anything
 /// queued before it stay for the next run to read.
@@ -2534,8 +2535,9 @@ async fn run_principal_send(
         let _ = event_tx.try_send(event);
     };
 
-    // Soft-interrupt plumbing. The cancel token is shared between the
-    // spawned agentic loop (observed at iteration boundaries) and the
+    // Stop plumbing. The cancel token is shared between the spawned
+    // agentic loop (it ends a wait for the model, and is checked at
+    // iteration boundaries) and the
     // in-flight run registry (the `PrincipalStop` IPC handler flips
     // it). The registry is keyed by the peer child session id; the
     // per-session run permit guarantees at most one run per key. The
