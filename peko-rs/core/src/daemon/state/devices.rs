@@ -786,7 +786,7 @@ impl AppState {
         let mut stopped = false;
         if kind == ConversationKind::Dm {
             // The person's own thread with each peko bound here: the same
-            // stop the desktop's button sends.
+            // stop `peko stop` sends.
             for principal in self.human_dm_recipients(&channel).await {
                 let Some(principal) = self.principal_manager.get(principal).await else {
                     continue;

@@ -59,7 +59,7 @@ The phone does not get IPC. Each request is one **device verb**, carried by `tun
 | `post { channel, text, reply_to?, client_msg_id }` | Posts as the local user; in a DM with a peko hosted here, the peko's turn starts as for the owner's post from another computer (ADR-090 D5). The post's `msg_id` is derived from the device, the channel and `client_msg_id`, so a repeat finds the first post and posts nothing, however much later | channel port `post` |
 | `mark_read { channel, msg_id }` | Moves the person's read mark (D5) | new |
 | `approvals` / `approval_decide { peko \| channel, id, approve, always }` | Pending requests of the pekos the person owns, and the decision: here by the peko's name through `decide_request`; on another of their computers by the DM with that peko, through ADR-099 from this computer (one that does not answer in five seconds is listed as unreachable) | `approval_list` / `approval_decide`; `channel_peko_approvals` / `channel_peko_approval_decide` |
-| `stop { channel }` | Stops the run answering in that conversation: in a DM, the person's thread with the peko; in a group, the runs of the pekos they own | `principal_stop` (ADR-048) |
+| `stop { channel }` | Stops the run answering in that conversation: in a DM, the person's thread with the peko; in a group, the runs of the pekos they own. The phone app does not use it: like the desktop, it has no Stop in a conversation, and "stop" is a message the peko reads | `principal_stop` (ADR-048) |
 | `board { channel }` | A group's board, read-only | `peko_channel::board` |
 | `watch` / `unwatch` | Live events (D4). A `watch` repeated within 90 s keeps it open | the channel store's event signal |
 | `unpair` | Removes this device's record on this computer (D2) | new |
@@ -135,7 +135,7 @@ One app for iOS and Android, in a new repository, written with React Native (Exp
 2. **Hub: devices and relay.** The `peko-mobile` OAuth client, device records, `/v1/devices/stream`, the relays with the same-account check, and rate limits.
 3. **Runtime + Hub: live and push.** `watch` / `tunnel_device_event` / `tunnel_device_gone`. The notify rule, HPKE sealing, `tunnel_device_notify`, and silent clears. Hub APNs and FCM senders, and the drop-when-streaming rule. The `approvals`, `approval_decide`, `stop`, and `board` verbs.
 4. **Desktop.** *Add a phone* (QR), the Devices list, and unread counts and notifications read from the runtime instead of `localStorage`.
-5. **Mobile app.** Sign-in, pairing, conversations, chat, board, approvals, stop, the asleep state with waiting posts, and push with decryption. Released through TestFlight and Play internal testing first.
+5. **Mobile app.** Sign-in, pairing, conversations, chat, board, approvals, the asleep state with waiting posts, and push with decryption. Released through TestFlight and Play internal testing first.
 
 Phases 1–3 are tested end to end with the scripted device client before phase 5 starts, so the app is written against a contract that already works.
 
@@ -166,7 +166,7 @@ Not done here, and still open: avatars in `conversations`; the desktop (phase 4)
 
 A scripted phone, written from this document with Node's own crypto and sharing no code with the runtime, was run against a local Hub and three isolated runtimes (two on one account, one on another) with a mock model. Pairing, every verb, live events, the read mark, approvals and push (to a stand-in for Apple's service, the notification opened and its signature checked by the phone) all work together. The run found and fixed:
 
-1. **A turn started by a post from a phone could not be stopped and did not show as working.** `human_dm_post` (also the path for a post from the person's other computer, ADR-090 D5) did not register the turn. It registers now, so `stop`, `peko stop` and the desktop's stop button reach it.
+1. **A turn started by a post from a phone could not be stopped and did not show as working.** `human_dm_post` (also the path for a post from the person's other computer, ADR-090 D5) did not register the turn. It registers now, so the `stop` verb and `peko stop` reach it.
 2. **A read mark that is not a post's id was kept as a mark to apply later.** It is refused (`[bad_request]`).
 3. **An approval request buzzed twice**: once for the request and once for the peko's notice of it in the owner's DM. The notice is not notified.
 
