@@ -4,6 +4,8 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-11-16
+
 ### Added
 
 - **A paired phone sees and sends files (ADR-108 D10).** Two requests
