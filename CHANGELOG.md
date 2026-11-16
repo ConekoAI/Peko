@@ -4,10 +4,13 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-11-16
+
 ### Fixed
 
 - **Stop takes effect at once.** A peko that is waiting for the model
-  stops when you press Stop, not when the model has finished its answer;
+  stops when it is stopped (`peko stop`, or Stop while a new peko is being
+  set up), not when the model has finished its answer;
   what it was in the middle of saying is not kept. A tool that is running
   still returns first.
 - **A message sent right after Stop is answered.** A message sent before
