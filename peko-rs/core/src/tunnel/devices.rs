@@ -485,6 +485,13 @@ impl std::fmt::Debug for DeviceGate {
 }
 
 impl DeviceGate {
+    /// Where files a phone is sending are kept until its post names
+    /// them (`<runtime>/device_uploads/<device>/`, ADR-108 D8).
+    #[must_use]
+    pub fn uploads_dir(&self) -> PathBuf {
+        self.path.with_file_name("device_uploads")
+    }
+
     /// Load the records at `path` (`<runtime>/devices.json`); a missing
     /// file is no devices. An unreadable one is logged and read as none,
     /// so every device must pair again rather than any being believed.

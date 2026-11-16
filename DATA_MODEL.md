@@ -24,6 +24,11 @@ This document defines every on-disk and in-memory data format used by the Peko r
 
 ## Paired phones and the person's read mark (ADR-108)
 
+**`<config>/runtime/device_uploads/<deviceId>/<id>`** — a file a phone is
+sending, piece by piece, until its post names it (ADR-108 D10). The post
+moves it into the channel's file store; one that is never posted is
+removed after an hour, when that phone next starts a file.
+
 **`<config>/runtime/devices.json`** — the phones paired with this runtime,
 mode `0600`. A missing file is no phones; an unreadable one is read as
 none, so every phone must pair again.

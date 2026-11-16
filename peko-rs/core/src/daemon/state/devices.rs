@@ -30,6 +30,13 @@ use crate::tunnel::TunnelMessage;
 const MAX_POST_CHARS: usize = 32_000;
 /// Most posts one `read` returns.
 const MAX_READ: usize = 100;
+/// ADR-108 D8: the most of a file a phone is given at once.
+const FILE_CHUNK_BYTES: usize = 256 * 1024;
+/// The most of a file a phone sends at once: signed and encoded, it
+/// still fits the 256 KB PekoHub lets a phone send.
+const UPLOAD_CHUNK_BYTES: usize = 96 * 1024;
+/// How long a file a phone sent waits for the post that names it.
+const UPLOAD_KEPT: Duration = Duration::from_hours(1);
 /// A notification waits this long; it is not sent if the person has read
 /// the post by then (ADR-108 D6).
 const NOTIFY_HOLD: Duration = if cfg!(test) {
@@ -304,6 +311,8 @@ impl AppState {
             "conversations" => self.verb_conversations().await,
             "read" => self.verb_read(args).await,
             "post" => self.verb_post(device, args).await,
+            "file" => self.verb_file(args).await,
+            "upload" => self.verb_upload(device, args).await,
             "mark_read" => {
                 let channel = self.person_channel(arg_str(args, "channel")?).await?;
                 let moved = self
@@ -496,12 +505,267 @@ impl AppState {
         Ok(json!({ "channel": channel.as_str(), "events": events, "has_more": has_more }))
     }
 
+    /// ADR-108 D8: one piece of a file a post in the person's
+    /// conversation carries. The file is named by its post and its place
+    /// on it, never by a path.
+    async fn verb_file(&self, args: &Value) -> Result<Value, String> {
+        use base64::Engine as _;
+        use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
+        let channel = self.person_channel(arg_str(args, "channel")?).await?;
+        let msg_id = arg_str(args, "msg_id")?;
+        let number = |key: &str| args.get(key).and_then(Value::as_u64).unwrap_or(0);
+        let (index, offset) = (number("index") as usize, number("offset"));
+        let store = self.store();
+        let Some(ChannelEvent::Posted { attachments, .. }) = store
+            .post_by_id(&channel, msg_id)
+            .await
+            .map_err(|e| e.to_string())?
+        else {
+            return Err("[not_found] that post is not in the conversation".into());
+        };
+        let attachment = attachments
+            .get(index)
+            .ok_or("[not_found] that post has no such file")?;
+        let files_dir = store.files_dir(&channel).await.ok();
+        let path = match self.peko_copy(&channel, attachment).await {
+            Some(path) => Some(path),
+            None => crate::principal::attachments::locate(None, files_dir.as_deref(), attachment),
+        }
+        .ok_or("[not_here] that file has not reached this computer yet")?;
+        let mut file = tokio::fs::File::open(&path)
+            .await
+            .map_err(|_| "[not_here] that file is no longer on this computer")?;
+        let size = file.metadata().await.map_err(|e| e.to_string())?.len();
+        if offset > size {
+            return Err("[bad_request] `offset` is past the end of the file".into());
+        }
+        file.seek(std::io::SeekFrom::Start(offset))
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut data = Vec::with_capacity(FILE_CHUNK_BYTES.min((size - offset) as usize));
+        file.take(FILE_CHUNK_BYTES as u64)
+            .read_to_end(&mut data)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(json!({
+            "name": attachment.name,
+            "mime": attachment.mime,
+            "size": size,
+            "offset": offset,
+            "done": offset + data.len() as u64 >= size,
+            "data": base64::engine::general_purpose::STANDARD.encode(&data),
+        }))
+    }
+
+    /// A peko hosted here keeps a copy of the files of its conversations
+    /// in its workspace, both the ones it sent and the ones its owner sent
+    /// it by path (ADR-088 D2): the copy `attachment` names, in the
+    /// workspace of a peko of this conversation, when the path stays
+    /// inside that workspace.
+    async fn peko_copy(
+        &self,
+        channel: &ChannelId,
+        attachment: &peko_protocol::channel::Attachment,
+    ) -> Option<std::path::PathBuf> {
+        if attachment.path.is_empty() {
+            return None;
+        }
+        let members = self
+            .channel_port
+            .list_members(channel)
+            .await
+            .unwrap_or_default();
+        for member in members {
+            let ActorRef::Principal(route) = &member else {
+                continue;
+            };
+            let id = peko_subject::PrincipalId::from_did(route);
+            let Some(principal) = self.principal_manager.get(id).await else {
+                continue;
+            };
+            let Ok(workspace) = tokio::fs::canonicalize(&principal.workspace_path).await else {
+                continue;
+            };
+            let Ok(path) = tokio::fs::canonicalize(crate::principal::attachments::absolute(
+                &principal.workspace_path,
+                attachment,
+            ))
+            .await
+            else {
+                continue;
+            };
+            if path.starts_with(&workspace) && path.is_file() {
+                return Some(path);
+            }
+        }
+        None
+    }
+
+    /// Where `device` keeps the file it is sending as `id`.
+    fn upload_path(&self, device: &DeviceRecord, id: &str) -> Result<std::path::PathBuf, String> {
+        let plain = |s: &str| {
+            (8..=64).contains(&s.len())
+                && s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+        };
+        if !plain(id) || !plain(&device.device_id) {
+            return Err("[bad_request] `id` is 8 to 64 letters, digits, `-` or `_`".into());
+        }
+        Ok(self
+            .devices
+            .gate
+            .uploads_dir()
+            .join(&device.device_id)
+            .join(id))
+    }
+
+    /// ADR-108 D8: one piece of a file the phone is sending. Pieces
+    /// arrive in order; the answer says how much of the file is held, so
+    /// a phone that lost an answer continues from there.
+    async fn verb_upload(&self, device: &DeviceRecord, args: &Value) -> Result<Value, String> {
+        use base64::Engine as _;
+        use tokio::io::AsyncWriteExt as _;
+        let path = self.upload_path(device, arg_str(args, "id")?)?;
+        let offset = args.get("offset").and_then(Value::as_u64).unwrap_or(0);
+        let data = base64::engine::general_purpose::STANDARD
+            .decode(arg_str(args, "data")?)
+            .map_err(|_| "[bad_request] `data` is not base64")?;
+        if data.len() > UPLOAD_CHUNK_BYTES {
+            return Err("[bad_request] a piece is at most 96 KiB".into());
+        }
+        let dir = path.parent().ok_or("no upload folder")?.to_path_buf();
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .map_err(|e| format!("cannot keep the file: {e}"))?;
+        let held = tokio::fs::metadata(&path).await.map_or(0, |m| m.len());
+        if offset == 0 && held == 0 {
+            // A new file: what this phone left unfinished long ago goes
+            // first, and it holds only so much at once.
+            let (mut files, mut bytes) = (0usize, 0u64);
+            let mut entries = tokio::fs::read_dir(&dir).await.map_err(|e| e.to_string())?;
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let Ok(meta) = entry.metadata().await else {
+                    continue;
+                };
+                let stale = meta
+                    .modified()
+                    .ok()
+                    .and_then(|at| at.elapsed().ok())
+                    .is_some_and(|age| age > UPLOAD_KEPT);
+                if stale {
+                    let _ = tokio::fs::remove_file(entry.path()).await;
+                } else {
+                    files += 1;
+                    bytes += meta.len();
+                }
+            }
+            let limits = crate::principal::attachments::Limits::REMOTE;
+            if files >= crate::principal::attachments::MAX_FILES
+                || bytes >= limits.max_total.unwrap_or(u64::MAX)
+            {
+                return Err("[too_many] post or drop the files already sent first".into());
+            }
+        }
+        if offset < held {
+            // A piece sent again after its answer was lost.
+            return Ok(json!({ "received": held }));
+        }
+        if offset > held {
+            return Err(format!(
+                "[out_of_order] {held} bytes are held; send from there"
+            ));
+        }
+        if held + data.len() as u64 > crate::principal::attachments::REMOTE_MAX_FILE_BYTES {
+            let _ = tokio::fs::remove_file(&path).await;
+            return Err("[too_large] a file is at most 10 MB".into());
+        }
+        let mut file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .await
+            .map_err(|e| format!("cannot keep the file: {e}"))?;
+        file.write_all(&data).await.map_err(|e| e.to_string())?;
+        file.flush().await.map_err(|e| e.to_string())?;
+        Ok(json!({ "received": held + data.len() as u64 }))
+    }
+
+    /// The files a post names, moved from what the phone sent into the
+    /// conversation's file store. Each is `{ upload, name }`.
+    async fn uploaded_files(
+        &self,
+        device: &DeviceRecord,
+        channel: &ChannelId,
+        named: &[Value],
+    ) -> Result<Vec<peko_protocol::channel::Attachment>, String> {
+        use crate::principal::attachments;
+        if named.len() > attachments::MAX_FILES {
+            return Err(format!(
+                "[bad_request] a post carries at most {} files",
+                attachments::MAX_FILES
+            ));
+        }
+        // Each file gets a folder of its own, so it can carry its name.
+        let mut paths = Vec::with_capacity(named.len());
+        for file in named {
+            let staged = self.upload_path(device, arg_str(file, "upload")?)?;
+            // The name is a name, whatever folders the phone wrote before it.
+            let name = arg_str(file, "name")?;
+            let name = attachments::safe_file_name(name.rsplit(['/', '\\']).next().unwrap_or(name));
+            let folder = staged.with_extension("d");
+            let named_path = folder.join(&name);
+            if !tokio::fs::try_exists(&named_path).await.unwrap_or(false) {
+                if !tokio::fs::try_exists(&staged).await.unwrap_or(false) {
+                    return Err(
+                        "[not_found] that file was not sent, or was sent too long ago".into(),
+                    );
+                }
+                tokio::fs::create_dir_all(&folder)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                tokio::fs::rename(&staged, &named_path)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+            paths.push(named_path.display().to_string());
+        }
+        let files_dir = self
+            .store()
+            .files_dir(channel)
+            .await
+            .map_err(|e| e.to_string())?;
+        // The bytes crossed PekoHub to get here: its limits apply.
+        attachments::ingest_into_channel(&files_dir, &paths, attachments::Limits::REMOTE).await
+    }
+
+    /// Forget what the phone sent for a post that is now made.
+    async fn drop_uploads(&self, device: &DeviceRecord, named: &[Value]) {
+        for file in named {
+            let Some(Ok(staged)) = file
+                .get("upload")
+                .and_then(Value::as_str)
+                .map(|id| self.upload_path(device, id))
+            else {
+                continue;
+            };
+            let _ = tokio::fs::remove_file(&staged).await;
+            let _ = tokio::fs::remove_dir_all(staged.with_extension("d")).await;
+        }
+    }
+
     async fn verb_post(&self, device: &DeviceRecord, args: &Value) -> Result<Value, String> {
         use sha2::Digest as _;
         let channel = self.person_channel(arg_str(args, "channel")?).await?;
-        let text = arg_str(args, "text")?;
-        if text.trim().is_empty() || text.chars().count() > MAX_POST_CHARS {
-            return Err("[bad_request] a post needs text, at most 32,000 characters".into());
+        let named = args
+            .get("attachments")
+            .and_then(Value::as_array)
+            .map_or(&[][..], Vec::as_slice);
+        // A post with files may have no words.
+        let text = args.get("text").and_then(Value::as_str).unwrap_or("");
+        if (text.trim().is_empty() && named.is_empty()) || text.chars().count() > MAX_POST_CHARS {
+            return Err(
+                "[bad_request] a post needs text or a file, and at most 32,000 characters".into(),
+            );
         }
         // A repeated `client_msg_id` names the same post: the id is
         // derived from it, and a post already in the log is not made
@@ -523,8 +787,10 @@ impl AppState {
             .map_err(|e| e.to_string())?
             .is_some()
         {
+            self.drop_uploads(device, named).await;
             return Ok(json!({ "channel": channel.as_str(), "msg_id": msg_id, "repeated": true }));
         }
+        let files = self.uploaded_files(device, &channel, named).await?;
         let mut msg = match args.get("reply_to").and_then(Value::as_str) {
             Some(parent) => {
                 let line = store
@@ -537,18 +803,20 @@ impl AppState {
             None => peko_channel::PostMsg::root(text),
         };
         msg.msg_id = Some(msg_id.clone());
+        msg.attachments = files.clone();
         let me = me();
         self.channel_port
             .post(&channel, &me, msg)
             .await
             .map_err(|e| format!("could not post: {e}"))?;
+        self.drop_uploads(device, named).await;
         // What the person writes is read by them.
         let _ = store.mark_person_read(&channel, &msg_id).await;
         // A DM with a peko hosted here: its turn starts as for any post
         // of the person's that arrives over the tunnel (ADR-090 D5).
         if args.get("reply_to").is_none() {
             use crate::tunnel::TunnelHost as _;
-            self.human_dm_post(channel.clone(), me, text.to_string(), Vec::new(), None)
+            self.human_dm_post(channel.clone(), me, text.to_string(), files, None)
                 .await;
         }
         Ok(json!({ "channel": channel.as_str(), "msg_id": msg_id, "repeated": false }))
@@ -1485,6 +1753,168 @@ mod tests {
             .await
             .unwrap();
         assert!(board["items"].as_array().unwrap().is_empty());
+    }
+
+    /// ADR-108 D8: a phone sends a file in pieces, names it on a post,
+    /// and reads it back in pieces; a file is reached only through a post
+    /// in one of the person's conversations.
+    #[tokio::test]
+    async fn a_phone_sends_a_file_and_reads_it_back() {
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let mut rig = Rig::new().await;
+        let (group, _peko) = rig.group().await;
+        let bytes: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+
+        // Pieces arrive in order; a repeated piece changes nothing.
+        let mut sent = 0usize;
+        for piece in bytes.chunks(UPLOAD_CHUNK_BYTES) {
+            let answer = rig
+                .ask(
+                    "upload",
+                    json!({ "id": "upload-0001", "offset": sent, "data": b64.encode(piece) }),
+                )
+                .await
+                .unwrap();
+            sent += piece.len();
+            assert_eq!(answer["received"], sent);
+        }
+        let again = rig
+            .ask(
+                "upload",
+                json!({ "id": "upload-0001", "offset": 0, "data": b64.encode(&bytes[..10]) }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(again["received"], bytes.len());
+        let gap = rig
+            .ask(
+                "upload",
+                json!({ "id": "upload-0001", "offset": bytes.len() + 5, "data": b64.encode(b"x") }),
+            )
+            .await
+            .unwrap_err();
+        assert!(gap.starts_with("[out_of_order]"), "{gap}");
+        let big = rig
+            .ask(
+                "upload",
+                json!({ "id": "upload-0002", "offset": 0, "data": b64.encode(vec![0u8; UPLOAD_CHUNK_BYTES + 1]) }),
+            )
+            .await
+            .unwrap_err();
+        assert!(big.starts_with("[bad_request]"), "{big}");
+        let odd = rig
+            .ask(
+                "upload",
+                json!({ "id": "../../etc", "offset": 0, "data": b64.encode(b"x") }),
+            )
+            .await
+            .unwrap_err();
+        assert!(odd.starts_with("[bad_request]"), "{odd}");
+
+        // A post names what was sent; a file that was not sent is refused
+        // and nothing is posted.
+        let missing = rig
+            .ask(
+                "post",
+                json!({ "channel": group.as_str(), "text": "", "client_msg_id": "c0",
+                        "attachments": [{ "upload": "upload-9999", "name": "a.png" }] }),
+            )
+            .await
+            .unwrap_err();
+        assert!(missing.starts_with("[not_found]"), "{missing}");
+        let posted = rig
+            .ask(
+                "post",
+                json!({ "channel": group.as_str(), "text": "", "client_msg_id": "c1",
+                        "attachments": [{ "upload": "upload-0001", "name": "../my photo.png" }] }),
+            )
+            .await
+            .unwrap();
+        let msg_id = posted["msg_id"].as_str().unwrap().to_string();
+        let uploads = rig
+            .app
+            .devices
+            .gate
+            .uploads_dir()
+            .join(&rig.phone.device_id);
+        assert!(
+            std::fs::read_dir(&uploads).unwrap().next().is_none(),
+            "what the phone sent is not kept once posted"
+        );
+
+        let page = rig
+            .ask("read", json!({ "channel": group.as_str() }))
+            .await
+            .unwrap();
+        let event = page["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["msg_id"] == msg_id.as_str())
+            .unwrap();
+        let file = &event["attachments"][0];
+        assert_eq!(
+            (file["name"].as_str(), file["size"].as_u64()),
+            (Some("my_photo.png"), Some(bytes.len() as u64))
+        );
+
+        // Read back in pieces.
+        let mut got = Vec::new();
+        loop {
+            let piece = rig
+                .ask(
+                    "file",
+                    json!({ "channel": group.as_str(), "msg_id": msg_id, "index": 0, "offset": got.len() }),
+                )
+                .await
+                .unwrap();
+            assert_eq!(piece["size"], bytes.len());
+            got.extend(b64.decode(piece["data"].as_str().unwrap()).unwrap());
+            if piece["done"] == true {
+                break;
+            }
+        }
+        assert_eq!(got, bytes);
+        assert!(
+            got.len() > FILE_CHUNK_BYTES,
+            "the file took more than one piece"
+        );
+
+        for (args, tag) in [
+            (
+                json!({ "channel": group.as_str(), "msg_id": msg_id, "index": 1 }),
+                "[not_found]",
+            ),
+            (
+                json!({ "channel": group.as_str(), "msg_id": "msg_none", "index": 0 }),
+                "[not_found]",
+            ),
+            (
+                json!({ "channel": group.as_str(), "msg_id": msg_id, "index": 0, "offset": bytes.len() + 1 }),
+                "[bad_request]",
+            ),
+        ] {
+            let refused = rig.ask("file", args).await.unwrap_err();
+            assert!(refused.starts_with(tag), "{refused}");
+        }
+
+        // A conversation the person is not in has no files for the phone.
+        let peko = PrincipalId("prin_mochi".into());
+        let private = rig
+            .app
+            .store()
+            .create(&peko, CreateOpts::runtime("not yours"))
+            .await
+            .unwrap();
+        let refused = rig
+            .ask(
+                "file",
+                json!({ "channel": private.as_str(), "msg_id": msg_id, "index": 0 }),
+            )
+            .await
+            .unwrap_err();
+        assert!(refused.starts_with("[not_found]"), "{refused}");
     }
 
     /// The list is the whole of what a phone may ask, a conversation the

@@ -453,7 +453,7 @@ pub(crate) async fn received_for_turn(
 }
 
 /// Keep letters, digits, `.`, `-`, and `_`; everything else becomes `_`.
-fn safe_file_name(name: &str) -> String {
+pub(crate) fn safe_file_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
         .map(|c| {
