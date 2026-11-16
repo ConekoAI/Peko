@@ -56,15 +56,17 @@ The phone does not get IPC. Each request is one **device verb**, carried by `tun
 |---|---|---|
 | `conversations` | The local user's DMs and groups: name, the other member of a DM, last post, unread count and read mark (D5), and whether a run is working in it; and the group invitations waiting | channel store listing, `channel_invitations` |
 | `read { channel, before?, after?, limit }` | One page of posts by `msg_id` cursor, oldest first, at most 100 | `channel_peek` / `history_page` |
-| `post { channel, text, reply_to?, client_msg_id }` | Posts as the local user; in a DM with a peko hosted here, the peko's turn starts as for the owner's post from another computer (ADR-090 D5). The post's `msg_id` is derived from the device, the channel and `client_msg_id`, so a repeat finds the first post and posts nothing, however much later | channel port `post` |
+| `post { channel, text, reply_to?, client_msg_id, attachments? }` | Posts as the local user, with the files it names (D10); in a DM with a peko hosted here, the peko's turn starts as for the owner's post from another computer (ADR-090 D5). The post's `msg_id` is derived from the device, the channel and `client_msg_id`, so a repeat finds the first post and posts nothing, however much later | channel port `post` |
 | `mark_read { channel, msg_id }` | Moves the person's read mark (D5) | new |
 | `approvals` / `approval_decide { peko \| channel, id, approve, always }` | Pending requests of the pekos the person owns, and the decision: here by the peko's name through `decide_request`; on another of their computers by the DM with that peko, through ADR-099 from this computer (one that does not answer in five seconds is listed as unreachable) | `approval_list` / `approval_decide`; `channel_peko_approvals` / `channel_peko_approval_decide` |
 | `stop { channel }` | Stops the run answering in that conversation: in a DM, the person's thread with the peko; in a group, the runs of the pekos they own. The phone app does not use it: like the desktop, it has no Stop in a conversation, and "stop" is a message the peko reads | `principal_stop` (ADR-048) |
 | `board { channel }` | A group's board, read-only | `peko_channel::board` |
+| `file { channel, msg_id, index, offset }` | One piece, at most 256 KiB, of a file a post in that conversation carries (D10) | the channel's file store, or the posting peko's workspace copy |
+| `upload { id, offset, data }` | One piece, at most 96 KiB, of a file the phone is sending, kept until a `post` names it (D10) | new |
 | `watch` / `unwatch` | Live events (D4). A `watch` repeated within 90 s keeps it open | the channel store's event signal |
 | `unpair` | Removes this device's record on this computer (D2) | new |
 
-Everything else is out of reach from the phone: creating, removing, exporting, or importing pekos; settings, models, credentials, quotas, and the vault; registering the runtime; accepting setup steps (ADR-104); and anything that runs `Bash` or reads files. A verb joins the list only through an ADR amendment. Every decision a phone makes is audited with `via_device`, like ADR-099's `via_runtime`.
+Everything else is out of reach from the phone: creating, removing, exporting, or importing pekos; settings, models, credentials, quotas, and the vault; registering the runtime; accepting setup steps (ADR-104); and anything that runs `Bash` or reads files by path (`file` reaches only what a post in the person's conversation carries, D10). A verb joins the list only through an ADR amendment. Every decision a phone makes is audited with `via_device`, like ADR-099's `via_runtime`.
 
 ### D4 — Live while open: a resumable stream through the Hub
 
@@ -110,6 +112,15 @@ The Hub stores, per device: `deviceId`, account, the runtimes it is paired with 
 
 One app for iOS and Android, in a new repository, written with React Native (Expo) in TypeScript. It shares the wire types with the desktop through a package generated from the runtime's contract samples (`tunnel/fixtures/tunnel_messages.json`), as the desktop's `check:ipc` already checks. Push decryption needs native code (an iOS notification service extension, an Android messaging service), which Expo supports through config plugins. The app shows the same conversation, board, and approval views as the desktop, with nothing about the runtime's internals.
 
+### D10 — Files: read in pieces, sent in pieces (amended 2026-11-16)
+
+A phone sees and sends files through the same signed requests as everything else. Nothing new crosses the Hub's interface: a piece of a file is inside a signed request or answer, sized to the limits the Hub already has.
+
+- **Reading.** A post's `attachments` (name, MIME type, size, and the digest when the channel's file store holds it) arrive with `read` and with live events, as they do for the desktop. `file { channel, msg_id, index, offset }` answers `{ name, mime, size, offset, data, done }` with at most **256 KiB** of the file, base64. The file is named by its post and its place on that post, never by a path: the runtime finds the post in a conversation the person is in (`[not_found]` otherwise, as for every verb), then the copy in the channel's file store (ADR-094 D1), or, in a conversation with a peko hosted here, the copy in that peko's workspace (ADR-088 D2: what the peko sent, and what its owner sent it by path), which must resolve inside the workspace. A file that has not reached this computer answers `[not_here]`.
+- **Sending.** `upload { id, offset, data }` appends at most **96 KiB** (so that the signed, encoded request stays under the 256 KB the Hub lets a phone send) to a file the phone names with an id of its own, and answers `{ received }`: how many bytes are held. A piece sent again answers the same without writing; a piece past the end is refused with the number held (`[out_of_order]`), so a phone that lost an answer continues from there. Then `post` names what was sent: `attachments: [{ upload, name }]`. The runtime moves each file into the channel's file store under its digest and posts as the local user, exactly as the desktop's `channel_post` does with paths (ADR-094); a post with a file needs no text. A file a post names that was not sent is `[not_found]`, and nothing is posted.
+- **Limits.** ADR-094's, since the bytes cross PekoHub: 8 files, 10 MB a file, 25 MB a message, for sending; reading has the same 10 MB only because nothing larger crosses runtimes, and a local file up to ADR-088's 20 MB is read the same way. What a phone sent and did not post is kept under `<config>/runtime/device_uploads/<device>/` for an hour; a phone holds at most 8 such files, 25 MB.
+- **What the Hub sees.** What it sees of messages: the device stream is signed, not encrypted (§6.5). No Hub change is needed: 240 requests a minute carry about 22 MB a minute up, and answers are not capped below the tunnel's own frame limit.
+
 ## 3. Alternatives considered
 
 - **Extend the public chat proxy** (ADR-091 D6) with a stream, history, and push. It serves one peko at a time from the peko's host, so groups, people DMs, boards, approvals, and stop would each need a proxy of their own, and a person's conversations would be scattered across hosts. The person's own computer already has all of them (F2).
@@ -142,7 +153,7 @@ Phases 1–3 are tested end to end with the scripted device client before phase 
 ## 6. Open
 
 1. **Key storage.** ed25519 in the software keystore (Keychain, Android Keystore-wrapped) matches the runtime's keys. P-256 in the Secure Enclave or StrongBox is hardware-bound but adds a second signature scheme to the runtime.
-2. **Attachments.** Viewing them through the paired computer (ADR-094's chunked pull), and sending photos from the phone. Left for a later amendment.
+2. ~~**Attachments.**~~ Decided 2026-11-16: D10.
 3. **Owner briefs in groups** (ADR-100 `as_owner`) and **setup acceptance** (ADR-104). Should the phone approve them like approvals, or leave them to the computer?
 4. **People with no computer.** A person who only talks to others' pekos and people from a phone has no runtime to act through. The proxy stays for them, unfinished (F3).
 5. **Encrypting the device stream end to end**, so the Hub no longer sees content in transit. This is the same open question as for runtime-to-runtime traffic (ADR-091 D7).

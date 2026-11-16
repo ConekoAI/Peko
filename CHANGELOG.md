@@ -4,6 +4,17 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Added
+
+- **A paired phone sees and sends files (ADR-108 D10).** Two requests
+  join the list a phone may make: `file` reads a file a post carries, a
+  piece at a time, and `upload` sends one a piece at a time; `post` then
+  names what was sent (`attachments`). A file is reached only through a
+  post in one of your conversations, never by a path. Limits are those of
+  files that cross computers: 10 MB a file, 8 files and 25 MB a message.
+  What a phone sent and did not post is kept for an hour in
+  `runtime/device_uploads/`.
+
 ## [0.1.5] - 2026-11-16
 
 ### Fixed

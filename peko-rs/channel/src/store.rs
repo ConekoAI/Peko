@@ -3405,6 +3405,21 @@ impl ChannelStore {
     /// `peko_protocol::channel::ChannelEvent` schema doesn't carry it
     /// (and adding the field would break the wire protocol). Source
     /// tracking is audit-only.
+    /// `channel`'s post `msg_id`, if this copy has it.
+    pub async fn post_by_id(
+        &self,
+        channel: &ChannelId,
+        msg_id: &str,
+    ) -> Result<Option<ChannelEvent>> {
+        let tier = self.resolve_tier(channel).await?;
+        Ok(self
+            .read_events(tier, channel, &Checkpoint::zero())
+            .await?
+            .into_iter()
+            .map(|(_, held)| held)
+            .find(|held| posted_msg_id(held) == Some(msg_id)))
+    }
+
     /// The line holding `channel`'s post `msg_id`, if this copy has it.
     pub async fn post_line(&self, channel: &ChannelId, msg_id: &str) -> Result<Option<TaskId>> {
         let tier = self.resolve_tier(channel).await?;
