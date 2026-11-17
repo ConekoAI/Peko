@@ -4,6 +4,18 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Security
+
+- **PekoHub can no longer get this computer's signature on a message it
+  wrote.** When connecting, the runtime signs a challenge from PekoHub
+  with the same key that signs every message it sends to other
+  computers. It signed any challenge, so a PekoHub could send a message
+  dressed as one and get back a valid signature for it: a post from you,
+  an approval decision, or something shown on your phone. The runtime now
+  signs only a challenge of the shape PekoHub issues (32 random bytes,
+  base64url) and refuses the connection otherwise. Nothing changes on the
+  wire.
+
 ## [0.1.6] - 2026-11-16
 
 ### Added

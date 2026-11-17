@@ -52,6 +52,21 @@ pub const TUNNEL_OUTBOUND_BUFFER_SIZE: usize = 1024;
 /// Timeout = (max_missed + 1) * heartbeat_interval.
 pub const DEFAULT_MAX_MISSED_HEARTBEATS: u32 = 3;
 
+/// Length of a Hub challenge nonce: 32 random bytes in base64url without
+/// padding (PekoHub `CHALLENGE_NONCE_BYTES`).
+const CHALLENGE_NONCE_CHARS: usize = 43;
+
+/// Whether `nonce` has the shape of a Hub challenge: exactly
+/// [`CHALLENGE_NONCE_CHARS`] base64url characters. The alphabet has no
+/// `.`, so no JWS signing input (nor any other pre-image this runtime's
+/// key signs) passes.
+fn is_hub_challenge(nonce: &str) -> bool {
+    nonce.len() == CHALLENGE_NONCE_CHARS
+        && nonce
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
 /// Handle to an active tunnel connection, used to send responses back to PekoHub.
 #[derive(Clone, Debug)]
 pub struct TunnelHandle {
@@ -755,7 +770,19 @@ impl TunnelClient {
     /// signature. The nonce is signed as its UTF-8 byte string,
     /// matching how the server verifies it (text-mode
     /// `verifyDidKeySignature(did, nonce, signature)`).
+    ///
+    /// Only a nonce of the Hub's shape is signed ([`is_hub_challenge`]).
+    /// The runtime key also signs every envelope as a compact JWS, whose
+    /// signing input is `b64u(header).b64u(payload)`; a "challenge" of
+    /// that shape would come back as a valid envelope signature, letting
+    /// a Hub forge anything this runtime signs.
     fn sign_challenge(&self, nonce: &str) -> Result<String, TunnelError> {
+        if !is_hub_challenge(nonce) {
+            return Err(TunnelError::AuthFailed(
+                "PekoHub sent a challenge that is not a 32-byte base64url nonce; refusing to sign it"
+                    .to_string(),
+            ));
+        }
         let signature = self.signing_key.sign(nonce.as_bytes());
         Ok(BASE64.encode(signature.to_bytes()))
     }
@@ -981,6 +1008,66 @@ mod tests {
             "expected at least one Disconnected{{attempts:1,..}} in {:?}",
             updates
         );
+    }
+
+    fn challenge_client() -> TunnelClient {
+        let cred = PekoHubCredential {
+            url: "wss://example.com/v1/tunnel".to_string(),
+            runtime_id: "did:key:z6MkTest".to_string(),
+            tls: None,
+        };
+        TunnelClient::new(cred, test_key())
+    }
+
+    #[test]
+    fn signs_a_hub_shaped_challenge() {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        let nonce = URL_SAFE_NO_PAD.encode([9u8; 32]);
+        assert_eq!(nonce.len(), CHALLENGE_NONCE_CHARS);
+        let signature = challenge_client().sign_challenge(&nonce).unwrap();
+        let bytes = BASE64.decode(signature).unwrap();
+        let signature = ed25519_dalek::Signature::from_slice(&bytes).unwrap();
+        test_key()
+            .verifying_key()
+            .verify_strict(nonce.as_bytes(), &signature)
+            .unwrap();
+    }
+
+    /// A Hub must not get an envelope signature by sending a JWS signing
+    /// input as its challenge (the runtime key signs both).
+    #[test]
+    fn refuses_a_challenge_shaped_like_a_jws_signing_input() {
+        use super::super::tunnel_channel_signature::{jws_sign, jws_verify};
+        let forged = br#"{"v":"peko-channel-event/2","request_id":"forged"}"#;
+        let jws = jws_sign(&test_key(), forged);
+        let signing_input = jws.rsplit_once('.').unwrap().0;
+
+        // What a raw signature of that input would have been: a valid JWS.
+        let raw = test_key().sign(signing_input.as_bytes());
+        let compact = format!(
+            "{signing_input}.{}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw.to_bytes())
+        );
+        assert!(jws_verify(&test_key().verifying_key(), &compact).is_ok());
+
+        let refused = challenge_client().sign_challenge(signing_input);
+        assert!(matches!(refused, Err(TunnelError::AuthFailed(_))));
+    }
+
+    #[test]
+    fn refuses_challenges_of_another_length_or_alphabet() {
+        let client = challenge_client();
+        for nonce in [
+            String::new(),
+            "server-nonce".to_string(),
+            "A".repeat(CHALLENGE_NONCE_CHARS - 1),
+            "A".repeat(CHALLENGE_NONCE_CHARS + 1),
+            format!("{}=", "A".repeat(CHALLENGE_NONCE_CHARS - 1)),
+            format!("{}.", "A".repeat(CHALLENGE_NONCE_CHARS - 1)),
+            format!("{}+", "A".repeat(CHALLENGE_NONCE_CHARS - 1)),
+        ] {
+            assert!(client.sign_challenge(&nonce).is_err(), "signed {nonce:?}");
+        }
     }
 
     /// Issue #8: `new_with` honors a small cap so an integration test
