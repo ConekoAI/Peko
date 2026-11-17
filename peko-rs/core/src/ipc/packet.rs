@@ -1173,6 +1173,23 @@ pub enum RequestPacket {
     #[serde(rename = "device_remove")]
     DeviceRemove { request_id: u64, device_id: String },
 
+    /// ADR-109 D1: the owner's computers this one knows, and this
+    /// computer's own id. Local callers only. Answered with
+    /// `ComputerListResult`.
+    #[serde(rename = "computer_list")]
+    ComputerList { request_id: u64 },
+
+    /// ADR-109 D3: approve or deny one of the owner's computers, by its
+    /// approval-request id (`apr_computer…`) or runtime id. Deciding again
+    /// changes the decision. Local callers only. Answered with
+    /// `ApprovalDecided`.
+    #[serde(rename = "computer_decide")]
+    ComputerDecide {
+        request_id: u64,
+        id: String,
+        approve: bool,
+    },
+
     /// ADR-108 D5: the person has seen `channel` up to a post. Name it by
     /// `msg_id`, or give `at` (RFC 3339) for the newest post at or before
     /// that time, which is what a client that shows a thread by time
@@ -1301,6 +1318,8 @@ impl RequestPacket {
             | Self::DevicePairStart { request_id }
             | Self::DeviceList { request_id }
             | Self::DeviceRemove { request_id, .. }
+            | Self::ComputerList { request_id }
+            | Self::ComputerDecide { request_id, .. }
             | Self::ChannelMarkRead { request_id, .. }
             | Self::ChannelReadState { request_id } => *request_id,
         }
@@ -1562,6 +1581,25 @@ pub struct PersonDmSummary {
     /// No runtime of theirs is known yet: they have not accepted, so
     /// nothing written here has reached them.
     pub waiting: bool,
+}
+
+/// One of the owner's computers, as `computer_list` reports it (ADR-109).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComputerInfo {
+    /// Its runtime id (`did:key:…`).
+    pub runtime: String,
+    /// The approval-request id it is decided by (`apr_computer…`).
+    pub id: String,
+    /// `approved`, `pending`, or `denied`.
+    pub status: String,
+    /// RFC 3339.
+    pub first_seen: String,
+    /// RFC 3339.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_at: Option<String>,
+    /// `local`, a runtime id, `device:<id>`, or `upgrade`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
 }
 
 /// A phone paired with this runtime, as `device_list` reports it
@@ -1979,6 +2017,17 @@ pub enum ResponsePacket {
     DeviceListResult {
         request_id: u64,
         devices: Vec<DeviceInfo>,
+    },
+
+    /// Response to `ComputerList` (ADR-109): `account` is this computer's
+    /// Hub account (absent when not registered), `runtime` its own id.
+    #[serde(rename = "computer_list_result")]
+    ComputerListResult {
+        request_id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+        runtime: String,
+        computers: Vec<ComputerInfo>,
     },
 
     /// Response to `ChannelMarkRead` (ADR-108 D5): whether the mark
@@ -3372,6 +3421,7 @@ impl ResponsePacket {
             | Self::ChannelUndeliveredResult { request_id, .. }
             | Self::DevicePairStarted { request_id, .. }
             | Self::DeviceListResult { request_id, .. }
+            | Self::ComputerListResult { request_id, .. }
             | Self::ChannelReadMarked { request_id, .. }
             | Self::ChannelReadStateResult { request_id, .. } => *request_id,
         }
@@ -3480,6 +3530,7 @@ impl ResponsePacket {
             Self::ChannelUndeliveredResult { .. } => "ChannelUndeliveredResult",
             Self::DevicePairStarted { .. } => "DevicePairStarted",
             Self::DeviceListResult { .. } => "DeviceListResult",
+            Self::ComputerListResult { .. } => "ComputerListResult",
             Self::ChannelReadMarked { .. } => "ChannelReadMarked",
             Self::ChannelReadStateResult { .. } => "ChannelReadStateResult",
         }

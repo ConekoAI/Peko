@@ -15,6 +15,29 @@ All notable changes to Peko.
   signs only a challenge of the shape PekoHub issues (32 random bytes,
   base64url) and refuses the connection otherwise. Nothing changes on the
   wire.
+- **Another computer uses your pekos as you only once you approve it
+  (ADR-109).** A PekoHub sign-in was enough to register a computer to your
+  account, and your pekos on your other computers then treated it as you
+  (Bash included), so a stolen sign-in, a leaked API key, or PekoHub
+  itself could run commands on your computers. Now a computer that speaks
+  for your account is held until you approve it on a computer you already
+  use: its first message files an approval request (kind `computer`) on
+  each of your pekos there, decided like any other — in Peko Desktop,
+  with `peko approve`, from an approved computer, or from your paired
+  phone — once, never always. What it sent while waiting arrives as soon
+  as you approve. Computers that already talk to each other are approved
+  on upgrade. `peko device` now lists your computers next to your phones,
+  and `peko device approve | deny | remove` decide them; `peko device
+  list --json` is now `{ phones, computers, this_computer }`. New IPC:
+  `computer_list`, `computer_decide`. On disk: `runtime/own_computers.json`.
+- **An owner change from PekoHub waits for the owner.** A transfer
+  accepted on PekoHub, or an announce it refused, rewrote a peko's owner
+  on this computer without asking. It now files an approval request (kind
+  `owner_change`); until it is approved the peko keeps its owner and stays
+  off PekoHub. A transfer started on this computer applies as before.
+- **PekoHub's proxy no longer acts as you.** A request PekoHub relays for
+  a client without a runtime is refused when it names this computer's own
+  account: PekoHub mints those tokens itself.
 - **PekoHub is reached over HTTPS.** Every message this computer sends
   other computers passes through PekoHub, so `peko runtime register` now
   refuses an `http://` hub, and the tunnel refuses `ws://`, unless the hub

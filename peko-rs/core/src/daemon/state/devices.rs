@@ -926,7 +926,13 @@ impl AppState {
     async fn local_approvals(&self) -> Vec<Value> {
         let mut out = Vec::new();
         for (name, principal) in self.owned_pekos().await {
-            for record in crate::principal::policy_gate::pending_requests(&principal) {
+            for record in crate::principal::policy_gate::pending_requests_for_owner(
+                &self.principal_manager,
+                &principal,
+                None,
+            )
+            .await
+            {
                 // Who asked, by the name this computer knows them by.
                 let actor_name = match &record.call.stamp.name {
                     Some(name) => Some(name.clone()),
@@ -1420,6 +1426,50 @@ impl crate::ipc::handlers::device::DeviceHost for AppState {
 
     async fn remove_device(&self, device_id: &str) -> Result<bool, String> {
         self.device_remove(device_id, "owner").await
+    }
+
+    async fn computers(
+        &self,
+    ) -> (
+        Option<String>,
+        String,
+        Vec<crate::ipc::packet::ComputerInfo>,
+    ) {
+        let runtime = self.runtime_identity.runtime_did.clone();
+        let Some(account) = self.principal_manager.local_account().await else {
+            return (None, runtime, Vec::new());
+        };
+        let computers = self
+            .principal_manager
+            .own_computers()
+            .list(&account)
+            .into_iter()
+            .map(|c| crate::ipc::packet::ComputerInfo {
+                id: c.request_id(),
+                status: match c.status {
+                    crate::security::computers::ComputerStatus::Approved => "approved",
+                    crate::security::computers::ComputerStatus::Pending => "pending",
+                    crate::security::computers::ComputerStatus::Denied => "denied",
+                }
+                .to_string(),
+                first_seen: c.first_seen.to_rfc3339(),
+                decided_at: c.decided_at.map(|t| t.to_rfc3339()),
+                via: c.via,
+                runtime: c.runtime,
+            })
+            .collect();
+        (Some(account), runtime, computers)
+    }
+
+    async fn decide_computer(&self, id: &str, approve: bool) -> Result<String, String> {
+        crate::principal::policy_gate::decide_computer(
+            &self.principal_manager,
+            id,
+            approve,
+            "local",
+        )
+        .await
+        .map_err(|e| format!("[bad_request] {e}"))
     }
 
     async fn mark_read(
@@ -2144,9 +2194,23 @@ mod tests {
         rig.app.on_device_message(mark(ACCOUNT, &forger)).await;
         assert_eq!(unread().await, 1);
 
-        // Through the dispatcher, as PekoHub delivers it.
+        // Through the dispatcher, as PekoHub delivers it: held until the
+        // person approves that computer (ADR-109 D2), then applied.
         let dispatcher = TunnelDispatcher::new(Arc::new(rig.app.clone()));
         let handle = rig.app.tunnel_handle_slot().read().await.clone().unwrap();
+        dispatcher
+            .handle_message(mark(ACCOUNT, &other), handle.clone())
+            .await;
+        let computers = rig.app.principal_manager.own_computers();
+        for _ in 0..50 {
+            if !computers.pending(ACCOUNT).is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(computers.pending(ACCOUNT).len(), 1, "the computer waits");
+        assert_eq!(unread().await, 1, "held");
+        computers.decide(ACCOUNT, &other_id, true, "test").unwrap();
         dispatcher
             .handle_message(mark(ACCOUNT, &other), handle)
             .await;

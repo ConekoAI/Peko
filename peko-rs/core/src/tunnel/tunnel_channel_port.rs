@@ -602,6 +602,12 @@ impl TunnelChannelPort {
         recipient_runtime_id: &str,
         request_ids: &[String],
     ) {
+        // An empty receipt asks for what waits for its sender: it just
+        // approved this computer (ADR-109 D3).
+        if request_ids.is_empty() {
+            self.on_peer_runtime_online(recipient_runtime_id).await;
+            return;
+        }
         let confirmed = self.outbox.confirm(recipient_runtime_id, request_ids).await;
         let invited: HashSet<&ChannelId> = confirmed
             .iter()

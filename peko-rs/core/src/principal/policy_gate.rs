@@ -759,9 +759,232 @@ pub fn pending_requests(principal: &Principal) -> Vec<ApprovalRecord> {
     pending
 }
 
+/// The pseudo-tool of a pending computer's request (ADR-109 D3).
+const COMPUTER_REQUEST: &str = "peko.computer";
+/// The pseudo-tool of an owner change's request (ADR-109 D5).
+const OWNER_CHANGE_REQUEST: &str = "peko.owner_change";
+
+/// The requests waiting for the owner of `principal`, with the computers
+/// and owner changes waiting for them (ADR-109 D3, D5), oldest first.
+/// `person` is who asks from another computer (`None`: the local user,
+/// whom the caller checked owns `principal`); the computers and owner
+/// changes are shown only to this computer's own account.
+pub async fn pending_requests_for_owner(
+    manager: &PrincipalManager,
+    principal: &Principal,
+    person: Option<&str>,
+) -> Vec<ApprovalRecord> {
+    let mut out = pending_requests(principal);
+    let Some(account) = manager.local_account().await else {
+        return out;
+    };
+    if person.is_some_and(|p| p != format!("user:hub:{account}")) {
+        return out;
+    }
+    let computers = manager.own_computers();
+    for computer in computers.pending(&account) {
+        out.push(hub_claim_record(
+            principal,
+            &account,
+            computer.request_id(),
+            COMPUTER_REQUEST,
+            serde_json::json!({ "runtime": computer.runtime }),
+            computer.first_seen,
+            "It is signed in to your PekoHub account, but you have not approved it on any of \
+             your computers. Approve it only if you just started using Peko on another computer: \
+             it can then do anything you can with your pekos here.",
+        ));
+    }
+    for change in computers.owner_changes_for(&account, &principal.id.0) {
+        out.push(hub_claim_record(
+            principal,
+            &account,
+            change.request_id(),
+            OWNER_CHANGE_REQUEST,
+            serde_json::json!({ "owner": format!("user:hub:{}", change.owner_id) }),
+            change.reported_at,
+            "A transfer was accepted on PekoHub with your sign-in. If you did not give it \
+             away, deny: it stays yours, and stays off PekoHub until you sort it out there.",
+        ));
+    }
+    out.sort_by_key(|r| r.created_at);
+    out
+}
+
+/// An approval record for something PekoHub claims (ADR-109): never
+/// stored with the peko's requests, decided by [`decide_hub_claim`].
+fn hub_claim_record(
+    principal: &Principal,
+    account: &str,
+    id: String,
+    tool: &str,
+    params: serde_json::Value,
+    created_at: DateTime<Utc>,
+    reason: &str,
+) -> ApprovalRecord {
+    let call = GatedCall {
+        principal_id: principal.id.0.clone(),
+        principal_name: None,
+        session_id: None,
+        agent_id: None,
+        workspace: None,
+        stamp: ActingFor {
+            actor: format!("user:hub:{account}"),
+            name: Some("PekoHub".into()),
+            trust: peko_tools_core::Trust::Owner,
+            compartment: peko_tools_core::Compartment::Internal,
+            origin: Origin::Runtime,
+            owner_request: false,
+        },
+        tool_name: tool.to_string(),
+        params,
+        call_id: None,
+    };
+    ApprovalRecord {
+        id,
+        digest: call.digest(),
+        call,
+        reason: reason.to_string(),
+        created_at,
+        // Waits until decided.
+        expires_at: Utc::now() + chrono::Duration::days(1),
+        status: ApprovalStatus::Pending,
+    }
+}
+
+fn is_hub_claim(id: &str) -> bool {
+    use crate::security::computers::{COMPUTER_ID_PREFIX, OWNER_CHANGE_ID_PREFIX};
+    id.starts_with(COMPUTER_ID_PREFIX) || id.starts_with(OWNER_CHANGE_ID_PREFIX)
+}
+
+/// The owner's decision on a computer or an owner change (ADR-109 D3,
+/// D5). Approved once, never *always*.
+async fn decide_hub_claim(
+    manager: &Arc<PrincipalManager>,
+    principal: &Arc<Principal>,
+    id: &str,
+    decision: Decision,
+    via: Option<&str>,
+) -> Result<String> {
+    use crate::security::computers::{Decided, COMPUTER_ID_PREFIX};
+    if matches!(decision, Decision::Approve { always: true }) {
+        anyhow::bail!("Request {id} is approved once, never always; approve it without always.");
+    }
+    let account = manager
+        .local_account()
+        .await
+        .context("This computer is not signed in to PekoHub.")?;
+    let computers = manager.own_computers();
+    let approve = matches!(decision, Decision::Approve { .. });
+    let via_label = via.unwrap_or("local");
+    if id.starts_with(COMPUTER_ID_PREFIX) {
+        return decide_computer(manager, id, approve, via_label).await;
+    }
+    let (event, reply) = {
+        let change = computers
+            .take_owner_change(&account, id)
+            .with_context(|| format!("No approval request {id}."))?;
+        let name = principal.config.read().await.name.clone();
+        let reply = if approve {
+            let owner = ActorRef::User(peko_subject::Route::hub(&change.owner_id));
+            manager
+                .update_config(&name, |c| c.owner = owner.clone())
+                .await?;
+            computers.decided(Decided::OwnerChangeApproved {
+                principal_name: name.clone(),
+            });
+            format!("Handed {name} over to its new owner ({owner}).")
+        } else {
+            format!(
+                "Kept {name}: it stays yours, and stays off PekoHub until you sort it out there."
+            )
+        };
+        (("principal.owner_change_decided", change.owner_id), reply)
+    };
+    if let Some(obs) = manager.observability() {
+        let _ = obs
+            .audit_security(
+                event.0,
+                Some(&principal.id.0),
+                serde_json::json!({
+                    "request_id": id,
+                    "subject": event.1,
+                    "approved": approve,
+                    "via": via_label,
+                }),
+            )
+            .await;
+    }
+    Ok(reply)
+}
+
+/// The owner's decision on one of their computers (ADR-109 D3), by its
+/// approval-request id or runtime id. `via` is where it was made
+/// (`local`, a runtime id, `device:<id>`).
+pub async fn decide_computer(
+    manager: &PrincipalManager,
+    id: &str,
+    approve: bool,
+    via: &str,
+) -> Result<String> {
+    use crate::security::computers::Decided;
+    let account = manager
+        .local_account()
+        .await
+        .context("This computer is not signed in to PekoHub.")?;
+    let computers = manager.own_computers();
+    let before = computers.decide(&account, id, approve, via)?;
+    if let Some(obs) = manager.observability() {
+        let _ = obs
+            .audit_security(
+                "computer.decided",
+                None,
+                serde_json::json!({
+                    "runtime": before.runtime,
+                    "approved": approve,
+                    "via": via,
+                }),
+            )
+            .await;
+    }
+    Ok(if approve {
+        computers.decided(Decided::ComputerApproved {
+            runtime: before.runtime,
+            channels: before.held_channels,
+        });
+        "Approved the new computer: it can use your pekos as you now, and what it sent while it \
+         waited arrives shortly."
+            .to_string()
+    } else {
+        "Denied the computer: nothing it sends as you is accepted here.".to_string()
+    })
+}
+
 /// One line on what a request asks: the tool and its target.
 #[must_use]
 pub fn request_summary(record: &ApprovalRecord) -> String {
+    match record.call.tool_name.as_str() {
+        COMPUTER_REQUEST => {
+            let runtime = record.call.params["runtime"].as_str().unwrap_or_default();
+            let tail: String = runtime
+                .chars()
+                .rev()
+                .take(6)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            return format!(
+                "A new computer signed in to your PekoHub account wants to use your pekos as you \
+                 (computer …{tail})."
+            );
+        }
+        OWNER_CHANGE_REQUEST => {
+            let owner = record.call.params["owner"].as_str().unwrap_or_default();
+            return format!("PekoHub says this peko now belongs to {owner}. Hand it over?");
+        }
+        _ => {}
+    }
     if is_owner_task(&record.call) {
         // ADR-100 D2: the owner reads the whole brief.
         return owner_task_brief(&record.call);
@@ -773,6 +996,11 @@ pub fn request_summary(record: &ApprovalRecord) -> String {
 /// owner (ADR-100), absent for a reviewed call.
 #[must_use]
 pub fn request_kind(record: &ApprovalRecord) -> Option<String> {
+    match record.call.tool_name.as_str() {
+        COMPUTER_REQUEST => return Some("computer".into()),
+        OWNER_CHANGE_REQUEST => return Some("owner_change".into()),
+        _ => {}
+    }
     is_owner_task(&record.call).then(|| "owner_task".to_string())
 }
 
@@ -798,6 +1026,9 @@ pub async fn decide_request_via(
     decision: Decision,
     via: Option<&str>,
 ) -> Result<String> {
+    if is_hub_claim(id) {
+        return decide_hub_claim(manager, principal, id, decision, via).await;
+    }
     let dir = approvals_dir(principal);
     // ADR-100 D2: work run as the owner is approved one brief at a time.
     if matches!(decision, Decision::Approve { always: true })

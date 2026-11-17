@@ -337,6 +337,24 @@ impl DaemonClient {
         .await
     }
 
+    /// The owner's computers this one knows (ADR-109).
+    pub async fn computer_list(&self) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        self.device_request(RequestPacket::ComputerList { request_id })
+            .await
+    }
+
+    /// Approve or deny one of the owner's computers (ADR-109 D3).
+    pub async fn computer_decide(&self, id: &str, approve: bool) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        self.device_request(RequestPacket::ComputerDecide {
+            request_id,
+            id: id.to_string(),
+            approve,
+        })
+        .await
+    }
+
     /// Comprehensive daemon status (issue #8). Returns uptime, version,
     /// and tunnel health snapshot.
     pub async fn status(&self) -> anyhow::Result<ResponsePacket> {

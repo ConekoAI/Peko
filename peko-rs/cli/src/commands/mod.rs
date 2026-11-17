@@ -164,13 +164,16 @@ pub enum Commands {
     #[command(subcommand, hide = true)]
     Tunnel(tunnel::TunnelCommands),
 
-    /// Phones paired with this computer
+    /// Your phones and other computers
     ///
     /// A paired phone reads and posts as you through this computer.
+    /// Another computer on your PekoHub account uses your pekos here as
+    /// you only once you approve it.
     ///
     /// Examples:
     ///   peko device pair
     ///   peko device list
+    ///   peko device approve apr_computer3f1a9d2e47b5c6081aa
     ///   peko device remove dev_5f0c1c1e9a7b4f52
     #[command(subcommand)]
     Device(device::DeviceCommands),

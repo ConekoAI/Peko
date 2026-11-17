@@ -136,6 +136,78 @@ pub(crate) async fn resolve_bridge_caller(
     }
 }
 
+/// ADR-109 D2: `(source runtime, speaker, conversation)` of a message in
+/// which another runtime speaks for a person: posts, invites, and the
+/// requests and decisions a person's other computer makes. `None` for
+/// everything else (answers to this computer's own requests, hub notices).
+fn own_account_speaker(msg: &TunnelMessage) -> Option<(&str, &str, Option<&str>)> {
+    match msg {
+        TunnelMessage::TunnelChannelEvent {
+            source_runtime_id,
+            source_principal_did,
+            channel_id,
+            ..
+        }
+        | TunnelMessage::TunnelChannelInvite {
+            source_runtime_id,
+            source_principal_did,
+            channel_id,
+            ..
+        } => Some((source_runtime_id, source_principal_did, Some(channel_id))),
+        TunnelMessage::TunnelChannelHistoryRequest {
+            source_runtime_id,
+            source_principal_did,
+            ..
+        }
+        | TunnelMessage::TunnelPersonDmInvite {
+            source_runtime_id,
+            source_principal_did,
+            ..
+        }
+        | TunnelMessage::TunnelPekoModelsRequest {
+            source_runtime_id,
+            source_principal_did,
+            ..
+        }
+        | TunnelMessage::TunnelPekoApprovalsRequest {
+            source_runtime_id,
+            source_principal_did,
+            ..
+        }
+        | TunnelMessage::TunnelPekoApprovalDecide {
+            source_runtime_id,
+            source_principal_did,
+            ..
+        }
+        | TunnelMessage::TunnelDmRoute {
+            source_runtime_id,
+            source_principal_did,
+            ..
+        }
+        | TunnelMessage::TunnelReadMark {
+            source_runtime_id,
+            source_principal_did,
+            ..
+        }
+        | TunnelMessage::TunnelGroupJoin {
+            source_runtime_id,
+            source_principal_did,
+            ..
+        }
+        | TunnelMessage::TunnelGroupJoinRequest {
+            source_runtime_id,
+            source_principal_did,
+            ..
+        } => Some((source_runtime_id, source_principal_did, None)),
+        TunnelMessage::TunnelAccountDmsRequest {
+            source_runtime_id,
+            recipient_account,
+            ..
+        } => Some((source_runtime_id, recipient_account, None)),
+        _ => None,
+    }
+}
+
 /// Extract the `Authorization: Bearer <jwt>` value from the bridge payload.
 ///
 /// Header keys are case-insensitive per RFC 7230, so we lowercase before
@@ -406,6 +478,91 @@ impl TunnelDispatcher {
                 error!("Tunnel dispatch error: {}", e);
             }
         });
+    }
+
+    /// Act on the owner's decisions about their computers and owner
+    /// changes (ADR-109): call once per dispatcher; the latest wins.
+    pub fn watch_own_computers(&self) {
+        let dispatcher = self.clone();
+        self.host
+            .principal_manager()
+            .own_computers()
+            .on_decided(move |decided| {
+                let Ok(rt) = tokio::runtime::Handle::try_current() else {
+                    return;
+                };
+                let dispatcher = dispatcher.clone();
+                rt.spawn(async move { dispatcher.on_own_computers_decided(decided).await });
+            });
+    }
+
+    async fn on_own_computers_decided(&self, decided: crate::security::computers::Decided) {
+        use crate::security::computers::Decided;
+        match decided {
+            // ADR-109 D3: ask the computer for what it sent while it
+            // waited (an empty receipt: "resend what waits for me").
+            Decided::ComputerApproved { runtime, channels } => {
+                let port = self.host.tunnel_channel_port();
+                for channel in channels {
+                    port.send_receipt(
+                        &runtime,
+                        &peko_protocol::channel::ChannelId(channel),
+                        Vec::new(),
+                    )
+                    .await;
+                }
+            }
+            Decided::OwnerChangeApproved { principal_name } => {
+                if let Err(e) = self.announce_single_instance(&principal_name).await {
+                    warn!(principal = %principal_name, "re-announce after an approved owner change failed: {e}");
+                }
+            }
+        }
+    }
+
+    /// ADR-109 D2: whether a message from `source_runtime` speaking as
+    /// `speaker` may be acted on. Anything that does not speak for this
+    /// computer's own account passes; this computer itself always does.
+    /// The first message from an unknown computer files it for the
+    /// owner's approval.
+    async fn admits_own_account(
+        &self,
+        source_runtime: &str,
+        speaker: &str,
+        channel: Option<&str>,
+    ) -> bool {
+        use crate::security::computers::Admission;
+        let manager = self.host.principal_manager();
+        let Some(account) = manager.local_account().await else {
+            return true;
+        };
+        let mine = format!("user:hub:{account}");
+        if speaker != mine || source_runtime == self.host.runtime_did() {
+            return true;
+        }
+        let computers = manager.own_computers();
+        if computers.needs_seed(&account) {
+            // D4: computers already carrying this account here keep going.
+            let runtimes = self
+                .host
+                .tunnel_channel_port()
+                .local()
+                .runtimes_carrying(&mine)
+                .await
+                .unwrap_or_default();
+            computers.seed(&account, runtimes);
+        }
+        match computers.admit(&account, source_runtime, channel) {
+            Admission::Approved => true,
+            Admission::Held => {
+                info!(source_runtime, "a computer not yet approved speaks for this account; held for the owner's approval");
+                false
+            }
+            Admission::Denied => {
+                warn!(source_runtime, "refusing a computer the owner denied");
+                false
+            }
+        }
     }
 
     /// Mark the tunnel as ready (called after TunnelReady received)
@@ -731,6 +888,13 @@ impl TunnelDispatcher {
 
     /// Main dispatch method
     async fn dispatch(&self, msg: TunnelMessage, handle: TunnelHandle) -> anyhow::Result<()> {
+        // ADR-109 D2: another computer speaking for this computer's
+        // account is obeyed only once the owner approved it.
+        if let Some((source, speaker, channel)) = own_account_speaker(&msg) {
+            if !self.admits_own_account(source, speaker, channel).await {
+                return Ok(());
+            }
+        }
         match msg {
             TunnelMessage::ProxiedRequest {
                 request_id,
@@ -776,7 +940,7 @@ impl TunnelDispatcher {
                 owner_id,
             } => {
                 let synced = self
-                    .sync_owner_from_hub(&local_id, &hub_id, &owner_id)
+                    .sync_owner_from_hub(&local_id, &hub_id, &owner_id, request_id.is_some())
                     .await;
                 match request_id {
                     Some(id) => {
@@ -1537,6 +1701,25 @@ impl TunnelDispatcher {
             }
         };
 
+        // ADR-109: PekoHub mints bridge tokens, so one naming this
+        // computer's own account would let PekoHub act as the owner.
+        // The owner reaches their pekos from their computers and paired
+        // phones instead.
+        if let Some(account) = self.host.principal_manager().local_account().await {
+            if caller_principal.canonical_address() == format!("user:hub:{account}") {
+                warn!(principal = %principal_name, "Refusing a PekoHub-proxied request that names this computer's own account");
+                return self
+                    .send_error_response(
+                        &handle,
+                        &request_id,
+                        403,
+                        "Forbidden: open Peko on one of your computers or your paired phone",
+                        false,
+                    )
+                    .await;
+            }
+        }
+
         // The audit emit's `agent_did` positional argument is the
         // AuditEvent struct's legacy `agent_did: Option<String>`
         // field (column name kept for the Drizzle migration tracking
@@ -1921,6 +2104,7 @@ impl TunnelDispatcher {
         local_id: &str,
         hub_id: &str,
         owner_id: &str,
+        asked: bool,
     ) -> anyhow::Result<Option<String>> {
         let manager = self.host.principal_manager();
         let Some(principal) = manager
@@ -1943,6 +2127,38 @@ impl TunnelDispatcher {
             let config = principal.config.read().await;
             (config.name.clone(), config.owner.clone())
         };
+        if port.key_of(&previous) != port.key_of(&owner) && !asked {
+            // ADR-109 D5: a change this computer did not ask for waits for
+            // the owner; until then the peko stays off PekoHub.
+            let Some(account) = manager.local_account().await else {
+                warn!(principal = %name, "Ignoring an owner change from PekoHub: this computer has no Hub account");
+                return Ok(None);
+            };
+            manager.own_computers().report_owner_change(
+                &account,
+                crate::security::computers::OwnerChange {
+                    local_id: local_id.to_string(),
+                    hub_id: hub_id.to_string(),
+                    owner_id: owner_id.to_string(),
+                    reported_at: chrono::Utc::now(),
+                },
+            );
+            let _ = self
+                .host
+                .observability()
+                .audit_security(
+                    "principal.owner_change_reported",
+                    Some(local_id),
+                    serde_json::json!({
+                        "hub_id": hub_id,
+                        "from": previous.canonical_address(),
+                        "to": owner.canonical_address(),
+                    }),
+                )
+                .await;
+            warn!(principal = %name, owner = %owner, "PekoHub reports another owner; waiting for the owner's approval");
+            return Ok(None);
+        }
         if port.key_of(&previous) != port.key_of(&owner) {
             manager
                 .update_config(&name, |c| c.owner = owner.clone())
@@ -4680,10 +4896,151 @@ mod tests {
             principal.config.read().await.owner,
             ActorRef::User("mallory".into())
         );
+        // ADR-109 D5: a change this computer did not ask for waits for the
+        // owner, and applies once they approve it.
+        let account = uuid::Uuid::new_v4().to_string();
+        dispatcher
+            .host
+            .tunnel_channel_port()
+            .local()
+            .link_local_user(&dispatcher.host.runtime_did(), &account)
+            .await
+            .unwrap();
         dispatcher.dispatch(notice(&hub), handle).await.unwrap();
         assert_eq!(
             principal.config.read().await.owner,
+            ActorRef::User("mallory".into()),
+            "unchanged until the owner decides"
+        );
+        let pending =
+            crate::principal::policy_gate::pending_requests_for_owner(&manager, &principal, None)
+                .await;
+        let request = pending
+            .iter()
+            .find(|r| {
+                crate::principal::policy_gate::request_kind(r).as_deref() == Some("owner_change")
+            })
+            .expect("the owner is asked");
+        assert!(crate::principal::policy_gate::request_summary(request).contains(&recorded));
+        crate::principal::policy_gate::decide_request(
+            &manager,
+            &principal,
+            &request.id,
+            crate::principal::policy_gate::Decision::Approve { always: false },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            principal.config.read().await.owner,
             ActorRef::User(peko_subject::Route::hub(recorded.clone()))
+        );
+    }
+
+    /// ADR-109 D2–D3: a computer signed in to the person's account but not
+    /// yet approved is held; its post arrives once the owner approves it on
+    /// this computer, and a denied one is refused.
+    #[tokio::test]
+    async fn a_computer_speaks_as_you_only_once_you_approve_it() {
+        let AliceDm {
+            mut host,
+            mut laptop,
+            channel,
+            account,
+            ..
+        } = alice_dm(true).await;
+        let laptop_did = laptop.app.runtime_did();
+        let manager = host.dispatcher.host.principal_manager();
+        let computers = manager.own_computers();
+
+        let answer = laptop
+            .ipc(RequestPacket::ChannelPost {
+                request_id: 2,
+                channel: channel.as_str().into(),
+                sender_name: None,
+                text: "hi from the laptop".into(),
+                parent: None,
+                attachments: Vec::new(),
+                model: None,
+            })
+            .await;
+        assert!(
+            !matches!(answer, ResponsePacket::Error { .. }),
+            "the laptop posts: {answer:?}"
+        );
+        relay(&mut laptop, &mut host).await;
+        let texts = |events: Vec<peko_channel::ChannelEvent>| -> Vec<String> {
+            posts(&events).into_iter().map(|(_, text)| text).collect()
+        };
+        let seen = host
+            .app
+            .tunnel_channel_port()
+            .peek(&channel, &peko_channel::Checkpoint::zero())
+            .await
+            .map(texts)
+            .unwrap_or_default();
+        assert!(
+            !seen.iter().any(|t| t == "hi from the laptop"),
+            "held: {seen:?}"
+        );
+        let pending = computers.pending(&account);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].runtime, laptop_did);
+        assert_eq!(pending[0].held_channels, [channel.as_str().to_string()]);
+
+        // The owner sees it among the peko's approvals and approves it.
+        let peko = manager.get_by_name("peko").await.unwrap();
+        let listed =
+            crate::principal::policy_gate::pending_requests_for_owner(&manager, &peko, None).await;
+        let request = listed
+            .iter()
+            .find(|r| crate::principal::policy_gate::request_kind(r).as_deref() == Some("computer"))
+            .expect("the computer is an approval request");
+        assert!(
+            crate::principal::policy_gate::decide_request(
+                &manager,
+                &peko,
+                &request.id,
+                crate::principal::policy_gate::Decision::Approve { always: true },
+            )
+            .await
+            .is_err(),
+            "never always"
+        );
+        crate::principal::policy_gate::decide_request(
+            &manager,
+            &peko,
+            &request.id,
+            crate::principal::policy_gate::Decision::Approve { always: false },
+        )
+        .await
+        .unwrap();
+
+        // Approving sends the laptop an empty receipt; it resends what
+        // waited, and the invite and the post arrive.
+        let mut seen = Vec::new();
+        for _ in 0..100 {
+            relay(&mut laptop, &mut host).await;
+            seen = host
+                .app
+                .tunnel_channel_port()
+                .peek(&channel, &peko_channel::Checkpoint::zero())
+                .await
+                .map(texts)
+                .unwrap_or_default();
+            if seen.iter().any(|t| t == "hi from the laptop") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(seen.iter().any(|t| t == "hi from the laptop"), "{seen:?}");
+
+        // Denied afterwards: refused again.
+        computers
+            .decide(&account, &laptop_did, false, "test")
+            .unwrap();
+        assert_eq!(
+            computers.admit(&account, &laptop_did, None),
+            crate::security::computers::Admission::Denied
         );
     }
 
@@ -6275,6 +6632,20 @@ mod tests {
         outbound: mpsc::Receiver<TunnelMessage>,
     }
 
+    /// ADR-109: computers the person already uses have approved each other.
+    fn approve_each_other(runtimes: &[&DmRuntime], account: &str) {
+        for rt in runtimes {
+            let computers = rt.dispatcher.host.principal_manager().own_computers();
+            for other in runtimes {
+                let other = other.app.runtime_did();
+                if other != rt.app.runtime_did() {
+                    computers.admit(account, &other, None);
+                    computers.decide(account, &other, true, "test").unwrap();
+                }
+            }
+        }
+    }
+
     impl DmRuntime {
         async fn new(directory: Arc<crate::tunnel::hub_directory::FakeAgentDirectory>) -> Self {
             let dir = TempDir::new().unwrap();
@@ -6317,60 +6688,13 @@ mod tests {
         /// would.
         async fn receive(&self, message: TunnelMessage) {
             match message {
-                TunnelMessage::TunnelChannelInvite {
-                    request_id,
-                    source_runtime_id,
-                    recipient_runtime_id,
-                    source_principal_did,
-                    channel_id,
-                    creator,
-                    creator_did,
-                    name,
-                    kind,
-                    initial_members,
-                    signature,
-                    author_signature,
-                } => self
-                    .dispatcher
-                    .handle_inbound_tunnel_channel_invite(
-                        request_id,
-                        source_runtime_id,
-                        recipient_runtime_id,
-                        source_principal_did,
-                        channel_id,
-                        creator,
-                        creator_did,
-                        name,
-                        kind,
-                        initial_members,
-                        signature,
-                        author_signature,
-                    )
-                    .await
-                    .unwrap(),
-                TunnelMessage::TunnelChannelEvent {
-                    request_id,
-                    source_runtime_id,
-                    recipient_runtime_id,
-                    source_principal_did,
-                    channel_id,
-                    event,
-                    signature,
-                    author_signature,
-                } => self
-                    .dispatcher
-                    .handle_inbound_tunnel_channel_event(
-                        request_id,
-                        source_runtime_id,
-                        recipient_runtime_id,
-                        source_principal_did,
-                        channel_id,
-                        event,
-                        signature,
-                        author_signature,
-                    )
-                    .await
-                    .unwrap(),
+                // As PekoHub delivers them: through `dispatch`, so the
+                // ADR-109 gate runs.
+                envelope @ (TunnelMessage::TunnelChannelInvite { .. }
+                | TunnelMessage::TunnelChannelEvent { .. }) => {
+                    let handle = self.app.tunnel_handle_slot().read().await.clone().unwrap();
+                    self.dispatcher.dispatch(envelope, handle).await.unwrap();
+                }
                 history @ (TunnelMessage::TunnelChannelHistoryRequest { .. }
                 | TunnelMessage::TunnelChannelHistory { .. }
                 | TunnelMessage::TunnelAttachmentRequest { .. }
@@ -8082,6 +8406,7 @@ mod tests {
             .link_local_user(&d.app.runtime_did(), &account)
             .await
             .unwrap();
+        approve_each_other(&[&h, &d], &account);
 
         // Later, ada starts a group with Frank in it, as the desktop does.
         let channel = h_port
@@ -8863,6 +9188,8 @@ mod tests {
         }
         let [mut laptop, mut desktop, mut b1, mut b2, mut e1]: [DmRuntime; 5] =
             rts.try_into().ok().unwrap();
+        approve_each_other(&[&laptop, &desktop], &alice);
+        approve_each_other(&[&b1, &b2], &bob);
         macro_rules! route {
             () => {
                 route_account(
@@ -9153,6 +9480,12 @@ mod tests {
     }
 
     async fn alice_dm_with_a_peko_elsewhere() -> AliceDm {
+        alice_dm(false).await
+    }
+
+    /// `hers`: the peko's computer is alice's own (its local user is her
+    /// account), so her laptop is one of her computers there (ADR-109).
+    async fn alice_dm(hers: bool) -> AliceDm {
         use crate::tunnel::hub_directory::{AgentResolution, FakeAgentDirectory, ResolvedExposure};
         use peko_channel::ChannelPort;
 
@@ -9161,6 +9494,21 @@ mod tests {
         let hub_id = uuid::Uuid::new_v4().to_string();
         let directory = Arc::new(FakeAgentDirectory::new());
         let mut host = DmRuntime::new(Arc::clone(&directory)).await;
+        if hers {
+            host.app
+                .tunnel_channel_port()
+                .local()
+                .link_local_user(&host.app.runtime_did(), &account)
+                .await
+                .unwrap();
+            // A fresh sign-in: no computer carries her here yet.
+            host.dispatcher
+                .host
+                .principal_manager()
+                .own_computers()
+                .seed(&account, Vec::new());
+            host.dispatcher.watch_own_computers();
+        }
         let peko = create_test_principal(
             &host.app,
             "peko",
@@ -9272,6 +9620,7 @@ mod tests {
             .link_local_user(&desktop.app.runtime_did(), &account)
             .await
             .unwrap();
+        approve_each_other(&[&laptop, &desktop], &account);
         desktop_port.sync_account_dms().await;
         let account_runtimes = [
             (laptop.app.runtime_did(), account.clone()),
@@ -9397,6 +9746,7 @@ mod tests {
             .link_local_user(&desktop.app.runtime_did(), &account)
             .await
             .unwrap();
+        approve_each_other(&[&laptop, &desktop], &account);
         // Signing in asks; the laptop is asleep, so PekoHub delivers it
         // to no one.
         desktop_port.sync_account_dms().await;
@@ -9602,6 +9952,7 @@ mod tests {
             .link_local_user(&l2.app.runtime_did(), &account)
             .await
             .unwrap();
+        approve_each_other(&[&l1, &l2], &account);
         let ResponsePacket::ChannelRemoteDmOpened { channel, .. } = l2
             .ipc(RequestPacket::ChannelOpenRemoteDm {
                 request_id: 1,
@@ -9890,6 +10241,7 @@ mod tests {
             .link_local_user(&desk.app.runtime_did(), &account)
             .await
             .unwrap();
+        approve_each_other(&[&host, &desk], &account);
         let ResponsePacket::ChannelRemoteDmOpened { channel, .. } = desk
             .ipc(RequestPacket::ChannelOpenRemoteDm {
                 request_id: 1,
@@ -10104,6 +10456,7 @@ mod tests {
             .link_local_user(&desk.app.runtime_did(), &account)
             .await
             .unwrap();
+        approve_each_other(&[&host, &desk], &account);
         let ResponsePacket::ChannelRemoteDmOpened { channel, .. } = desk
             .ipc(RequestPacket::ChannelOpenRemoteDm {
                 request_id: 1,

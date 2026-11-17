@@ -29,6 +29,28 @@ sending, piece by piece, until its post names it (ADR-108 D10). The post
 moves it into the channel's file store; one that is never posted is
 removed after an hour, when that phone next starts a file.
 
+**`<config>/runtime/own_computers.json`** — the owner's other computers
+this one trusts, and owner changes PekoHub reported that wait for the owner
+(ADR-109), mode `0600`. It belongs to one Hub account (`account`); another
+account starts it afresh. A missing or unreadable file trusts no other
+computer: the owner is asked again. `seeded` records that the upgrade pass
+approved the computers already carrying the account here.
+
+```json
+{ "account": "6f1c2a52-58b6-4b8e-9d1c-6a3f0b6f1a01",
+  "seeded": true,
+  "computers": [ {
+    "runtime": "did:key:z6Mk…",
+    "status": "approved | pending | denied",
+    "first_seen": "2026-11-17T10:00:00Z",
+    "decided_at": "2026-11-17T10:02:00Z",
+    "via": "local | <runtime did> | device:<id> | upgrade",
+    "held_channels": ["chan_…"] } ],
+  "owner_changes": [ {
+    "local_id": "prin_…", "hub_id": "…", "owner_id": "…",
+    "reported_at": "2026-11-17T10:00:00Z" } ] }
+```
+
 **`<config>/runtime/devices.json`** — the phones paired with this runtime,
 mode `0600`. A missing file is no phones; an unreadable one is read as
 none, so every phone must pair again.

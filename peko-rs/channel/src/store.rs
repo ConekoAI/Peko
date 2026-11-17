@@ -2138,6 +2138,38 @@ impl ChannelStore {
     }
 
     /// Every DM with a remote peko that belongs to `account` (ADR-091 D4).
+    /// Every runtime recorded as carrying `member` (a person's address,
+    /// `user:hub:<id>`) in a conversation here: the computers it already
+    /// talks to this one from (runtime ADR-109 D4).
+    pub async fn runtimes_carrying(&self, member: &str) -> Result<Vec<String>> {
+        let root = self.cfg.channels_dir();
+        let mut out = std::collections::BTreeSet::new();
+        let mut rd = match fs::read_dir(&root).await {
+            Ok(r) => r,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => {
+                return Err(ChannelError::Adapter(format!(
+                    "read {}: {e}",
+                    root.display()
+                )))
+            }
+        };
+        while let Some(entry) = rd
+            .next_entry()
+            .await
+            .map_err(|e| ChannelError::Adapter(format!("walk {}: {e}", root.display())))?
+        {
+            if let Ok(members) = MembersJson::load(&entry.path()).await {
+                for remote in members.remote_members {
+                    if remote.principal_id == member {
+                        out.insert(remote.runtime_id);
+                    }
+                }
+            }
+        }
+        Ok(out.into_iter().collect())
+    }
+
     pub async fn remote_dms(&self, account: &str) -> Result<Vec<ChannelId>> {
         self.account_channels(account, ConversationKind::Dm).await
     }
