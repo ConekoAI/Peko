@@ -13,7 +13,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::ipc::handlers::RequestHandler;
-use crate::ipc::packet::{ChannelReadInfo, DeviceInfo, RequestPacket, ResponsePacket};
+use crate::ipc::packet::{
+    ChannelReadInfo, ComputerInfo, DeviceInfo, RequestPacket, ResponsePacket,
+};
 use crate::ipc::response_sink::ResponseSink;
 use crate::ipc::send_response::send_response;
 use crate::ipc::server::PeerAddr;
@@ -43,6 +45,13 @@ pub(crate) trait DeviceHost: Send + Sync {
 
     /// The person's read state in each of their conversations.
     async fn read_state(&self) -> Result<Vec<ChannelReadInfo>, String>;
+
+    /// This computer's Hub account and id, and the owner's computers it
+    /// knows (ADR-109).
+    async fn computers(&self) -> (Option<String>, String, Vec<ComputerInfo>);
+
+    /// The owner's decision on one of their computers (ADR-109 D3).
+    async fn decide_computer(&self, id: &str, approve: bool) -> Result<String, String>;
 }
 
 /// `device` domain request handler.
@@ -68,6 +77,8 @@ impl RequestHandler for DeviceHandler {
             RequestPacket::DevicePairStart { .. }
                 | RequestPacket::DeviceList { .. }
                 | RequestPacket::DeviceRemove { .. }
+                | RequestPacket::ComputerList { .. }
+                | RequestPacket::ComputerDecide { .. }
                 | RequestPacket::ChannelMarkRead { .. }
                 | RequestPacket::ChannelReadState { .. }
         )
@@ -112,6 +123,26 @@ impl RequestHandler for DeviceHandler {
                         request_id,
                         success: removed,
                         error: (!removed).then(|| format!("no phone `{device_id}` is paired")),
+                    },
+                    Err(message) => error(message),
+                }
+            }
+            RequestPacket::ComputerList { .. } => {
+                let (account, runtime, computers) = self.host.computers().await;
+                ResponsePacket::ComputerListResult {
+                    request_id,
+                    account,
+                    runtime,
+                    computers,
+                }
+            }
+            RequestPacket::ComputerDecide { id, approve, .. } => {
+                match self.host.decide_computer(&id, approve).await {
+                    Ok(message) => ResponsePacket::ApprovalDecided {
+                        request_id,
+                        id,
+                        approved: approve,
+                        message,
                     },
                     Err(message) => error(message),
                 }

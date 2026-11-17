@@ -13,6 +13,7 @@
 //! The module never imports `principal/`, so `agents/` can depend on it;
 //! the principal layer supplies trust through [`stamps::TrustSource`].
 
+pub mod computers;
 pub mod floor;
 pub mod judge;
 pub mod ledger;

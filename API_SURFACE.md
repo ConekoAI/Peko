@@ -21,7 +21,22 @@ msg_id | at }` (a post by id, or the newest post at or before an RFC 3339
 time) → `channel_read_marked { channel, moved }`; `channel_read_state`
 → `channel_read_state_result { channels: [{ channel, kind, peer?, unread,
 read? }] }` (`peer` is a DM's other member).
-CLI: `peko device pair | list | remove <id>`.
+CLI: `peko device pair | list | approve <id> | deny <id> | remove <id>`
+(phones and computers; `list --json` is `{ phones, computers,
+this_computer }`).
+
+## Your other computers (ADR-109)
+
+IPC, local callers only: `computer_list` → `computer_list_result
+{ account?, runtime, computers: [{ runtime, id, status, first_seen,
+decided_at?, via? }] }`; `computer_decide { id, approve }` (an
+`apr_computer…` id or a runtime id) → `approval_decided`. A pending
+computer and an owner change PekoHub reported are also approval requests
+on each of the owner's pekos (`approval_list`, kinds `computer` and
+`owner_change`), decided with `approval_decide` (never `always`).
+`security::computers::OwnComputers` (one per `PrincipalManager`,
+`own_computers()`) holds the list; `principal::policy_gate::
+pending_requests_for_owner` lists requests with them.
 
 A phone's own requests never use IPC. They arrive as `tunnel_device_request`
 and are carried out by the verb table in `daemon/state/devices.rs`:

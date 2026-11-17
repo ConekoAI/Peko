@@ -40,7 +40,38 @@ pub fn hub_http_origin(host: &str) -> Result<String> {
             && url.password().is_none(),
         "Use a PekoHub HTTP(S) origin"
     );
+    anyhow::ensure!(
+        url.scheme() == "https" || plain_hub_allowed(&url),
+        "PekoHub must be reached over HTTPS: everything this computer sends \
+         other computers passes through it ({PLAIN_HUB_ENV}=1 allows plain HTTP \
+         for a test hub)"
+    );
     Ok(url.origin().ascii_serialization())
+}
+
+/// Opt-in for a test hub reached without TLS on another host (a hub
+/// container, `http://pekohub-test:3000`).
+pub const PLAIN_HUB_ENV: &str = "PEKO_HUB_ALLOW_PLAIN_HTTP";
+
+/// Whether the hub at `url` (`http`/`ws`) may be reached without TLS: a
+/// hub on this computer, or any hub when [`PLAIN_HUB_ENV`] is `1`.
+/// Without TLS, anyone on the network path reads the tunnel and can
+/// stand in for the hub.
+#[must_use]
+pub fn plain_hub_allowed(url: &reqwest::Url) -> bool {
+    std::env::var(PLAIN_HUB_ENV).is_ok_and(|v| v == "1") || is_loopback_host(url)
+}
+
+fn is_loopback_host(url: &reqwest::Url) -> bool {
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return ip.is_loopback();
+    }
+    let host = host.to_ascii_lowercase();
+    host == "localhost" || host.ends_with(".localhost")
 }
 
 /// The tunnel URL for a Hub origin.
@@ -453,6 +484,22 @@ mod tests {
         );
         assert!(hub_http_origin("ftp://hub").is_err());
         assert_eq!(
+            hub_http_origin("http://127.0.0.1:3901").unwrap(),
+            "http://127.0.0.1:3901"
+        );
+        assert_eq!(
+            hub_http_origin("http://[::1]:3901").unwrap(),
+            "http://[::1]:3901"
+        );
+        assert_eq!(
+            hub_http_origin("http://hub.localhost").unwrap(),
+            "http://hub.localhost"
+        );
+        assert_eq!(
+            tunnel_url("https://pekohub.org"),
+            "wss://pekohub.org/v1/tunnel"
+        );
+        assert_eq!(
             tunnel_url("https://pekohub.org"),
             "wss://pekohub.org/v1/tunnel"
         );
@@ -460,6 +507,26 @@ mod tests {
             tunnel_url("http://localhost:4000"),
             "ws://localhost:4000/v1/tunnel"
         );
+    }
+
+    /// A hub elsewhere is reached over HTTPS only: without TLS, anyone on
+    /// the path reads the tunnel and can stand in for the hub.
+    #[test]
+    fn a_hub_elsewhere_needs_https() {
+        if std::env::var(PLAIN_HUB_ENV).is_ok() {
+            return; // set for this whole test run
+        }
+        for host in [
+            "http://pekohub.ai",
+            "http://192.168.1.20:3000",
+            "http://localhost.evil.example",
+            "http://127.0.0.1.nip.io",
+        ] {
+            assert!(hub_http_origin(host).is_err(), "{host}");
+        }
+        let url = |s: &str| reqwest::Url::parse(s).unwrap();
+        assert!(!plain_hub_allowed(&url("ws://pekohub.ai/v1/tunnel")));
+        assert!(plain_hub_allowed(&url("ws://127.0.0.1:3901/v1/tunnel")));
     }
 
     /// A one-route-per-call HTTP stand-in for the Hub's OAuth endpoints:

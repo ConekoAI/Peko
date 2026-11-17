@@ -1308,6 +1308,7 @@ impl AppState {
         }
 
         let dispatcher = TunnelDispatcher::new(Arc::new(self.clone()));
+        dispatcher.watch_own_computers();
 
         // Build the cross-runtime dispatch ctx for `ChannelSend`'s principal
         // branch (sprint 4: this used to live in `send_peer`; sprint 4
@@ -2333,20 +2334,25 @@ impl crate::tunnel::TunnelHost for AppState {
             tracing::debug!(%principal_did, "peko approvals refused: not the peko's owner");
             return Vec::new();
         };
-        crate::principal::policy_gate::pending_requests(&principal)
-            .iter()
-            .map(|r| crate::tunnel::PekoApproval {
-                id: r.id.clone(),
-                actor: r.call.stamp.actor.clone(),
-                actor_name: r.call.stamp.name.clone(),
-                trust: r.call.stamp.trust.as_str().to_string(),
-                summary: crate::principal::policy_gate::request_summary(r),
-                reason: r.reason.clone(),
-                created_at: r.created_at.to_rfc3339(),
-                expires_at: r.expires_at.to_rfc3339(),
-                kind: crate::principal::policy_gate::request_kind(r),
-            })
-            .collect()
+        crate::principal::policy_gate::pending_requests_for_owner(
+            &self.principal_manager,
+            &principal,
+            Some(person),
+        )
+        .await
+        .iter()
+        .map(|r| crate::tunnel::PekoApproval {
+            id: r.id.clone(),
+            actor: r.call.stamp.actor.clone(),
+            actor_name: r.call.stamp.name.clone(),
+            trust: r.call.stamp.trust.as_str().to_string(),
+            summary: crate::principal::policy_gate::request_summary(r),
+            reason: r.reason.clone(),
+            created_at: r.created_at.to_rfc3339(),
+            expires_at: r.expires_at.to_rfc3339(),
+            kind: crate::principal::policy_gate::request_kind(r),
+        })
+        .collect()
     }
 
     async fn decide_peko_approval_for_owner(

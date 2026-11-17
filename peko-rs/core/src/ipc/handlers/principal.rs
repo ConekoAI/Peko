@@ -430,10 +430,15 @@ impl RequestHandler for PrincipalHandler {
                     Ok(principal) => ResponsePacket::ApprovalList {
                         request_id,
                         name,
-                        approvals: crate::principal::policy_gate::pending_requests(&principal)
-                            .iter()
-                            .map(approval_info)
-                            .collect(),
+                        approvals: crate::principal::policy_gate::pending_requests_for_owner(
+                            host.principal_manager(),
+                            &principal,
+                            None,
+                        )
+                        .await
+                        .iter()
+                        .map(approval_info)
+                        .collect(),
                     },
                 };
                 send_response(sink, response).await?;

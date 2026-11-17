@@ -118,6 +118,8 @@ pub struct PrincipalManager {
     /// This runtime's identity DID (ADR-081 D2): the runtime every local
     /// route of this manager's principals and contacts belongs to.
     runtime_did: std::sync::OnceLock<String>,
+    /// The owner's computers this one trusts (ADR-109), opened on first use.
+    own_computers: std::sync::OnceLock<Arc<crate::security::computers::OwnComputers>>,
     tooling: Arc<crate::tools::runtime::ToolingRuntime>,
     principals: RwLock<HashMap<PrincipalId, Arc<Principal>>>,
     principals_by_name: RwLock<HashMap<String, PrincipalId>>,
@@ -217,6 +219,7 @@ impl PrincipalManager {
         Self {
             self_ref: std::sync::OnceLock::new(),
             runtime_did: std::sync::OnceLock::new(),
+            own_computers: std::sync::OnceLock::new(),
             tooling: crate::tools::runtime::ToolingRuntime::standalone(),
             principals: RwLock::new(HashMap::new()),
             principals_by_name: RwLock::new(HashMap::new()),
@@ -234,6 +237,25 @@ impl PrincipalManager {
             dm_subscriber_hook: std::sync::RwLock::new(None),
             identity_vault: None,
         }
+    }
+
+    /// The owner's computers this one trusts, and owner changes waiting
+    /// for the owner (ADR-109): `<runtime>/own_computers.json`.
+    pub fn own_computers(&self) -> Arc<crate::security::computers::OwnComputers> {
+        Arc::clone(self.own_computers.get_or_init(|| {
+            Arc::new(crate::security::computers::OwnComputers::new(
+                self.path_resolver.runtime_dir().join("own_computers.json"),
+            ))
+        }))
+    }
+
+    /// The Hub account of this computer's local user, `None` when it is
+    /// not registered.
+    pub async fn local_account(&self) -> Option<String> {
+        let port = self.channel_port()?;
+        port.actor_info(&peko_auth::ActorRef::User("local".into()))
+            .await
+            .hub_id
     }
 
     pub fn tooling(&self) -> Arc<crate::tools::runtime::ToolingRuntime> {
