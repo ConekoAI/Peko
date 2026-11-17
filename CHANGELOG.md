@@ -44,6 +44,16 @@ All notable changes to Peko.
   is on this computer (`localhost`, `127.0.0.1`, `::1`). A test hub
   elsewhere, such as a hub container, needs `PEKO_HUB_ALLOW_PLAIN_HTTP=1`.
 
+### Fixed
+
+- **Runtimes no longer reconnect to PekoHub in lockstep.** When the Hub
+  restarts, every runtime's tunnel drops at once. Each runtime now waits
+  a random 0–10 s before reconnecting, and a failed attempt is retried
+  after a random time between half and all of its step (1, 2, 4 … s,
+  still capped at 60 s), instead of all of them retrying on the same
+  schedule and timing out together while the Hub works through the
+  handshakes.
+
 ## [0.1.6] - 2026-11-16
 
 ### Added

@@ -151,7 +151,8 @@ struct TunnelState {
 }
 
 /// Default maximum reconnect attempts before giving up and signalling degraded state.
-/// With default exponential backoff (1/2/4/.../60s), 50 attempts ≈ 28 minutes of retries.
+/// With the default backoff (steps of 1/2/4/.../60s, each jittered to half
+/// to all of the step), 50 attempts take roughly 22–45 minutes of retries.
 pub const DEFAULT_MAX_RECONNECT_ATTEMPTS: u32 = 50;
 
 /// Health/status update emitted by the tunnel client after each connection
@@ -313,6 +314,12 @@ impl TunnelClient {
                     if let Some(cb) = self.on_status.as_ref() {
                         cb(TunnelStatusUpdate::Connected).await;
                     }
+                    // A Hub restart drops every runtime's tunnel at once;
+                    // a random wait keeps them from all reconnecting in
+                    // the same instant.
+                    let delay = self.backoff.first_reconnect_delay();
+                    info!("reconnecting to PekoHub in {:?}", delay);
+                    tokio::time::sleep(delay).await;
                 }
                 Err(e) => {
                     consecutive_failures = consecutive_failures.saturating_add(1);
