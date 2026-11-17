@@ -347,7 +347,30 @@ async fn test_e2e_tunnel_chat_with_llm() {
         .as_str()
         .expect("No user id (expected UUID string)")
         .to_string();
-    let chat_user_id = user_id.clone();
+    // ADR-109 D6: PekoHub's proxy never acts as the runtime's own account,
+    // so the chat goes through it as someone else the owner granted Chat.
+    let chatter_resp = client
+        .post(format!("{}/test/create-user", backend.url))
+        .json(&serde_json::json!({
+            "external_id": format!("e2e-test-chatter-{run_tag}"),
+            "provider": "github",
+            "namespace": format!("e2etestchatter{run_tag}"),
+            "display_name": "E2E Test Chatter",
+            "email": "e2e-chatter@test.com"
+        }))
+        .send()
+        .await
+        .expect("Failed to create the chatting user");
+    assert!(
+        chatter_resp.status().is_success(),
+        "Chatting user creation failed (status={})",
+        chatter_resp.status(),
+    );
+    let chatter_body: serde_json::Value = chatter_resp.json().await.unwrap();
+    let chat_user_id = chatter_body["id"]
+        .as_str()
+        .expect("No chatter id (expected UUID string)")
+        .to_string();
 
     // 3. Create temporary workspace with Principal config
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
@@ -442,6 +465,10 @@ async fn test_e2e_tunnel_chat_with_llm() {
     // Generate JWT for authenticated requests
     let jwt_token = generate_jwt(&user_id, &format!("e2etestuser{run_tag}"));
     let auth_header = format!("Bearer {jwt_token}");
+    let chat_auth_header = format!(
+        "Bearer {}",
+        generate_jwt(&chat_user_id, &format!("e2etestchatter{run_tag}"))
+    );
 
     // 7. Write tunnel credentials next to the AppState config directory so
     // that start_tunnel() can find them. The private key lives in the vault
@@ -557,9 +584,25 @@ async fn test_e2e_tunnel_chat_with_llm() {
         );
     }
 
-    let chat_resp = client
+    // ADR-109 D6: the owner's own account is refused through the proxy.
+    let as_owner = client
         .post(format!("{}/v1/instances/{instance_id}/chat", backend.url))
         .header("Authorization", &auth_header)
+        .json(&serde_json::json!({ "message": "hello" }))
+        .send()
+        .await
+        .expect("Failed to send the owner's chat request")
+        .text()
+        .await
+        .unwrap_or_default();
+    assert!(
+        as_owner.contains("open Peko on one of your computers"),
+        "PekoHub's proxy must not act as the runtime's own account. Got: {as_owner}"
+    );
+
+    let chat_resp = client
+        .post(format!("{}/v1/instances/{instance_id}/chat", backend.url))
+        .header("Authorization", &chat_auth_header)
         .json(&serde_json::json!({
             "message": "Say exactly 'Peko tunnel works' and nothing else."
         }))
