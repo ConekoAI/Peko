@@ -15,6 +15,11 @@ All notable changes to Peko.
   signs only a challenge of the shape PekoHub issues (32 random bytes,
   base64url) and refuses the connection otherwise. Nothing changes on the
   wire.
+- **PekoHub is reached over HTTPS.** Every message this computer sends
+  other computers passes through PekoHub, so `peko runtime register` now
+  refuses an `http://` hub, and the tunnel refuses `ws://`, unless the hub
+  is on this computer (`localhost`, `127.0.0.1`, `::1`). A test hub
+  elsewhere, such as a hub container, needs `PEKO_HUB_ALLOW_PLAIN_HTTP=1`.
 
 ## [0.1.6] - 2026-11-16
 

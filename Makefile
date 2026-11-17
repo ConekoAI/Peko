@@ -41,7 +41,8 @@ MOCK_TEST_FLAGS := $(addprefix --test ,$(MOCK_TESTS))
 INTEGRATION_LIB_TESTS := daemon::e2e_tests::tunnel_e2e
 
 # Default ports exposed by docker-compose.integration.yml; CI overrides
-# these for in-container runs (e.g. PEKOHUB_URL=http://pekohub-test:3000).
+# these for in-container runs (e.g. PEKOHUB_URL=http://pekohub-test:3000,
+# with PEKO_HUB_ALLOW_PLAIN_HTTP=1: a hub that is not on this host needs TLS).
 #
 # Uses `docker compose` (v2 plugin) rather than the standalone `docker-compose`
 # (v1) binary, which is not present on GitHub-hosted Linux runners and is

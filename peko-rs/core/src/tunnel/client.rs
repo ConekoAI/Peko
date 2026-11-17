@@ -364,6 +364,16 @@ impl TunnelClient {
     async fn connect_and_serve(&mut self) -> Result<(), TunnelError> {
         info!("Connecting to PekoHub tunnel: {}", self.hub_url);
 
+        let parsed = reqwest::Url::parse(&self.hub_url)
+            .map_err(|e| TunnelError::AuthFailed(format!("Invalid hub URL: {e}")))?;
+        if parsed.scheme() != "wss" && !super::registration::plain_hub_allowed(&parsed) {
+            return Err(TunnelError::AuthFailed(format!(
+                "refusing to reach PekoHub at {} without TLS; register with an https:// hub ({}=1 allows plain HTTP for a test hub)",
+                self.hub_url,
+                super::registration::PLAIN_HUB_ENV
+            )));
+        }
+
         let connector = Self::build_tls_connector(self.credential.tls.as_ref())?;
         let req = self
             .hub_url
