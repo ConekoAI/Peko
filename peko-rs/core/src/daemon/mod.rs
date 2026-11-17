@@ -82,7 +82,8 @@ pub struct DaemonConfig {
     pub data_dir: PathBuf,
     /// Maximum number of consecutive PekoHub tunnel reconnect attempts
     /// before the tunnel client stops retrying and reports degraded state.
-    /// Issue #8: defaults to 50 (~28 minutes with exponential backoff).
+    /// Issue #8: defaults to 50 (roughly 22–45 minutes with the jittered
+    /// exponential backoff).
     pub max_reconnect_attempts: u32,
     /// How this daemon was launched (CLI vs. sidecar). Reflected in the
     /// `mode` field of `ResponsePacket::Status` so peers (notably the

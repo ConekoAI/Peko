@@ -43,8 +43,9 @@ pub enum DaemonCommands {
         #[arg(short, long, default_value = "15")]
         interval: u64,
         /// Maximum number of consecutive PekoHub tunnel reconnect attempts
-        /// before reporting degraded state. With default exponential
-        /// backoff (1/2/4/.../60s), 50 attempts ≈ 28 minutes of retries.
+        /// before reporting degraded state. With the default backoff
+        /// (1/2/4/.../60s steps, each randomized to half to all of the
+        /// step), 50 attempts take roughly 22–45 minutes of retries.
         /// Set to a very large value (e.g. 4294967295) to disable the cap
         /// and retry forever. See issue #8.
         #[arg(long, default_value = "50")]
