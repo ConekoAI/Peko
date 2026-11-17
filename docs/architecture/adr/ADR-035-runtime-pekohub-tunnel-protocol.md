@@ -150,7 +150,7 @@ pub enum TunnelMessage {
 ### Reliability
 
 - **Heartbeat**: Every 30 seconds by default. Missed 3 heartbeats (90 seconds) means the connection is considered dead.
-- **Reconnection**: The runtime reconnects with exponential backoff: `1s, 2s, 4s, 8s, ...` capped at 60 seconds.
+- **Reconnection**: When an established tunnel drops, the runtime waits a random 0–10 s before reconnecting, so runtimes dropped together by a Hub restart do not all reconnect at once. A failed attempt is retried with exponential backoff steps of `1s, 2s, 4s, 8s, ...` capped at 60 seconds, each randomized to half to all of the step (equal jitter).
 - **Re-authentication**: On reconnect, the runtime sends `RuntimeHello` again.
 - **In-flight requests during disconnect**: PekoHub returns HTTP `503 Service Unavailable` to the web client; the client retries.
 - **Outbound response buffering**: The runtime buffers outbound responses briefly (5 seconds) during a reconnect window to avoid dropping data.
@@ -390,7 +390,7 @@ Existing endpoints (`POST /v1/agents/{agent}/chat`) are updated internally to ro
 | Component | Status | Notes |
 |---|---|---|
 | `TunnelMessage` protocol | ✅ Implemented | `src/tunnel/protocol.rs` — JSON-serialized enum with all control, routing, and streaming variants |
-| Exponential backoff | ✅ Implemented | `src/tunnel/backoff.rs` — 1s, 2s, 4s, … capped at 60s |
+| Exponential backoff | ✅ Implemented | `src/tunnel/backoff.rs` — 1s, 2s, 4s, … capped at 60s, equal jitter; first reconnect after a drop spread over 0–10 s |
 | Credential storage | ✅ Implemented | `src/tunnel/credential.rs` — TOML at `~/.peko/pekohub.toml` |
 | WebSocket client | ✅ Implemented | `src/tunnel/client.rs` — `TunnelClient` with auth, heartbeat, read/write loops, reconnection |
 | CLI subcommand | ✅ Implemented | `peko tunnel start/stop/status` in `src/commands/tunnel.rs` |
