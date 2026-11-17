@@ -763,6 +763,8 @@ pub fn pending_requests(principal: &Principal) -> Vec<ApprovalRecord> {
 const COMPUTER_REQUEST: &str = "peko.computer";
 /// The pseudo-tool of an owner change's request (ADR-109 D5).
 const OWNER_CHANGE_REQUEST: &str = "peko.owner_change";
+/// The pseudo-tool of a peko key change's request (ADR-110 D4).
+const KEY_CHANGE_REQUEST: &str = "peko.key_change";
 
 /// The requests waiting for the owner of `principal`, with the computers
 /// and owner changes waiting for them (ADR-109 D3, D5), oldest first.
@@ -805,6 +807,25 @@ pub async fn pending_requests_for_owner(
             change.reported_at,
             "A transfer was accepted on PekoHub with your sign-in. If you did not give it \
              away, deny: it stays yours, and stays off PekoHub until you sort it out there.",
+        ));
+    }
+    // ADR-110 D4: a peko PekoHub now names with another key.
+    for change in manager.peko_keys().pending() {
+        out.push(hub_claim_record(
+            principal,
+            &account,
+            change.request_id(),
+            KEY_CHANGE_REQUEST,
+            serde_json::json!({
+                "peko": change.name.clone().unwrap_or_else(|| change.hub_id.clone()),
+                "hub_id": change.hub_id,
+                "pinned": change.pinned,
+                "offered": change.offered,
+            }),
+            change.reported_at,
+            "PekoHub says this peko has a new identity since you last talked. A peko keeps its \
+             identity when it moves to another computer, so approve only if its owner told you \
+             they set it up again; until then nothing goes to it.",
         ));
     }
     out.sort_by_key(|r| r.created_at);
@@ -854,7 +875,10 @@ fn hub_claim_record(
 
 fn is_hub_claim(id: &str) -> bool {
     use crate::security::computers::{COMPUTER_ID_PREFIX, OWNER_CHANGE_ID_PREFIX};
-    id.starts_with(COMPUTER_ID_PREFIX) || id.starts_with(OWNER_CHANGE_ID_PREFIX)
+    use crate::security::peko_keys::KEY_CHANGE_ID_PREFIX;
+    id.starts_with(COMPUTER_ID_PREFIX)
+        || id.starts_with(OWNER_CHANGE_ID_PREFIX)
+        || id.starts_with(KEY_CHANGE_ID_PREFIX)
 }
 
 /// The owner's decision on a computer or an owner change (ADR-109 D3,
@@ -879,6 +903,9 @@ async fn decide_hub_claim(
     let via_label = via.unwrap_or("local");
     if id.starts_with(COMPUTER_ID_PREFIX) {
         return decide_computer(manager, id, approve, via_label).await;
+    }
+    if id.starts_with(crate::security::peko_keys::KEY_CHANGE_ID_PREFIX) {
+        return decide_key_change(manager, id, approve, via_label).await;
     }
     let (event, reply) = {
         let change = computers
@@ -916,6 +943,37 @@ async fn decide_hub_claim(
             .await;
     }
     Ok(reply)
+}
+
+/// The owner's decision on a peko's new key (ADR-110 D4).
+async fn decide_key_change(
+    manager: &PrincipalManager,
+    id: &str,
+    approve: bool,
+    via: &str,
+) -> Result<String> {
+    let change = manager.peko_keys().decide(id, approve)?;
+    if let Some(obs) = manager.observability() {
+        let _ = obs
+            .audit_security(
+                "peko.key_change_decided",
+                None,
+                serde_json::json!({
+                    "hub_id": change.hub_id,
+                    "pinned": change.pinned,
+                    "offered": change.offered,
+                    "approved": approve,
+                    "via": via,
+                }),
+            )
+            .await;
+    }
+    let name = change.name.unwrap_or(change.hub_id);
+    Ok(if approve {
+        format!("Approved {name}'s new identity: what you send reaches it again.")
+    } else {
+        format!("Kept {name}'s old identity: nothing goes to the computer PekoHub named.")
+    })
 }
 
 /// The owner's decision on one of their computers (ADR-109 D3), by its
@@ -983,6 +1041,10 @@ pub fn request_summary(record: &ApprovalRecord) -> String {
             let owner = record.call.params["owner"].as_str().unwrap_or_default();
             return format!("PekoHub says this peko now belongs to {owner}. Hand it over?");
         }
+        KEY_CHANGE_REQUEST => {
+            let peko = record.call.params["peko"].as_str().unwrap_or_default();
+            return format!("PekoHub says {peko} has a new identity. Use it?");
+        }
         _ => {}
     }
     if is_owner_task(&record.call) {
@@ -999,6 +1061,7 @@ pub fn request_kind(record: &ApprovalRecord) -> Option<String> {
     match record.call.tool_name.as_str() {
         COMPUTER_REQUEST => return Some("computer".into()),
         OWNER_CHANGE_REQUEST => return Some("owner_change".into()),
+        KEY_CHANGE_REQUEST => return Some("key_change".into()),
         _ => {}
     }
     is_owner_task(&record.call).then(|| "owner_task".to_string())

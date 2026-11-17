@@ -1349,11 +1349,24 @@ impl AppState {
 
         let dispatcher_for_handler = dispatcher;
 
+        // ADR-110: seal what crosses PekoHub to the computer it is for.
+        let sealer = Arc::new(crate::tunnel::seal::Sealer::new(
+            cred.runtime_id.clone(),
+            Arc::clone(&self.runtime_signing_key),
+            Arc::new(DaemonSealPolicy {
+                manager: Arc::clone(&self.principal_manager),
+                devices: Arc::clone(&self.devices.gate),
+            }),
+            Some(self.path_resolver.runtime_dir().join("sealing.json")),
+        ));
+        dispatcher_for_handler.set_sealer(Arc::clone(&sealer));
+
         let mut client = TunnelClient::new_with(
             cred,
             Arc::clone(&self.runtime_signing_key),
             max_reconnect_attempts,
-        );
+        )
+        .with_sealer(sealer);
         client.on_request(move |msg, handle| {
             let dispatcher = dispatcher_for_handler.clone();
             async move {
@@ -1578,7 +1591,9 @@ impl AppState {
             .with_runtime_key(
                 cred.runtime_id.clone(),
                 Arc::clone(&self.runtime_signing_key),
-            );
+            )
+            // ADR-110 D4: a peko is reached only on the computer it names.
+            .with_peko_keys(self.principal_manager.peko_keys());
         let directory: Arc<dyn crate::tunnel::AgentDirectory> =
             Arc::new(crate::tunnel::LocalFirstAgentDirectory::new(
                 cred.runtime_id.clone(),
@@ -3605,6 +3620,34 @@ impl crate::security::ledger::redact::SecretSource for RuntimeSecrets {
                 .map(|token| ("run_token".to_string(), token)),
         );
         secrets
+    }
+}
+
+/// ADR-110: what the tunnel's sealer asks of this daemon.
+struct DaemonSealPolicy {
+    manager: Arc<PrincipalManager>,
+    devices: Arc<crate::tunnel::devices::DeviceGate>,
+}
+
+#[async_trait::async_trait]
+impl crate::tunnel::seal::SealPolicy for DaemonSealPolicy {
+    async fn own_account(&self) -> Option<String> {
+        self.manager.local_account().await
+    }
+
+    fn own_computer(
+        &self,
+        account: &str,
+        runtime: &str,
+    ) -> Option<crate::security::computers::ComputerStatus> {
+        self.manager
+            .own_computers()
+            .find(account, runtime)
+            .map(|c| c.status)
+    }
+
+    fn device_key(&self, device_id: &str) -> Option<String> {
+        self.devices.sealing_key(device_id)
     }
 }
 

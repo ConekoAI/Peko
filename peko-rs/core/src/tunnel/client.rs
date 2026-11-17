@@ -22,6 +22,7 @@ use tracing::{debug, error, info, trace, warn};
 use super::backoff::ExponentialBackoff;
 use super::credential::{PekoHubCredential, TunnelTlsConfig};
 use super::protocol::TunnelMessage;
+use super::seal::{Inbound, Sealer};
 
 /// Errors that can occur in the tunnel client
 #[derive(Debug, thiserror::Error)]
@@ -220,6 +221,9 @@ pub struct TunnelClient {
     /// reconnect the next write loop acquires the same receiver and drains
     /// any messages that accumulated while disconnected.
     rx: Arc<tokio::sync::Mutex<mpsc::Receiver<TunnelMessage>>>,
+    /// ADR-110: seals what goes out and opens what comes in. `None` only
+    /// in tests that speak to a fake hub in the clear.
+    sealer: Option<Arc<Sealer>>,
 }
 
 impl TunnelClient {
@@ -265,7 +269,15 @@ impl TunnelClient {
             on_status: None,
             tx,
             rx: Arc::new(tokio::sync::Mutex::new(rx)),
+            sealer: None,
         }
+    }
+
+    /// Seal what this client sends and open what it receives (ADR-110).
+    #[must_use]
+    pub fn with_sealer(mut self, sealer: Arc<Sealer>) -> Self {
+        self.sealer = Some(sealer);
+        self
     }
 
     /// Set a callback for handling proxied requests
@@ -548,39 +560,12 @@ impl TunnelClient {
 
         // Read loop: process incoming WebSocket messages
         let read_state = state.clone();
+        let read_sealer = self.sealer.clone();
         let read_handle = tokio::spawn(async move {
             loop {
-                match read.next().await {
-                    Some(Ok(Message::Binary(bytes))) => match TunnelMessage::from_bytes(&bytes) {
-                        Ok(msg) => {
-                            Self::handle_incoming_message(
-                                msg,
-                                &read_state,
-                                request_handler.as_ref(),
-                                &handle,
-                            )
-                            .await;
-                        }
-                        Err(e) => {
-                            warn!("Failed to parse tunnel message: {}", e);
-                        }
-                    },
-                    Some(Ok(Message::Text(text))) => {
-                        match TunnelMessage::from_bytes(text.as_bytes()) {
-                            Ok(msg) => {
-                                Self::handle_incoming_message(
-                                    msg,
-                                    &read_state,
-                                    request_handler.as_ref(),
-                                    &handle,
-                                )
-                                .await;
-                            }
-                            Err(e) => {
-                                warn!("Failed to parse tunnel message: {}", e);
-                            }
-                        }
-                    }
+                let frame: Vec<u8> = match read.next().await {
+                    Some(Ok(Message::Binary(bytes))) => bytes,
+                    Some(Ok(Message::Text(text))) => text.as_bytes().to_vec(),
                     Some(Ok(Message::Close(frame))) => {
                         info!("WebSocket closed: {:?}", frame);
                         break;
@@ -588,11 +573,13 @@ impl TunnelClient {
                     Some(Ok(Message::Ping(_data))) => {
                         trace!("Received WebSocket ping");
                         let _ = handle.send(TunnelMessage::HeartbeatAck { seq: 0 });
+                        continue;
                     }
                     Some(Ok(Message::Pong(_))) => {
                         trace!("Received WebSocket pong");
+                        continue;
                     }
-                    Some(Ok(Message::Frame(_))) => {}
+                    Some(Ok(Message::Frame(_))) => continue,
                     Some(Err(e)) => {
                         error!("WebSocket read error: {}", e);
                         break;
@@ -601,24 +588,56 @@ impl TunnelClient {
                         info!("WebSocket stream ended");
                         break;
                     }
-                }
+                };
+                let msg = match &read_sealer {
+                    Some(sealer) => match sealer.inbound(&frame).await {
+                        Inbound::Message(msg) => *msg,
+                        Inbound::Release(msgs) => {
+                            // Keys arrived: these can be sealed now.
+                            for msg in msgs {
+                                if handle.tx.send(msg).await.is_err() {
+                                    break;
+                                }
+                            }
+                            continue;
+                        }
+                        Inbound::Ignore => continue,
+                    },
+                    None => match TunnelMessage::from_bytes(&frame) {
+                        Ok(msg) => msg,
+                        Err(e) => {
+                            warn!("Failed to parse tunnel message: {}", e);
+                            continue;
+                        }
+                    },
+                };
+                Self::handle_incoming_message(msg, &read_state, request_handler.as_ref(), &handle)
+                    .await;
             }
         });
 
         // Write loop: send messages from internal channel to WebSocket
+        let write_sealer = self.sealer.clone();
         let write_handle = tokio::spawn(async move {
             let mut rx = rx.lock().await;
-            while let Some(msg) = rx.recv().await {
-                let bytes = match msg.to_bytes() {
-                    Ok(b) => b,
-                    Err(e) => {
-                        error!("Failed to serialize tunnel message: {}", e);
-                        continue;
-                    }
+            'messages: while let Some(msg) = rx.recv().await {
+                let frames = match &write_sealer {
+                    // ADR-110: sealed to the computer it is for, or held
+                    // until its key arrives.
+                    Some(sealer) => sealer.outbound(msg).await,
+                    None => match msg.to_bytes() {
+                        Ok(b) => vec![b],
+                        Err(e) => {
+                            error!("Failed to serialize tunnel message: {}", e);
+                            continue;
+                        }
+                    },
                 };
-                if let Err(e) = write.send(Message::Binary(bytes)).await {
-                    error!("WebSocket write error: {}", e);
-                    break;
+                for bytes in frames {
+                    if let Err(e) = write.send(Message::Binary(bytes.into())).await {
+                        error!("WebSocket write error: {}", e);
+                        break 'messages;
+                    }
                 }
             }
         });
@@ -753,7 +772,10 @@ impl TunnelClient {
             }
             TunnelMessage::RuntimeHello { .. }
             | TunnelMessage::TunnelChallenge { .. }
-            | TunnelMessage::TunnelChallengeAck { .. } => {
+            | TunnelMessage::TunnelChallengeAck { .. }
+            | TunnelMessage::RuntimeKeysRequest { .. }
+            | TunnelMessage::RuntimeKeys { .. }
+            | TunnelMessage::RuntimeVouch { .. } => {
                 warn!("Unexpected control message received after auth");
             }
             TunnelMessage::TunnelReady { .. } => {
@@ -780,6 +802,7 @@ impl TunnelClient {
             runtime_id: self.credential.runtime_id.clone(),
             nonce,
             signature: signature_b64,
+            key_statement: self.sealer.as_ref().map(|s| s.statement().to_string()),
         })
     }
 

@@ -81,6 +81,7 @@ impl LocalFirstAgentDirectory {
                 priority,
                 principal.id.0.clone(),
                 AgentResolution {
+                    host_statement: None,
                     name: Some(config.name.clone()),
                     hub_id: hub_id.unwrap_or_default(),
                     local_id: principal.id.0.clone(),
@@ -170,6 +171,7 @@ impl AgentDirectory for LocalFirstAgentDirectory {
                 let hub_id = self.principal_manager.hub_id_of(&principal).await;
                 let config = principal.config.read().await;
                 return Ok(AgentResolution {
+                    host_statement: None,
                     name: Some(config.name.clone()),
                     hub_id: hub_id.unwrap_or_default(),
                     local_id: principal.id.0.clone(),

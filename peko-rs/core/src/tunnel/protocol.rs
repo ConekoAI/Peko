@@ -187,6 +187,11 @@ pub enum TunnelMessage {
         nonce: String,
         /// Ed25519 signature of nonce, verifiable using key derived from runtime_id
         signature: String,
+        /// ADR-110 D2: this runtime's key statement (a compact JWS by its
+        /// signing key over its X25519 agreement key), which PekoHub keeps
+        /// and serves to runtimes that seal to it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key_statement: Option<String>,
     },
 
     /// Server-issued nonce challenge after `RuntimeHello` is accepted
@@ -975,6 +980,55 @@ pub enum TunnelMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         group: Option<AccountGroup>,
     },
+
+    // --- ADR-110: keys to seal to ---
+    /// Ask PekoHub for the key statements of some runtimes, or of every
+    /// computer of an account (`user:hub:<id>`) with the vouches its
+    /// computers published.
+    #[serde(rename = "runtime_keys_request", rename_all = "camelCase")]
+    RuntimeKeysRequest {
+        request_id: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        runtime_ids: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+    },
+    /// PekoHub's answer: the statements it holds. A runtime it has no
+    /// statement for is left out. Every statement is checked against the
+    /// runtime it names, so PekoHub can leave one out but not make one.
+    #[serde(rename = "runtime_keys", rename_all = "camelCase")]
+    RuntimeKeys {
+        request_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+        #[serde(default)]
+        keys: Vec<RuntimeKeyEntry>,
+    },
+    /// ADR-110 D4: this runtime vouches for the computers of its account
+    /// the owner approved here (each a compact JWS by this runtime), so
+    /// people who pinned one of them seal to the others too.
+    #[serde(rename = "runtime_vouch", rename_all = "camelCase")]
+    RuntimeVouch { statements: Vec<String> },
+}
+
+/// A runtime's key statement as PekoHub serves it (ADR-110 D2), with the
+/// vouches other computers of its account published for it (D4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeKeyEntry {
+    pub runtime_id: String,
+    pub statement: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vouches: Vec<RuntimeVouchEntry>,
+}
+
+/// A vouch for a computer, by another computer of its account.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeVouchEntry {
+    /// The vouching runtime's id.
+    pub by: String,
+    pub statement: String,
 }
 
 /// A registered group as PekoHub lists it (ADR-092 D4/D5).
@@ -1122,6 +1176,7 @@ mod tests {
             runtime_id: "did:key:z6Mk".to_string(),
             nonce: "abc123".to_string(),
             signature: "sig".to_string(),
+            key_statement: None,
         };
         let bytes = msg.to_bytes().unwrap();
         let json = String::from_utf8(bytes.clone()).unwrap();
@@ -1142,6 +1197,7 @@ mod tests {
                 runtime_id,
                 nonce,
                 signature,
+                ..
             } => {
                 assert_eq!(runtime_id, "did:key:z6Mk");
                 assert_eq!(nonce, "abc123");

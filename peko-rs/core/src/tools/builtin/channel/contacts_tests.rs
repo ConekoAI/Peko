@@ -438,6 +438,7 @@ impl Fixture {
         }
         let directory = Arc::new(Directory {
             response: Mutex::new(AgentResolution {
+                host_statement: None,
                 name: Some("Remote".into()),
                 hub_id: "remote-hub".into(),
                 local_id: "prin_foreign".into(),

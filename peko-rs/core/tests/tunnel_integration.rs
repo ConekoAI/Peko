@@ -134,6 +134,7 @@ async fn authenticate_tunnel(
         runtime_id: did.to_string(),
         nonce,
         signature,
+        key_statement: None,
     };
     write
         .send(Message::Binary(hello.to_bytes().unwrap()))
@@ -344,6 +345,7 @@ async fn test_tunnel_rejects_invalid_signature() {
         runtime_id: did,
         nonce: "nonce".to_string(),
         signature: BASE64.encode([0u8; 64]),
+        key_statement: None,
     };
     write
         .send(Message::Binary(hello.to_bytes().unwrap()))

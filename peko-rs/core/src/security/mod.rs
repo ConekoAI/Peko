@@ -18,6 +18,7 @@ pub mod floor;
 pub mod judge;
 pub mod ledger;
 pub mod memory_gate;
+pub mod peko_keys;
 pub mod policy;
 pub mod proposals;
 pub mod stamps;

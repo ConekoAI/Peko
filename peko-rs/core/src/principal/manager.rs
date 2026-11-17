@@ -120,6 +120,7 @@ pub struct PrincipalManager {
     runtime_did: std::sync::OnceLock<String>,
     /// The owner's computers this one trusts (ADR-109), opened on first use.
     own_computers: std::sync::OnceLock<Arc<crate::security::computers::OwnComputers>>,
+    peko_keys: std::sync::OnceLock<Arc<crate::security::peko_keys::PekoKeys>>,
     tooling: Arc<crate::tools::runtime::ToolingRuntime>,
     principals: RwLock<HashMap<PrincipalId, Arc<Principal>>>,
     principals_by_name: RwLock<HashMap<String, PrincipalId>>,
@@ -220,6 +221,7 @@ impl PrincipalManager {
             self_ref: std::sync::OnceLock::new(),
             runtime_did: std::sync::OnceLock::new(),
             own_computers: std::sync::OnceLock::new(),
+            peko_keys: std::sync::OnceLock::new(),
             tooling: crate::tools::runtime::ToolingRuntime::standalone(),
             principals: RwLock::new(HashMap::new()),
             principals_by_name: RwLock::new(HashMap::new()),
@@ -237,6 +239,17 @@ impl PrincipalManager {
             dm_subscriber_hook: std::sync::RwLock::new(None),
             identity_vault: None,
         }
+    }
+
+    /// Which computer hosts each peko this runtime talks to, on the peko's
+    /// own word, and key changes waiting for the owner (ADR-110 D4):
+    /// `<runtime>/peko_keys.json`.
+    pub fn peko_keys(&self) -> Arc<crate::security::peko_keys::PekoKeys> {
+        Arc::clone(self.peko_keys.get_or_init(|| {
+            Arc::new(crate::security::peko_keys::PekoKeys::new(Some(
+                self.path_resolver.runtime_dir().join("peko_keys.json"),
+            )))
+        }))
     }
 
     /// The owner's computers this one trusts, and owner changes waiting

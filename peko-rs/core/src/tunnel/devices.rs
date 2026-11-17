@@ -140,6 +140,11 @@ pub struct DevicePairedPayload {
     pub ok: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// ADR-110 D7: the runtime's X25519 agreement key (base64url), which
+    /// the phone seals its requests to. Signed here by the key the phone
+    /// read from the computer's screen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agreement_key: Option<String>,
     pub iat: i64,
 }
 
@@ -316,6 +321,11 @@ pub fn sign_paired(
         runtime_id: runtime_id.into(),
         ok: outcome.is_ok(),
         error: outcome.as_ref().err().cloned(),
+        agreement_key: outcome.is_ok().then(|| {
+            super::seal::AgreementKey::derive(runtime_key)
+                .public()
+                .to_string()
+        }),
         iat: chrono::Utc::now().timestamp(),
     };
     jws_sign(
@@ -463,6 +473,9 @@ struct GateState {
     /// Request ids seen, with when each may be forgotten (unix seconds).
     seen: HashMap<String, i64>,
     watches: HashMap<String, Watch>,
+    /// ADR-110 D7: phones removed in the last minute, with their X25519
+    /// key, so the answer to their own `unpair` can still be sealed.
+    removed: HashMap<String, (String, Instant)>,
 }
 
 /// The runtime's paired devices and everything that decides whether a
@@ -701,7 +714,30 @@ impl DeviceGate {
         self.save(&devices)?;
         state.devices = devices;
         state.watches.remove(device_id);
+        state
+            .removed
+            .retain(|_, (_, at)| at.elapsed() < Duration::from_mins(1));
+        state.removed.insert(
+            device_id.to_string(),
+            (removed.agreement_key.clone(), Instant::now()),
+        );
         Ok(Some(removed))
+    }
+
+    /// The X25519 key to seal to `device_id` (ADR-110 D7): a paired
+    /// phone's, or that of one removed in the last minute, whose answer to
+    /// being removed is still on its way.
+    #[must_use]
+    pub fn sealing_key(&self, device_id: &str) -> Option<String> {
+        let state = self.state();
+        if let Some(record) = state.devices.iter().find(|d| d.device_id == device_id) {
+            return Some(record.agreement_key.clone());
+        }
+        state
+            .removed
+            .get(device_id)
+            .filter(|(_, at)| at.elapsed() < Duration::from_mins(1))
+            .map(|(key, _)| key.clone())
     }
 
     /// Check a device request (ADR-108 D3): signed by the key recorded
@@ -1168,8 +1204,12 @@ mod tests {
             )
             .is_err());
 
-        // Removed: refused from then on.
+        // Removed: refused from then on. Its key stays for a minute, so
+        // the answer to its own `unpair` can still be sealed (ADR-110 D7).
+        let key = gate.sealing_key(&phone.device_id).unwrap();
         assert!(gate.remove(&phone.device_id).unwrap().is_some());
+        assert_eq!(gate.sealing_key(&phone.device_id), Some(key));
+        assert_eq!(gate.sealing_key("dev_never_paired"), None);
         let (id, signature) =
             phone.request(gate.runtime_id(), "conversations", serde_json::json!({}));
         assert!(gate
