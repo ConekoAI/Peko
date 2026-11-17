@@ -12,6 +12,26 @@ This document defines the public API surface for Peko, including the new Unified
 
 ---
 
+## Sealed envelopes (ADR-110)
+
+`tunnel::seal` holds the sealing: `AgreementKey::derive(&SigningKey)`,
+`seal_to` / `AgreementKey::open` (HPKE), `seal_frame` / `open_frame`,
+`header_aad`, `SEALED_TYPES` / `HEADER_FIELDS`, key statements
+(`sign_key_statement`, `verify_key_statement`) and vouches (`sign_vouch`,
+`verify_vouch`). `Sealer` (`outbound`, `inbound` → `Inbound`) sits in
+`TunnelClient`'s write and read loops (`TunnelClient::with_sealer`); a
+`SealPolicy` tells it the local account, the owner's computers, and paired
+phones' keys (`daemon::state::DaemonSealPolicy`).
+`TunnelDispatcher::set_sealer` publishes vouches (`RuntimeVouch`) on
+connect and on each approved computer.
+
+`security::peko_keys::PekoKeys` (one per `PrincipalManager`,
+`peko_keys()`) pins each peko's signing key and holds key changes;
+`HubAgentDirectoryClient::with_peko_keys` checks every directory answer
+(`AgentResolution::host_statement`), refusing with
+`DirectoryError::Untrusted`. Key changes are approval requests of kind
+`key_change` beside `computer` and `owner_change`.
+
 ## Paired phones (ADR-108)
 
 IPC, local callers only: `device_pair_start` → `device_pair_started

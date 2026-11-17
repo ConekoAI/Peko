@@ -303,6 +303,9 @@ pub struct TunnelDispatcher {
     /// [`MAX_CONCURRENT_DISPATCHES`].
     inbound_semaphore: Arc<Semaphore>,
     registration_lock: Arc<tokio::sync::Mutex<()>>,
+    /// ADR-110: the tunnel's sealer, for the vouches this computer
+    /// publishes for the owner's other computers (D4).
+    sealer: Arc<std::sync::OnceLock<Arc<super::seal::Sealer>>>,
 }
 
 /// A verified inbound channel event, ready to apply.
@@ -437,6 +440,40 @@ impl TunnelDispatcher {
             tunnel_handle_slot,
             inbound_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_DISPATCHES)),
             registration_lock: Arc::new(tokio::sync::Mutex::new(())),
+            sealer: Arc::new(std::sync::OnceLock::new()),
+        }
+    }
+
+    /// ADR-110: the sealer the tunnel client uses.
+    pub fn set_sealer(&self, sealer: Arc<super::seal::Sealer>) {
+        let _ = self.sealer.set(sealer);
+    }
+
+    /// ADR-110 D4: vouch to PekoHub for every computer of this account the
+    /// owner approved here, so people who pinned one of the owner's
+    /// computers seal to the others too. Sent on every connect and on
+    /// every approval; PekoHub keeps the latest.
+    async fn publish_vouches(&self, handle: &TunnelHandle) {
+        use crate::security::computers::ComputerStatus;
+        let Some(sealer) = self.sealer.get() else {
+            return;
+        };
+        let manager = self.host.principal_manager();
+        let Some(account) = manager.local_account().await else {
+            return;
+        };
+        let approved = manager
+            .own_computers()
+            .list(&account)
+            .into_iter()
+            .filter(|c| c.status == ComputerStatus::Approved)
+            .map(|c| c.runtime);
+        let statements = sealer.vouches(&account, approved);
+        if statements.is_empty() {
+            return;
+        }
+        if let Err(e) = handle.send(TunnelMessage::RuntimeVouch { statements }) {
+            warn!("could not publish vouches for the owner's computers: {e}");
         }
     }
 
@@ -502,6 +539,10 @@ impl TunnelDispatcher {
             // ADR-109 D3: ask the computer for what it sent while it
             // waited (an empty receipt: "resend what waits for me").
             Decided::ComputerApproved { runtime, channels } => {
+                let handle = self.tunnel_handle_slot.read().await.clone();
+                if let Some(handle) = handle {
+                    self.publish_vouches(&handle).await;
+                }
                 let port = self.host.tunnel_channel_port();
                 for channel in channels {
                     port.send_receipt(
@@ -1069,6 +1110,7 @@ impl TunnelDispatcher {
                     // ADR-094: files that did not arrive yet.
                     port.retry_wanted(None).await;
                 });
+                self.publish_vouches(&handle).await;
                 // Announce all instances after auth
                 if let Err(e) = self.announce_instances(&handle).await {
                     warn!("Failed to announce instances: {}", e);
@@ -4936,6 +4978,99 @@ mod tests {
         );
     }
 
+    /// ADR-110 D4: a peko PekoHub names with another key waits for the
+    /// owner as a `key_change` request; approving pins the new key.
+    #[tokio::test]
+    async fn a_pekos_new_identity_waits_for_the_owner() {
+        use crate::principal::policy_gate::{
+            decide_request, pending_requests_for_owner, request_kind, Decision,
+        };
+        use crate::tunnel::tunnel_channel_signature::jws_sign;
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
+        seed_registered(&dispatcher, "mine").await;
+        let manager = dispatcher.host.principal_manager();
+        let principal = manager.get_by_name("mine").await.unwrap();
+        dispatcher
+            .host
+            .tunnel_channel_port()
+            .local()
+            .link_local_user(
+                &dispatcher.host.runtime_did(),
+                &uuid::Uuid::new_v4().to_string(),
+            )
+            .await
+            .unwrap();
+
+        let host = |key: &ed25519_dalek::SigningKey, runtime: &str| {
+            let did = crate::tunnel::verifying_key_to_did_key(&key.verifying_key());
+            let statement = jws_sign(
+                key,
+                &serde_json::to_vec(&serde_json::json!({
+                    "runtimeId": runtime, "principalDid": did, "iat": 1, "exp": 2
+                }))
+                .unwrap(),
+            );
+            (did, statement)
+        };
+        let first = ed25519_dalek::SigningKey::from_bytes(&[3u8; 32]);
+        let second = ed25519_dalek::SigningKey::from_bytes(&[4u8; 32]);
+        let keys = manager.peko_keys();
+        let (did, statement) = host(&first, "did:key:zR1");
+        keys.check(
+            "hub-ada",
+            Some("ada"),
+            &did,
+            "did:key:zR1",
+            Some(&statement),
+        )
+        .unwrap();
+        let (new_did, new_statement) = host(&second, "did:key:zR2");
+        assert!(keys
+            .check(
+                "hub-ada",
+                Some("ada"),
+                &new_did,
+                "did:key:zR2",
+                Some(&new_statement)
+            )
+            .is_err());
+
+        let pending = pending_requests_for_owner(&manager, &principal, None).await;
+        let request = pending
+            .iter()
+            .find(|r| request_kind(r).as_deref() == Some("key_change"))
+            .expect("the owner is asked");
+        assert!(crate::principal::policy_gate::request_summary(request).contains("ada"));
+        assert!(
+            decide_request(
+                &manager,
+                &principal,
+                &request.id,
+                Decision::Approve { always: true },
+            )
+            .await
+            .is_err(),
+            "approved once, never always"
+        );
+        decide_request(
+            &manager,
+            &principal,
+            &request.id,
+            Decision::Approve { always: false },
+        )
+        .await
+        .unwrap();
+        keys.check(
+            "hub-ada",
+            Some("ada"),
+            &new_did,
+            "did:key:zR2",
+            Some(&new_statement),
+        )
+        .unwrap();
+    }
+
     /// ADR-109 D2–D3: a computer signed in to the person's account but not
     /// yet approved is held; its post arrives once the owner approves it on
     /// this computer, and a denied one is refused.
@@ -6244,6 +6379,7 @@ mod tests {
         directory.register_hub_id(
             &source_hub,
             AgentResolution {
+                host_statement: None,
                 name: None,
                 hub_id: source_hub.clone(),
                 local_id: "prin_source".into(),
@@ -6444,6 +6580,7 @@ mod tests {
         directory.register_hub_id(
             &intruder_hub,
             AgentResolution {
+                host_statement: None,
                 name: None,
                 hub_id: intruder_hub.clone(),
                 local_id: "prin_intruder".into(),
@@ -6844,6 +6981,7 @@ mod tests {
         // A is the person's runtime, registered under their account.
         let directory = Arc::new(FakeAgentDirectory::new());
         let resolution = AgentResolution {
+            host_statement: None,
             runtime_id: b.app.runtime_did(),
             instance_id: "instance".into(),
             name: Some("peko".into()),
@@ -7342,6 +7480,7 @@ mod tests {
         directory.register_hub_id(
             &hub_id,
             AgentResolution {
+                host_statement: None,
                 runtime_id: b.app.runtime_did(),
                 instance_id: "instance".into(),
                 name: Some("peko".into()),
@@ -8136,6 +8275,7 @@ mod tests {
         directory.register_hub_id(
             &hub_id,
             AgentResolution {
+                host_statement: None,
                 runtime_id: rt.app.runtime_did(),
                 instance_id: format!("{name}-instance"),
                 name: Some(name.into()),
@@ -8970,6 +9110,7 @@ mod tests {
             directory.register_hub_id(
                 &hub_id,
                 AgentResolution {
+                    host_statement: None,
                     runtime_id: runtime.app.runtime_did(),
                     instance_id: format!("{name}-instance"),
                     name: Some(name.into()),
@@ -9539,6 +9680,7 @@ mod tests {
         directory.register_hub_id(
             &hub_id,
             AgentResolution {
+                host_statement: None,
                 runtime_id: host.app.runtime_did(),
                 instance_id: "instance".into(),
                 name: Some("peko".into()),
@@ -9856,6 +9998,7 @@ mod tests {
         directory.register_hub_id(
             &hub_id,
             AgentResolution {
+                host_statement: None,
                 runtime_id: l1.app.runtime_did(),
                 instance_id: "instance".into(),
                 name: Some("peko".into()),
@@ -10198,6 +10341,7 @@ mod tests {
         directory.register_hub_id(
             &hub_id,
             AgentResolution {
+                host_statement: None,
                 runtime_id: host.app.runtime_did(),
                 instance_id: "instance".into(),
                 name: Some("peko".into()),
@@ -10408,6 +10552,7 @@ mod tests {
         directory.register_hub_id(
             &hub_id,
             AgentResolution {
+                host_statement: None,
                 runtime_id: host.app.runtime_did(),
                 instance_id: "instance".into(),
                 name: Some("peko".into()),
@@ -10606,6 +10751,7 @@ mod tests {
             directory.register_hub_id(
                 &hub_id,
                 AgentResolution {
+                    host_statement: None,
                     runtime_id: runtime.app.runtime_did(),
                     instance_id: format!("{name}-instance"),
                     name: Some(name.into()),

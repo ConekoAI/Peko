@@ -2387,6 +2387,7 @@ mod tests {
         directory.register_hub_id(
             "remote-hub",
             crate::tunnel::hub_directory::AgentResolution {
+                host_statement: None,
                 name: None,
                 hub_id: "remote-hub".into(),
                 local_id: "prin_remote".into(),

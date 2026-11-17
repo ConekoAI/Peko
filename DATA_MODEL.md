@@ -22,6 +22,53 @@ This document defines every on-disk and in-memory data format used by the Peko r
 
 ---
 
+## Sealed envelopes (ADR-110)
+
+**On the wire.** Every `tunnel_*` envelope one computer sends another
+through PekoHub (channel events, invites, history, attachment requests and
+pieces, DM lists, person DM invites and routes, peko models and approvals,
+read marks, group invitations and joins, and a phone's requests, answers
+and events) keeps only its header readable — `type`, `requestId`,
+`sourceRuntimeId`, `recipientRuntimeId`, `recipientAccount`,
+`sourcePrincipalDid`, `sourceHubId`, `channelId`, `deviceId`, `runtimeId`,
+`size` — and carries every other field in `sealed`: base64url of the
+32-byte HPKE encapsulated key and the ciphertext (RFC 9180 base mode,
+DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, ChaCha20-Poly1305, `info`
+`peko-tunnel-seal/1`). The plaintext is the JSON object of the other
+fields, with `senderKey` (the sender's key statement) when a runtime
+sends. The associated data is the header fields present, in that order,
+one `name=<JSON value>` per line. An envelope addressed to an account is
+sent as one copy per computer, each with `recipientRuntimeId`. A frame of
+these types without `sealed`, or with a readable field outside the header,
+is dropped by PekoHub and refused by the runtime.
+
+New tunnel messages: `runtime_hello.keyStatement`;
+`runtime_keys_request { requestId, runtimeIds?, account? }` →
+`runtime_keys { requestId, account?, keys: [{ runtimeId, statement,
+vouches?: [{ by, statement }] }] }`; `runtime_vouch { statements }`.
+
+**Key statement** — compact JWS (EdDSA) by the runtime key over
+`{ v: "peko-runtime-key/1", runtime_id, agreement_key, iat }`. The
+agreement key is HPKE `DeriveKeyPair` over `"peko-agreement-key/1"` and
+the runtime key's seed. **Vouch** — compact JWS by a runtime over
+`{ v: "peko-computer-vouch/1", account: "user:hub:<id>", runtime_id, iat }`.
+**Host statement** — the announce's `principalPop` (JWS by the peko's
+signing key over `{ runtimeId, principalDid, iat, exp }`), served by the
+directory as `hostStatement`. `tunnel_device_paired`'s signed payload gains
+`agreement_key`.
+
+**`<config>/runtime/sealing.json`** — mode `0600`. `keys`: runtime id →
+agreement key (base64url), from verified statements. `accounts`:
+`user:hub:<id>` → runtime id → `{ via: "first" | "vouch:<runtime>", at }`,
+the other people's computers this one seals to. A missing file is learned
+again from PekoHub; the pins start afresh.
+
+**`<config>/runtime/peko_keys.json`** — mode `0600`. `pins`: Hub ID →
+`{ signing_did, pinned_at }`, the key each peko this runtime talks to was
+first seen with. `changes`: `[{ hub_id, name?, pinned, offered,
+reported_at }]`, waiting for the owner as approval requests
+`apr_keychange<hex>` (kind `key_change`).
+
 ## Paired phones and the person's read mark (ADR-108)
 
 **`<config>/runtime/device_uploads/<deviceId>/<id>`** — a file a phone is

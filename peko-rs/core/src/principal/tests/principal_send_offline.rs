@@ -651,6 +651,7 @@ fn remote_resolution(
     agent_did: &str,
 ) -> crate::tunnel::hub_directory::AgentResolution {
     crate::tunnel::hub_directory::AgentResolution {
+        host_statement: None,
         name: None,
         hub_id: hub_id.into(),
         local_id: "prin_remote".into(),

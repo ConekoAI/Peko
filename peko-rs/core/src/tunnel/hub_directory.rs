@@ -76,6 +76,10 @@ pub struct AgentResolution {
     /// before issuing the outbound a2a (an unexposed agent shouldn't
     /// be addressable even if the directory leaks it).
     pub exposure: ResolvedExposure,
+    /// ADR-110 D4: the peko's own signed word (a compact JWS by
+    /// `agent_did`) that it is hosted on `runtime_id`.
+    #[serde(default)]
+    pub host_statement: Option<String>,
 }
 
 /// Mirror of pekohub's `instance.exposure` enum.
@@ -113,6 +117,11 @@ pub enum DirectoryError {
     /// the caller.
     #[error("agent directory: transport or decode error: {0}")]
     Transport(String),
+    /// ADR-110 D4: the answer does not show, on the peko's own word, that
+    /// it is hosted where PekoHub says, or names another key than the one
+    /// this runtime knows it by. Nothing is sent to it.
+    #[error("agent directory: {0}")]
+    Untrusted(String),
 }
 
 /// The minimal interface the outbound a2a path needs. Hold this trait
@@ -185,6 +194,9 @@ pub struct HubAgentDirectoryClient {
     /// This runtime's DID and key: a person's lookup without a PekoHub
     /// token of their own is signed by the runtime they signed in on.
     runtime_key: Option<(String, std::sync::Arc<ed25519_dalek::SigningKey>)>,
+    /// ADR-110 D4: every answer is checked against the peko's own word
+    /// and the key pinned for it.
+    peko_keys: Option<std::sync::Arc<crate::security::peko_keys::PekoKeys>>,
 }
 
 impl HubAgentDirectoryClient {
@@ -201,6 +213,7 @@ impl HubAgentDirectoryClient {
             base_url: base_url.into(),
             principal_keys: None,
             runtime_key: None,
+            peko_keys: None,
             // Reasonable default; the call-site adds per-request
             // timeouts via the outbound a2a policy layer.
             http: reqwest::Client::builder()
@@ -246,6 +259,52 @@ impl HubAgentDirectoryClient {
         Ok(format!("{input}.{signature}"))
     }
 
+    #[cfg(test)]
+    fn clone_for_test(&self) -> Self {
+        Self {
+            base_url: self.base_url.clone(),
+            http: self.http.clone(),
+            principal_keys: self.principal_keys.clone(),
+            runtime_key: self.runtime_key.clone(),
+            peko_keys: self.peko_keys.clone(),
+        }
+    }
+
+    /// Use an answer only when the peko itself says it is hosted where
+    /// PekoHub says, by the key pinned for it (ADR-110 D4).
+    #[must_use]
+    pub fn with_peko_keys(
+        mut self,
+        keys: std::sync::Arc<crate::security::peko_keys::PekoKeys>,
+    ) -> Self {
+        self.peko_keys = Some(keys);
+        self
+    }
+
+    /// ADR-110 D4: check an answer against the peko's host statement and
+    /// its pinned key.
+    fn checked(
+        &self,
+        answer: Result<AgentResolution, DirectoryError>,
+    ) -> Result<AgentResolution, DirectoryError> {
+        let resolution = answer?;
+        let Some(keys) = &self.peko_keys else {
+            return Ok(resolution);
+        };
+        keys.check(
+            &resolution.hub_id,
+            resolution.name.as_deref(),
+            &resolution.agent_did,
+            &resolution.runtime_id,
+            resolution.host_statement.as_deref(),
+        )
+        .map_err(|refusal| {
+            tracing::warn!(hub_id = %resolution.hub_id, runtime = %resolution.runtime_id, "not using PekoHub's answer: {refusal}");
+            DirectoryError::Untrusted(refusal.to_string())
+        })?;
+        Ok(resolution)
+    }
+
     pub fn with_principal_keys(
         mut self,
         keys: std::sync::Arc<dyn super::cross_runtime_channel::PrincipalSigningKeys>,
@@ -274,7 +333,7 @@ impl HubAgentDirectoryClient {
             .send()
             .await
             .map_err(|e| DirectoryError::Transport(e.to_string()))?;
-        Self::handle_response(response).await
+        self.checked(Self::handle_response(response).await)
     }
 
     /// Build a client from the runtime's stored PekoHub credential by
@@ -332,7 +391,7 @@ impl HubAgentDirectoryClient {
             .send()
             .await
             .map_err(|e| DirectoryError::Transport(e.to_string()))?;
-        Self::handle_response(response).await
+        self.checked(Self::handle_response(response).await)
     }
 
     /// Map an HTTP response status + body into our `DirectoryError`
@@ -408,7 +467,7 @@ impl AgentDirectory for HubAgentDirectoryClient {
             .send()
             .await
             .map_err(|e| DirectoryError::Transport(format!("GET {url} failed: {e}")))?;
-        Self::handle_response(resp).await
+        self.checked(Self::handle_response(resp).await)
     }
 
     async fn resolve_by_handle(
@@ -429,7 +488,7 @@ impl AgentDirectory for HubAgentDirectoryClient {
             .send()
             .await
             .map_err(|e| DirectoryError::Transport(format!("GET {url} failed: {e}")))?;
-        Self::handle_response(resp).await
+        self.checked(Self::handle_response(resp).await)
     }
 }
 
@@ -576,6 +635,7 @@ mod tests {
 
     fn sample_resolution() -> AgentResolution {
         AgentResolution {
+            host_statement: None,
             name: None,
             hub_id: "12345678-1234-4234-8234-123456789abc".into(),
             local_id: "prin_target".into(),
@@ -715,6 +775,91 @@ mod tests {
             HubAgentDirectoryClient::from_credential(&cred),
             Err(DirectoryError::Transport(_))
         ));
+    }
+
+    /// ADR-110 D4: an answer is used only with the peko's own word that it
+    /// is hosted on the runtime PekoHub names, and by the key pinned for it.
+    #[tokio::test]
+    async fn uses_an_answer_only_with_the_pekos_word_for_its_host() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        async fn answer(
+            client: &HubAgentDirectoryClient,
+            body: String,
+        ) -> Result<AgentResolution, DirectoryError> {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buf = vec![0u8; 8192];
+                let _ = socket.read(&mut buf).await.unwrap();
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                socket.write_all(reply.as_bytes()).await.unwrap();
+            });
+            let client = HubAgentDirectoryClient {
+                base_url: base,
+                ..client.clone_for_test()
+            };
+            let out = client.resolve_by_hub_id("h1").await;
+            server.await.unwrap();
+            out
+        }
+
+        fn body(runtime: &str, did: &str, statement: Option<&str>) -> String {
+            serde_json::json!({
+                "hubId": "h1", "localId": "prin_x", "identityKey": "k", "runtimeId": runtime,
+                "instanceId": "i", "agentDid": did, "ownerPrincipal": {"kind": "user", "id": "bob"},
+                "exposure": "private", "hostStatement": statement,
+            })
+            .to_string()
+        }
+
+        let peko = ed25519_dalek::SigningKey::from_bytes(&rand::random::<[u8; 32]>());
+        let did = crate::tunnel::verifying_key_to_did_key(&peko.verifying_key());
+        let host = |runtime: &str| {
+            crate::tunnel::tunnel_channel_signature::jws_sign(
+                &peko,
+                &serde_json::to_vec(&serde_json::json!({
+                    "runtimeId": runtime, "principalDid": did, "iat": 1, "exp": 2
+                }))
+                .unwrap(),
+            )
+        };
+        let keys = std::sync::Arc::new(crate::security::peko_keys::PekoKeys::new(None));
+        let client = HubAgentDirectoryClient::new("http://unused").with_peko_keys(keys);
+
+        let ok = answer(
+            &client,
+            body("did:key:zR1", &did, Some(&host("did:key:zR1"))),
+        )
+        .await;
+        assert_eq!(ok.unwrap().runtime_id, "did:key:zR1");
+        // PekoHub names another computer than the peko did.
+        let moved = answer(
+            &client,
+            body("did:key:zHub", &did, Some(&host("did:key:zR1"))),
+        )
+        .await;
+        assert!(matches!(moved, Err(DirectoryError::Untrusted(_))));
+        // No word from the peko at all.
+        let bare = answer(&client, body("did:key:zR1", &did, None)).await;
+        assert!(matches!(bare, Err(DirectoryError::Untrusted(_))));
+        // Another key for the same peko waits for the owner.
+        let other = ed25519_dalek::SigningKey::from_bytes(&rand::random::<[u8; 32]>());
+        let other_did = crate::tunnel::verifying_key_to_did_key(&other.verifying_key());
+        let forged = crate::tunnel::tunnel_channel_signature::jws_sign(
+            &other,
+            &serde_json::to_vec(&serde_json::json!({
+                "runtimeId": "did:key:zHub", "principalDid": other_did, "iat": 1, "exp": 2
+            }))
+            .unwrap(),
+        );
+        let swapped = answer(&client, body("did:key:zHub", &other_did, Some(&forged))).await;
+        assert!(matches!(swapped, Err(DirectoryError::Untrusted(_))));
+        assert_eq!(client.peko_keys.as_ref().unwrap().pending().len(), 1);
     }
 
     /// `FakeAgentDirectory` round-trips a registered hit. Pins the

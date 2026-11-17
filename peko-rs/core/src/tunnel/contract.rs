@@ -14,7 +14,8 @@
 use super::protocol::{
     AccountDm, AccountGroup, AccountPersonDm, DmBlock, DmRoute, ExposureUpdatePayload,
     InstanceAnnouncePayload, InstanceDeregisterPayload, InstanceExposure, InstanceHeartbeatPayload,
-    InstanceStatus, InstanceType, PekoApproval, PekoModel, StatusUpdatePayload, TunnelMessage,
+    InstanceStatus, InstanceType, PekoApproval, PekoModel, RuntimeKeyEntry, RuntimeVouchEntry,
+    StatusUpdatePayload, TunnelMessage,
 };
 use peko_protocol::channel::{
     Attachment, ChannelEvent, ChannelId, ConversationKind, InitialMember,
@@ -89,6 +90,9 @@ fn variant(message: &TunnelMessage) -> &'static str {
         TunnelMessage::AccountGroups { .. } => "account_groups",
         TunnelMessage::GroupLookupRequest { .. } => "group_lookup_request",
         TunnelMessage::GroupLookup { .. } => "group_lookup",
+        TunnelMessage::RuntimeKeysRequest { .. } => "runtime_keys_request",
+        TunnelMessage::RuntimeKeys { .. } => "runtime_keys",
+        TunnelMessage::RuntimeVouch { .. } => "runtime_vouch",
     }
 }
 
@@ -154,6 +158,9 @@ const ALL_VARIANTS: &[&str] = &[
     "account_groups",
     "group_lookup_request",
     "group_lookup",
+    "runtime_keys_request",
+    "runtime_keys",
+    "runtime_vouch",
 ];
 
 const RUNTIME_A: &str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
@@ -184,6 +191,7 @@ fn samples() -> Vec<TunnelMessage> {
             runtime_id: RUNTIME_A.into(),
             nonce: "client-nonce".into(),
             signature: "hello-signature".into(),
+            key_statement: Some("runtime-key-statement".into()),
         },
         TunnelMessage::TunnelChallenge {
             nonce: "server-nonce".into(),
@@ -686,11 +694,59 @@ fn samples() -> Vec<TunnelMessage> {
                 channel_id: "chan_0123abcd".into(),
             }),
         },
+        TunnelMessage::RuntimeKeysRequest {
+            request_id: "keys-1".into(),
+            runtime_ids: vec![RUNTIME_B.into()],
+            account: Some("user:hub:5f0c1e2a-0000-4000-8000-000000000001".into()),
+        },
+        TunnelMessage::RuntimeKeys {
+            request_id: "keys-1".into(),
+            account: Some("user:hub:5f0c1e2a-0000-4000-8000-000000000001".into()),
+            keys: vec![RuntimeKeyEntry {
+                runtime_id: RUNTIME_B.into(),
+                statement: "runtime-key-statement".into(),
+                vouches: vec![RuntimeVouchEntry {
+                    by: RUNTIME_A.into(),
+                    statement: "vouch-statement".into(),
+                }],
+            }],
+        },
+        TunnelMessage::RuntimeVouch {
+            statements: vec!["vouch-statement".into()],
+        },
     ]
 }
 
+/// A sample as PekoHub sees it on the wire: a sealed type (ADR-110 D1)
+/// keeps its header and carries the rest in `sealed`, addressed to one
+/// computer; everything else as serialized.
+fn wire_form(message: &TunnelMessage) -> serde_json::Value {
+    let value = serde_json::to_value(message).expect("samples serialize");
+    let serde_json::Value::Object(map) = value else {
+        return value;
+    };
+    let ty = map
+        .get("type")
+        .and_then(|t| t.as_str())
+        .unwrap_or("")
+        .to_string();
+    if !super::seal::is_sealed_type(&ty) {
+        return serde_json::Value::Object(map);
+    }
+    let mut header: serde_json::Map<String, serde_json::Value> = map
+        .into_iter()
+        .filter(|(k, _)| super::seal::HEADER_FIELDS.contains(&k.as_str()))
+        .collect();
+    if !ty.starts_with("tunnel_device_") && !header.contains_key("recipientRuntimeId") {
+        header.insert("recipientRuntimeId".into(), RUNTIME_B.into());
+    }
+    header.insert("sealed".into(), "hpke-sealed-body".into());
+    serde_json::Value::Object(header)
+}
+
 fn render(messages: &[TunnelMessage]) -> String {
-    let mut out = serde_json::to_string_pretty(messages).expect("samples serialize");
+    let wire: Vec<serde_json::Value> = messages.iter().map(wire_form).collect();
+    let mut out = serde_json::to_string_pretty(&wire).expect("samples serialize");
     out.push('\n');
     out
 }
@@ -719,6 +775,13 @@ fn the_fixture_is_the_samples() {
 
 #[test]
 fn the_fixture_decodes() {
-    let messages: Vec<TunnelMessage> = serde_json::from_str(FIXTURE).expect("fixture decodes");
-    assert_eq!(messages.len(), samples().len());
+    let frames: Vec<serde_json::Value> = serde_json::from_str(FIXTURE).expect("fixture parses");
+    assert_eq!(frames.len(), samples().len());
+    for frame in frames {
+        if frame.get("sealed").is_some() {
+            // Opened by the recipient before it is decoded (ADR-110).
+            continue;
+        }
+        serde_json::from_value::<TunnelMessage>(frame).expect("fixture decodes");
+    }
 }

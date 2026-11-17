@@ -21,6 +21,7 @@ pub mod invite_token;
 pub mod local_directory;
 pub mod protocol;
 pub mod registration;
+pub mod seal;
 pub mod tls;
 pub mod tunnel_channel_audit;
 pub mod tunnel_channel_port;

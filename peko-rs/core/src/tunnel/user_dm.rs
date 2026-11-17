@@ -408,6 +408,7 @@ mod tests {
 
     fn resolution(hub_id: &str, runtime: &str) -> AgentResolution {
         AgentResolution {
+            host_statement: None,
             runtime_id: runtime.into(),
             instance_id: "instance".into(),
             name: Some("peko".into()),

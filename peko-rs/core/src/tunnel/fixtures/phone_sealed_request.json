@@ -1,0 +1,7 @@
+{
+  "type": "tunnel_device_request",
+  "requestId": "req_phone",
+  "deviceId": "dev_fixture0000000000000000",
+  "runtimeId": "did:key:z6MkvDqGT54cXesYGvABpF1UapVNwjCqRcafi4Px6Thv5T3Z",
+  "sealed": "35GPqy4_ZNFIJM8NBn3ZfFrz_yH8STfoXVItmyebc1ws4kLS24IjyqDGFoiOh3uXzIm3iBfrUvahcVGFkmeq1td3LgsYrqcD5QjIljOMBK3XscJ9cZM5wQ"
+}

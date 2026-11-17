@@ -6,6 +6,25 @@ All notable changes to Peko.
 
 ### Security
 
+- **What crosses PekoHub is sealed to the computer it is for (ADR-110).**
+  Posts, invites, conversation history, files, DM lists, approvals and
+  their decisions, read marks, and everything a paired phone asks and is
+  told reached PekoHub readable inside TLS. Each is now sealed with HPKE
+  (X25519, ChaCha20-Poly1305) to the one computer it is for; PekoHub sees
+  only who sends, to whom, and in which conversation. Each runtime has an
+  X25519 key, derived from its runtime key and published as a statement
+  that key signs, so PekoHub can withhold a key but not make one. A
+  message to a person goes only to their computers this one trusts: your
+  own once you approved them (ADR-109), someone else's from the first
+  contact on and, after that, the ones their trusted computers vouch for.
+  A peko is reached only on the computer it names itself; if PekoHub names
+  it with another identity, nothing goes to it until you approve the
+  change (approval kind `key_change`). Nothing of these kinds is sent or
+  accepted unsealed, so **this breaks the tunnel wire**: runtimes before
+  this change and after it no longer exchange messages, and it needs a
+  PekoHub that keeps key statements. It ships in a minor bump. Visitor chat
+  through PekoHub's website, and who talks to whom and when, stay visible
+  to PekoHub. On disk: `runtime/sealing.json`, `runtime/peko_keys.json`.
 - **PekoHub can no longer get this computer's signature on a message it
   wrote.** When connecting, the runtime signs a challenge from PekoHub
   with the same key that signs every message it sends to other
