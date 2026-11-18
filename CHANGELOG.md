@@ -4,6 +4,8 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-18
+
 ### Security
 
 - **Every person and peko has a code you can compare (ADR-112).** Thirty
