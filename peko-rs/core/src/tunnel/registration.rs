@@ -106,6 +106,18 @@ fn default_poll_interval() -> u64 {
 /// The OAuth client the CLI signs in as (pekohub ADR-007).
 const CLI_CLIENT_ID: &str = "peko-cli";
 
+/// How the CLI names itself to the Hub, e.g. `peko/0.1.7 (macos)`. The
+/// sign-in page shows it beside where the request came from (pekohub
+/// ADR-013), so a person can tell a code they started from one they were
+/// sent.
+fn user_agent() -> String {
+    format!(
+        "peko/{} ({})",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS
+    )
+}
+
 /// Start signing the CLI in to the Hub at `origin`: the user approves the
 /// returned code on the website, while [`finish_device_sign_in`] waits.
 ///
@@ -115,6 +127,7 @@ pub async fn start_device_sign_in(origin: &str) -> Result<DeviceSignIn> {
     let origin = crate::tunnel::credential::official_hub_url(&hub_http_origin(origin)?);
     let response = reqwest::Client::new()
         .post(format!("{origin}/oauth/device/code"))
+        .header(reqwest::header::USER_AGENT, user_agent())
         .form(&[("client_id", CLI_CLIENT_ID)])
         .send()
         .await
@@ -552,6 +565,15 @@ mod tests {
                     request.contains("client_id=peko-cli"),
                     "CLI client id missing"
                 );
+                if path == "/oauth/device/code" {
+                    // pekohub ADR-013: the consent page names the program.
+                    assert!(
+                        request
+                            .to_ascii_lowercase()
+                            .contains(&format!("user-agent: peko/{}", env!("CARGO_PKG_VERSION"))),
+                        "no user agent: {request}"
+                    );
+                }
                 let response = format!(
                     "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                     body.len()

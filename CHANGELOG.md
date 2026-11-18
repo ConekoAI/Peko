@@ -6,6 +6,11 @@ All notable changes to Peko.
 
 ### Security
 
+- **`peko auth login` names itself to PekoHub** (`peko/<version> (<os>)`)
+  when it asks for a sign-in code. PekoHub's sign-in page shows it beside
+  where the request came from, so a code someone else started and sent you
+  is easier to tell from your own (pekohub ADR-013). The CLI's sign-in now
+  only registers computers, and a default PekoHub API key does the same.
 - **Your devices are one signed list, and a device joins by a code
   (ADR-111).** Which computers and phones are yours used to be answered
   three ways: a phone paired with one computer by a QR code, another
