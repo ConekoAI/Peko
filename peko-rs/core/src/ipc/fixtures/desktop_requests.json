@@ -80,9 +80,11 @@
   {"type": "channel_dm_request_answer", "protocol_version": 1, "request_id": 1, "channel": "dm_0000000000000000000000000000000000000000000000000000000000000000", "answer": "accept"},
   {"type": "channel_block_person", "protocol_version": 1, "request_id": 1, "account": "0b6c7a4e-1d2f-4a3b-8c9d-0e1f2a3b4c5d", "blocked": true},
   {"type": "channel_blocked", "protocol_version": 1, "request_id": 1},
-  {"type": "device_pair_start", "protocol_version": 1, "request_id": 1},
+  {"type": "device_add", "protocol_version": 1, "request_id": 1},
+  {"type": "device_join", "protocol_version": 1, "request_id": 1, "code": "K7DX-KQ7R-MTPZ"},
   {"type": "device_list", "protocol_version": 1, "request_id": 1},
   {"type": "device_remove", "protocol_version": 1, "request_id": 1, "device_id": "dev_5f0c1c1e9a7b4f52"},
+  {"type": "security_decide", "protocol_version": 1, "request_id": 1, "id": "apr_keychange0123456789", "approve": true},
   {"type": "channel_mark_read", "protocol_version": 1, "request_id": 1, "channel": "dm_0000000000000000000000000000000000000000000000000000000000000000", "at": "2026-11-15T00:30:16Z"},
   {"type": "channel_read_state", "protocol_version": 1, "request_id": 1}
 ]

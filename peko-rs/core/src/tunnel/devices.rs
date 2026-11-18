@@ -1,37 +1,30 @@
-//! Paired phones (ADR-108): the records, the pairing proof, what a device
-//! signs and what the runtime signs back, and notifications sealed to a
-//! device's key.
+//! Phones (ADR-108): what a device signs and what the runtime signs back,
+//! and notifications sealed to a device's key.
 //!
 //! A phone runs no runtime. It asks one of its owner's computers through
-//! PekoHub, and that runtime answers a request only when it is signed by a
-//! key recorded in `devices.json`. That key was enrolled with a secret the
-//! phone read from the computer's screen, so PekoHub, which relays every
-//! message, can neither enroll a key nor act as the owner. Everything the
-//! runtime sends a device is signed with the runtime's key, which the
-//! phone learned from the same screen.
+//! PekoHub, and that runtime answers a request only when it is signed by
+//! the key of a phone on the owner's device list (ADR-111 D5). A phone
+//! joins that list by a code shown on a device already on it, so PekoHub,
+//! which relays every message, can neither enroll a key nor act as the
+//! owner. Everything the runtime sends a device is signed with the
+//! runtime's key, which is on the same list.
 //!
-//! This module holds no daemon state: [`DeviceGate`] keeps the records,
-//! the open pairings, the replay window and the watches; the daemon
-//! carries out the verbs (`daemon/devices.rs`).
+//! This module holds no daemon state: [`DeviceGate`] keeps the phones the
+//! list names, the replay window and the watches; the daemon carries out
+//! the verbs (`daemon/devices.rs`).
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use ed25519_dalek::{SigningKey, VerifyingKey};
-use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
 
 use super::tunnel_channel_signature::{jws_sign, jws_verify};
 
-/// Version tag of a pairing proof.
-pub const DEVICE_PAIR_VERSION: &str = "peko-device-pair/1";
-/// Version tag of the runtime's answer to a pairing.
-pub const DEVICE_PAIRED_VERSION: &str = "peko-device-paired/1";
 /// Version tag of a device request.
 pub const DEVICE_REQUEST_VERSION: &str = "peko-device-request/1";
 /// Version tag of the runtime's answer to a device request.
@@ -43,10 +36,6 @@ pub const DEVICE_NOTIFY_VERSION: &str = "peko-device-notify/1";
 /// Version tag of a read mark sent between a person's runtimes.
 pub const READ_MARK_VERSION: &str = "peko-read-mark/1";
 
-/// How long a pairing shown on the computer may be used.
-pub const PAIRING_TTL: Duration = Duration::from_mins(10);
-/// Wrong proofs that end a pairing.
-const PAIRING_MAX_FAILURES: u32 = 3;
 /// Longest a device request may be valid for, and how long its id is
 /// remembered (seconds).
 pub const REQUEST_WINDOW_SECS: i64 = 300;
@@ -56,17 +45,17 @@ const EXP_LEEWAY_SECS: i64 = 30;
 const IAT_FUTURE_SECS: i64 = 60;
 /// A watch the runtime does not hear from for this long ends.
 pub const WATCH_TTL: Duration = Duration::from_secs(90);
-/// Most devices one runtime pairs with.
-const MAX_DEVICES: usize = 16;
-
-/// A paired phone, as `devices.json` keeps it.
+/// A phone on the owner's device list, as the gate keeps it. Before
+/// ADR-111 these were stored in `devices.json` (read once, by the upgrade
+/// pass).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceRecord {
     pub device_id: String,
     /// What the phone calls itself ("Mira's iPhone").
     pub name: String,
-    /// `ios` or `android`.
+    /// `ios` or `android` (empty for a phone that joined by a code).
+    #[serde(default)]
     pub platform: String,
     /// ed25519 public key, base64url: signs the device's requests.
     pub signing_key: String,
@@ -79,73 +68,31 @@ pub struct DeviceRecord {
     pub last_seen: Option<String>,
 }
 
+impl DeviceRecord {
+    /// A phone on the device list (ADR-111): its Hub id, its name, and the
+    /// keys the list carries. `None` for a phone without a Hub id.
+    #[must_use]
+    pub fn from_member(member: &crate::security::device_list::Member) -> Option<Self> {
+        let device = &member.device;
+        let key = super::did_key_to_verifying_key(&device.id).ok()?;
+        Some(Self {
+            device_id: device.hub_device_id.clone()?,
+            name: device.name.clone().unwrap_or_default(),
+            platform: String::new(),
+            signing_key: URL_SAFE_NO_PAD.encode(key.to_bytes()),
+            agreement_key: device.agreement_key.clone(),
+            paired_at: chrono::DateTime::from_timestamp(member.added_at, 0)
+                .unwrap_or_default()
+                .to_rfc3339(),
+            last_seen: None,
+        })
+    }
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct DevicesFile {
     #[serde(default)]
     devices: Vec<DeviceRecord>,
-}
-
-/// What the computer shows for a phone to scan.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PairingOffer {
-    pub pairing_id: String,
-    /// 32 random bytes, base64url. Shown on screen and never sent.
-    pub secret: String,
-    pub runtime_id: String,
-    pub hub_url: String,
-    /// RFC 3339.
-    pub expires_at: String,
-}
-
-impl PairingOffer {
-    /// The text the QR code holds.
-    #[must_use]
-    pub fn qr_text(&self) -> String {
-        let mut url = url::Url::parse("peko://pair").expect("static URL");
-        url.query_pairs_mut()
-            .append_pair("v", "1")
-            .append_pair("hub", &self.hub_url)
-            .append_pair("runtime", &self.runtime_id)
-            .append_pair("id", &self.pairing_id)
-            .append_pair("secret", &self.secret);
-        url.into()
-    }
-}
-
-/// The signed payload of a `TunnelDevicePair` proof.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DevicePairPayload {
-    pub v: String,
-    pub pairing_id: String,
-    pub runtime_id: String,
-    pub device_id: String,
-    pub name: String,
-    pub platform: String,
-    pub signing_key: String,
-    pub agreement_key: String,
-    pub iat: i64,
-    pub exp: i64,
-    /// HMAC-SHA256 under the pairing secret over [`pairing_mac_input`],
-    /// base64url.
-    pub mac: String,
-}
-
-/// The signed payload of a `TunnelDevicePaired`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DevicePairedPayload {
-    pub v: String,
-    pub request_id: String,
-    pub device_id: String,
-    pub runtime_id: String,
-    pub ok: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-    /// ADR-110 D7: the runtime's X25519 agreement key (base64url), which
-    /// the phone seals its requests to. Signed here by the key the phone
-    /// read from the computer's screen.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agreement_key: Option<String>,
-    pub iat: i64,
 }
 
 /// The signed payload of a `TunnelDeviceRequest`.
@@ -223,39 +170,6 @@ pub struct ReadMarkPayload {
     pub exp: i64,
 }
 
-/// What the pairing MAC covers: the pairing, the runtime, the device and
-/// both of its keys, one per line after the version tag.
-#[must_use]
-pub fn pairing_mac_input(
-    pairing_id: &str,
-    runtime_id: &str,
-    device_id: &str,
-    signing_key: &str,
-    agreement_key: &str,
-) -> String {
-    format!(
-        "{DEVICE_PAIR_VERSION}\n{pairing_id}\n{runtime_id}\n{device_id}\n{signing_key}\n{agreement_key}"
-    )
-}
-
-/// The pairing MAC, base64url. `secret` is the offer's secret as shown.
-///
-/// # Errors
-///
-/// `secret` is not base64url.
-pub fn pairing_mac(secret: &str, input: &str) -> Result<String, String> {
-    Ok(URL_SAFE_NO_PAD.encode(pairing_hmac(secret, input)?.finalize().into_bytes()))
-}
-
-fn pairing_hmac(secret: &str, input: &str) -> Result<Hmac<Sha256>, String> {
-    let key = URL_SAFE_NO_PAD
-        .decode(secret)
-        .map_err(|_| "pairing secret is not base64url".to_string())?;
-    let mut mac = Hmac::<Sha256>::new_from_slice(&key).map_err(|e| e.to_string())?;
-    mac.update(input.as_bytes());
-    Ok(mac)
-}
-
 /// Decode a base64url ed25519 public key.
 fn signing_key_of(encoded: &str) -> Result<VerifyingKey, String> {
     let bytes: [u8; 32] = URL_SAFE_NO_PAD
@@ -264,16 +178,6 @@ fn signing_key_of(encoded: &str) -> Result<VerifyingKey, String> {
         .and_then(|b| b.try_into().ok())
         .ok_or("signing key must be 32 bytes, base64url")?;
     VerifyingKey::from_bytes(&bytes).map_err(|_| "signing key is not an ed25519 key".to_string())
-}
-
-/// The payload segment of a compact JWS, decoded, before its signature
-/// is checked (to learn which key should have signed it).
-fn unverified_payload<T: serde::de::DeserializeOwned>(compact: &str) -> Result<T, String> {
-    let segment = compact.split('.').nth(1).ok_or("not a compact JWS")?;
-    let bytes = URL_SAFE_NO_PAD
-        .decode(segment)
-        .map_err(|_| "payload is not base64url")?;
-    serde_json::from_slice(&bytes).map_err(|e| format!("payload is not valid: {e}"))
 }
 
 fn verified_payload<T: serde::de::DeserializeOwned>(
@@ -296,42 +200,6 @@ fn check_freshness(iat: i64, exp: i64) -> Result<(), String> {
         return Err("[stale] the request is valid for too long".into());
     }
     Ok(())
-}
-
-fn valid_device_id(id: &str) -> bool {
-    (8..=64).contains(&id.len())
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-}
-
-/// Sign the runtime's answer to a pairing.
-#[must_use]
-pub fn sign_paired(
-    runtime_key: &SigningKey,
-    request_id: &str,
-    device_id: &str,
-    runtime_id: &str,
-    outcome: &Result<DeviceRecord, String>,
-) -> String {
-    let payload = DevicePairedPayload {
-        v: DEVICE_PAIRED_VERSION.into(),
-        request_id: request_id.into(),
-        device_id: device_id.into(),
-        runtime_id: runtime_id.into(),
-        ok: outcome.is_ok(),
-        error: outcome.as_ref().err().cloned(),
-        agreement_key: outcome.is_ok().then(|| {
-            super::seal::AgreementKey::derive(runtime_key)
-                .public()
-                .to_string()
-        }),
-        iat: chrono::Utc::now().timestamp(),
-    };
-    jws_sign(
-        runtime_key,
-        &serde_json::to_vec(&payload).expect("payload serializes"),
-    )
 }
 
 /// Sign the runtime's answer to a device request.
@@ -454,13 +322,6 @@ pub fn verify_read_mark(
     Ok(payload)
 }
 
-struct Pairing {
-    secret: String,
-    expires: Instant,
-    expires_at: String,
-    failures: u32,
-}
-
 struct Watch {
     seq: u64,
     heard: Instant,
@@ -469,7 +330,6 @@ struct Watch {
 #[derive(Default)]
 struct GateState {
     devices: Vec<DeviceRecord>,
-    pairings: HashMap<String, Pairing>,
     /// Request ids seen, with when each may be forgotten (unix seconds).
     seen: HashMap<String, i64>,
     watches: HashMap<String, Watch>,
@@ -478,11 +338,13 @@ struct GateState {
     removed: HashMap<String, (String, Instant)>,
 }
 
-/// The runtime's paired devices and everything that decides whether a
+/// The phones on the owner's list and everything that decides whether a
 /// device message is believed.
 pub struct DeviceGate {
     path: PathBuf,
     runtime_id: String,
+    /// What `devices.json` held before ADR-111, for the upgrade pass.
+    legacy: Vec<DeviceRecord>,
     /// Requests issued before this are refused: the seen list starts
     /// empty at every start.
     started_at: i64,
@@ -505,12 +367,12 @@ impl DeviceGate {
         self.path.with_file_name("device_uploads")
     }
 
-    /// Load the records at `path` (`<runtime>/devices.json`); a missing
-    /// file is no devices. An unreadable one is logged and read as none,
-    /// so every device must pair again rather than any being believed.
+    /// A gate with no phones yet. `path` is `<runtime>/devices.json`: what
+    /// it held before ADR-111 is read once, for the upgrade pass; the
+    /// device list names the phones from then on ([`DeviceGate::set_phones`]).
     #[must_use]
     pub fn load(path: PathBuf, runtime_id: String) -> Self {
-        let devices = match std::fs::read(&path) {
+        let legacy = match std::fs::read(&path) {
             Ok(bytes) => match serde_json::from_slice::<DevicesFile>(&bytes) {
                 Ok(file) => file.devices,
                 Err(e) => {
@@ -523,11 +385,9 @@ impl DeviceGate {
         Self {
             path,
             runtime_id,
+            legacy,
             started_at: chrono::Utc::now().timestamp(),
-            state: Mutex::new(GateState {
-                devices,
-                ..GateState::default()
-            }),
+            state: Mutex::new(GateState::default()),
         }
     }
 
@@ -541,154 +401,57 @@ impl DeviceGate {
         &self.runtime_id
     }
 
-    fn save(&self, devices: &[DeviceRecord]) -> Result<(), String> {
-        write_private(
-            &self.path,
-            &serde_json::to_vec_pretty(&DevicesFile {
-                devices: devices.to_vec(),
+    /// The phones `devices.json` held before ADR-111 (the upgrade pass
+    /// moves them onto the list).
+    #[must_use]
+    pub fn legacy(&self) -> Vec<DeviceRecord> {
+        self.legacy.clone()
+    }
+
+    /// The phones on the owner's list now. A phone that left it is no
+    /// longer believed; its watch ends, and its key stays for a minute so
+    /// the answer to its own removal can still be sealed (ADR-110 D7).
+    /// Returns the phones that left.
+    pub fn set_phones(&self, phones: Vec<DeviceRecord>) -> Vec<DeviceRecord> {
+        let mut state = self.state();
+        let gone: Vec<DeviceRecord> = state
+            .devices
+            .iter()
+            .filter(|d| !phones.iter().any(|p| p.device_id == d.device_id))
+            .cloned()
+            .collect();
+        let last_seen: HashMap<String, Option<String>> = state
+            .devices
+            .iter()
+            .map(|d| (d.device_id.clone(), d.last_seen.clone()))
+            .collect();
+        state.devices = phones
+            .into_iter()
+            .map(|mut p| {
+                p.last_seen = last_seen.get(&p.device_id).cloned().flatten();
+                p
             })
-            .expect("devices serialize"),
-        )
-        .map_err(|e| format!("could not save {}: {e}", self.path.display()))
-    }
-
-    /// Open a pairing for the owner to show: single use, ten minutes.
-    #[must_use]
-    pub fn start_pairing(&self, hub_url: &str) -> PairingOffer {
-        use rand::RngCore as _;
-        let mut secret = [0u8; 32];
-        rand::rngs::OsRng.fill_bytes(&mut secret);
-        let secret = URL_SAFE_NO_PAD.encode(secret);
-        let pairing_id = format!("pair_{}", &uuid::Uuid::new_v4().simple().to_string()[..16]);
-        let expires_at = (chrono::Utc::now()
-            + chrono::Duration::from_std(PAIRING_TTL).expect("ten minutes"))
-        .to_rfc3339();
-        let mut state = self.state();
-        let now = Instant::now();
-        state.pairings.retain(|_, p| p.expires > now);
-        state.pairings.insert(
-            pairing_id.clone(),
-            Pairing {
-                secret: secret.clone(),
-                expires: now + PAIRING_TTL,
-                expires_at: expires_at.clone(),
-                failures: 0,
-            },
-        );
-        PairingOffer {
-            pairing_id,
-            secret,
-            runtime_id: self.runtime_id.clone(),
-            hub_url: hub_url.to_string(),
-            expires_at,
-        }
-    }
-
-    /// Check a pairing proof and record the device (ADR-108 D2).
-    ///
-    /// # Errors
-    ///
-    /// A sentence for the phone to show: the pairing is unknown, used or
-    /// expired, the proof is not the phone's, or it was not made with the
-    /// secret on the screen.
-    pub fn pair(
-        &self,
-        runtime_id: &str,
-        device_id: &str,
-        proof: &str,
-    ) -> Result<DeviceRecord, String> {
-        const BAD: &str = "This pairing code did not work. Show a new one on your computer.";
-        let claimed: DevicePairPayload = unverified_payload(proof).map_err(|_| BAD.to_string())?;
-        let key = signing_key_of(&claimed.signing_key)?;
-        let payload: DevicePairPayload =
-            verified_payload(&key, proof).map_err(|_| BAD.to_string())?;
-        if payload.v != DEVICE_PAIR_VERSION
-            || payload.runtime_id != self.runtime_id
-            || runtime_id != self.runtime_id
-            || payload.device_id != device_id
-        {
-            return Err(BAD.into());
-        }
-        check_freshness(payload.iat, payload.exp)?;
-        if !valid_device_id(device_id) {
-            return Err("That device id is not valid.".into());
-        }
-        let agreement: [u8; 32] = URL_SAFE_NO_PAD
-            .decode(&payload.agreement_key)
-            .ok()
-            .and_then(|b| b.try_into().ok())
-            .ok_or("agreement key must be 32 bytes, base64url")?;
-        let _ = agreement;
-        let name: String = payload.name.trim().chars().take(64).collect();
-        if name.is_empty() || !matches!(payload.platform.as_str(), "ios" | "android") {
-            return Err("The phone did not say what it is.".into());
-        }
-
-        let mut state = self.state();
-        let now = Instant::now();
-        state.pairings.retain(|_, p| p.expires > now);
-        let Some(pairing) = state.pairings.get_mut(&payload.pairing_id) else {
-            return Err("That pairing code has expired. Show a new one on your computer.".into());
-        };
-        let input = pairing_mac_input(
-            &payload.pairing_id,
-            &payload.runtime_id,
-            &payload.device_id,
-            &payload.signing_key,
-            &payload.agreement_key,
-        );
-        let mac_ok = URL_SAFE_NO_PAD
-            .decode(&payload.mac)
-            .ok()
-            .zip(pairing_hmac(&pairing.secret, &input).ok())
-            .is_some_and(|(mac, expected)| expected.verify_slice(&mac).is_ok());
-        if !mac_ok {
-            pairing.failures += 1;
-            if pairing.failures >= PAIRING_MAX_FAILURES {
-                state.pairings.remove(&payload.pairing_id);
-            }
-            return Err(BAD.into());
-        }
-        state.pairings.remove(&payload.pairing_id);
-
-        let record = DeviceRecord {
-            device_id: device_id.to_string(),
-            name,
-            platform: payload.platform,
-            signing_key: payload.signing_key,
-            agreement_key: payload.agreement_key,
-            paired_at: chrono::Utc::now().to_rfc3339(),
-            last_seen: None,
-        };
-        let mut devices = state.devices.clone();
-        devices.retain(|d| d.device_id != device_id);
-        if devices.len() >= MAX_DEVICES {
-            return Err("This computer is paired with too many phones. Remove one first.".into());
-        }
-        devices.push(record.clone());
-        self.save(&devices)?;
-        state.devices = devices;
-        Ok(record)
-    }
-
-    /// When the pairing `pairing_id` stops working, while it is open.
-    #[must_use]
-    pub fn pairing_expires_at(&self, pairing_id: &str) -> Option<String> {
-        let state = self.state();
+            .collect();
         state
-            .pairings
-            .get(pairing_id)
-            .filter(|p| p.expires > Instant::now())
-            .map(|p| p.expires_at.clone())
+            .removed
+            .retain(|_, (_, at)| at.elapsed() < Duration::from_mins(1));
+        for d in &gone {
+            state.watches.remove(&d.device_id);
+            state.removed.insert(
+                d.device_id.clone(),
+                (d.agreement_key.clone(), Instant::now()),
+            );
+        }
+        gone
     }
 
-    /// Every paired device, oldest pairing first.
+    /// Every phone on the list, oldest first.
     #[must_use]
     pub fn devices(&self) -> Vec<DeviceRecord> {
         self.state().devices.clone()
     }
 
-    /// The record of `device_id`, when paired.
+    /// The phone `device_id`, when it is on the list.
     #[must_use]
     pub fn device(&self, device_id: &str) -> Option<DeviceRecord> {
         self.state()
@@ -698,33 +461,7 @@ impl DeviceGate {
             .cloned()
     }
 
-    /// Delete a device's record and end its watch. Returns the record
-    /// removed, if there was one.
-    ///
-    /// # Errors
-    ///
-    /// The file could not be written; the record stays.
-    pub fn remove(&self, device_id: &str) -> Result<Option<DeviceRecord>, String> {
-        let mut state = self.state();
-        let Some(index) = state.devices.iter().position(|d| d.device_id == device_id) else {
-            return Ok(None);
-        };
-        let mut devices = state.devices.clone();
-        let removed = devices.remove(index);
-        self.save(&devices)?;
-        state.devices = devices;
-        state.watches.remove(device_id);
-        state
-            .removed
-            .retain(|_, (_, at)| at.elapsed() < Duration::from_mins(1));
-        state.removed.insert(
-            device_id.to_string(),
-            (removed.agreement_key.clone(), Instant::now()),
-        );
-        Ok(Some(removed))
-    }
-
-    /// The X25519 key to seal to `device_id` (ADR-110 D7): a paired
+    /// The X25519 key to seal to `device_id` (ADR-110 D7): a listed
     /// phone's, or that of one removed in the last minute, whose answer to
     /// being removed is still on its way.
     #[must_use]
@@ -756,7 +493,7 @@ impl DeviceGate {
         runtime_id: &str,
         signature: &str,
     ) -> Result<(DeviceRecord, DeviceRequestPayload), String> {
-        let unpaired = || "[unpaired] This phone is not paired with this computer.".to_string();
+        let unpaired = || "[unpaired] This phone is not on your account's devices.".to_string();
         let device = self.device(device_id).ok_or_else(unpaired)?;
         let key = signing_key_of(&device.signing_key).map_err(|_| unpaired())?;
         let payload: DeviceRequestPayload =
@@ -782,21 +519,10 @@ impl DeviceGate {
         state
             .seen
             .insert(request_id.to_string(), payload.exp + EXP_LEEWAY_SECS);
-        // `last_seen` is for the Devices list: kept to the minute, so a
-        // busy phone does not rewrite the file on every request.
+        // `last_seen` is for the Devices list, to the minute.
         let stamp = chrono::Utc::now().format("%Y-%m-%dT%H:%M:00Z").to_string();
-        let mut seen_now = None;
         if let Some(record) = state.devices.iter_mut().find(|d| d.device_id == device_id) {
-            if record.last_seen.as_deref() != Some(&stamp) {
-                record.last_seen = Some(stamp);
-                seen_now = Some(());
-            }
-        }
-        if seen_now.is_some() {
-            let devices = state.devices.clone();
-            if let Err(e) = self.save(&devices) {
-                tracing::debug!("device last-seen not saved: {e}");
-            }
+            record.last_seen = Some(stamp);
         }
         Ok((device, payload))
     }
@@ -851,29 +577,6 @@ impl DeviceGate {
     }
 }
 
-/// Write `bytes` to `path` through a temp file, readable by the owner
-/// only: the file names keys that act as the owner.
-fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write as _;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
-    {
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt as _;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&tmp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-    }
-    std::fs::rename(&tmp, path)
-}
-
 /// A fresh ed25519 key (tests).
 #[cfg(any(test, feature = "test-utils"))]
 #[must_use]
@@ -925,42 +628,30 @@ pub mod test_device {
             URL_SAFE_NO_PAD.encode(self.signing.verifying_key().to_bytes())
         }
 
-        /// The pairing proof for what the phone scanned.
+        /// The phone as the device list records it (ADR-111).
         #[must_use]
-        pub fn pair_proof(&self, offer: &PairingOffer) -> String {
-            self.pair_proof_with(offer, &offer.secret)
+        pub fn list_device(&self) -> crate::security::device_list::Device {
+            crate::security::device_list::Device {
+                id: crate::security::device_list::did_of(&self.signing),
+                kind: crate::security::device_list::DeviceKind::Phone,
+                name: Some("Test phone".into()),
+                agreement_key: self.agreement_key.clone(),
+                hub_device_id: Some(self.device_id.clone()),
+            }
         }
 
-        /// A pairing proof made with `secret` instead of the offer's.
+        /// The gate's record of this phone, as if it were on the list.
         #[must_use]
-        pub fn pair_proof_with(&self, offer: &PairingOffer, secret: &str) -> String {
-            let iat = chrono::Utc::now().timestamp();
-            let signing_key = self.signing_key();
-            let mac = pairing_mac(
-                secret,
-                &pairing_mac_input(
-                    &offer.pairing_id,
-                    &offer.runtime_id,
-                    &self.device_id,
-                    &signing_key,
-                    &self.agreement_key,
-                ),
-            )
-            .expect("secret is base64url");
-            let payload = DevicePairPayload {
-                v: DEVICE_PAIR_VERSION.into(),
-                pairing_id: offer.pairing_id.clone(),
-                runtime_id: offer.runtime_id.clone(),
+        pub fn record(&self) -> DeviceRecord {
+            DeviceRecord {
                 device_id: self.device_id.clone(),
                 name: "Test phone".into(),
-                platform: "ios".into(),
-                signing_key,
+                platform: String::new(),
+                signing_key: self.signing_key(),
                 agreement_key: self.agreement_key.clone(),
-                iat,
-                exp: iat + 120,
-                mac,
-            };
-            jws_sign(&self.signing, &serde_json::to_vec(&payload).unwrap())
+                paired_at: chrono::Utc::now().to_rfc3339(),
+                last_seen: None,
+            }
         }
 
         /// A signed request: its id and its signature.
@@ -1055,117 +746,10 @@ mod tests {
     }
 
     #[test]
-    fn a_phone_pairs_with_the_secret_on_the_screen_once() {
-        let (dir, gate, _) = gate();
-        let phone = TestDevice::new();
-        let offer = gate.start_pairing("https://hub.test");
-        assert!(offer
-            .qr_text()
-            .starts_with("peko://pair?v=1&hub=https%3A%2F%2Fhub.test&runtime=did"));
-
-        let record = gate
-            .pair(
-                gate.runtime_id(),
-                &phone.device_id,
-                &phone.pair_proof(&offer),
-            )
-            .expect("pairs");
-        assert_eq!(record.signing_key, phone.signing_key());
-        assert_eq!(gate.devices(), vec![record.clone()]);
-
-        // Single use.
-        let second = TestDevice::new();
-        assert!(gate
-            .pair(
-                gate.runtime_id(),
-                &second.device_id,
-                &second.pair_proof(&offer)
-            )
-            .is_err());
-
-        // The record outlives the process, readable by the owner only.
-        let reloaded = DeviceGate::load(dir.path().join("devices.json"), gate.runtime_id().into());
-        assert_eq!(reloaded.devices(), vec![record]);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            let mode = std::fs::metadata(dir.path().join("devices.json"))
-                .unwrap()
-                .permissions()
-                .mode();
-            assert_eq!(mode & 0o777, 0o600);
-        }
-    }
-
-    /// PekoHub relays the proof but never sees the secret: a key enrolled
-    /// without it is refused, and three wrong proofs end the pairing.
-    #[test]
-    fn a_proof_made_without_the_secret_is_refused() {
-        let (_dir, gate, _) = gate();
-        let offer = gate.start_pairing("https://hub.test");
-        let wrong = URL_SAFE_NO_PAD.encode([7u8; 32]);
-        for _ in 0..3 {
-            let intruder = TestDevice::new();
-            assert!(gate
-                .pair(
-                    gate.runtime_id(),
-                    &intruder.device_id,
-                    &intruder.pair_proof_with(&offer, &wrong)
-                )
-                .is_err());
-        }
-        assert!(gate.devices().is_empty());
-        let phone = TestDevice::new();
-        assert!(
-            gate.pair(
-                gate.runtime_id(),
-                &phone.device_id,
-                &phone.pair_proof(&offer)
-            )
-            .is_err(),
-            "the pairing ended after three wrong proofs"
-        );
-    }
-
-    /// A proof whose keys were swapped after signing fails the phone's
-    /// own signature; one re-signed by another key fails the MAC.
-    #[test]
-    fn a_proof_for_another_device_or_runtime_is_refused() {
+    fn a_request_is_believed_once_and_only_from_a_listed_key() {
         let (_dir, gate, _) = gate();
         let phone = TestDevice::new();
-        let offer = gate.start_pairing("https://hub.test");
-        let proof = phone.pair_proof(&offer);
-        assert!(gate
-            .pair(gate.runtime_id(), "dev_someone_else", &proof)
-            .is_err());
-        assert!(gate
-            .pair("did:key:z6MkOther", &phone.device_id, &proof)
-            .is_err());
-        let mut elsewhere = offer.clone();
-        elsewhere.runtime_id = "did:key:z6MkOther".into();
-        assert!(gate
-            .pair(
-                gate.runtime_id(),
-                &phone.device_id,
-                &phone.pair_proof(&elsewhere)
-            )
-            .is_err());
-        assert!(gate
-            .pair(gate.runtime_id(), &phone.device_id, &proof)
-            .is_ok());
-    }
-
-    #[test]
-    fn a_request_is_believed_once_and_only_from_a_paired_key() {
-        let (_dir, gate, _) = gate();
-        let phone = TestDevice::new();
-        let offer = gate.start_pairing("https://hub.test");
-        gate.pair(
-            gate.runtime_id(),
-            &phone.device_id,
-            &phone.pair_proof(&offer),
-        )
-        .unwrap();
+        gate.set_phones(vec![phone.record()]);
 
         let (id, signature) =
             phone.request(gate.runtime_id(), "conversations", serde_json::json!({}));
@@ -1207,7 +791,7 @@ mod tests {
         // Removed: refused from then on. Its key stays for a minute, so
         // the answer to its own `unpair` can still be sealed (ADR-110 D7).
         let key = gate.sealing_key(&phone.device_id).unwrap();
-        assert!(gate.remove(&phone.device_id).unwrap().is_some());
+        assert_eq!(gate.set_phones(Vec::new()).len(), 1);
         assert_eq!(gate.sealing_key(&phone.device_id), Some(key));
         assert_eq!(gate.sealing_key("dev_never_paired"), None);
         let (id, signature) =
@@ -1222,13 +806,7 @@ mod tests {
     fn a_request_made_before_the_runtime_started_is_refused() {
         let (_dir, mut gate, _) = gate();
         let phone = TestDevice::new();
-        let offer = gate.start_pairing("https://hub.test");
-        gate.pair(
-            gate.runtime_id(),
-            &phone.device_id,
-            &phone.pair_proof(&offer),
-        )
-        .unwrap();
+        gate.set_phones(vec![phone.record()]);
         let (id, signature) =
             phone.request(gate.runtime_id(), "conversations", serde_json::json!({}));
         gate.started_at = chrono::Utc::now().timestamp() + 200;
@@ -1295,13 +873,7 @@ mod tests {
     fn a_watch_ends_when_asked_and_counts_its_events() {
         let (_dir, gate, _) = gate();
         let phone = TestDevice::new();
-        let offer = gate.start_pairing("https://hub.test");
-        gate.pair(
-            gate.runtime_id(),
-            &phone.device_id,
-            &phone.pair_proof(&offer),
-        )
-        .unwrap();
+        gate.set_phones(vec![phone.record()]);
         assert!(gate.next_events().is_empty());
         gate.watch(&phone.device_id);
         assert!(gate.has_watchers());

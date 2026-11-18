@@ -44,8 +44,9 @@ is dropped by PekoHub and refused by the runtime.
 
 New tunnel messages: `runtime_hello.keyStatement`;
 `runtime_keys_request { requestId, runtimeIds?, account? }` →
-`runtime_keys { requestId, account?, keys: [{ runtimeId, statement,
-vouches?: [{ by, statement }] }] }`; `runtime_vouch { statements }`.
+`runtime_keys { requestId, account?, keys: [{ runtimeId, statement }] }`.
+A sealed body may carry `senderDevices { account, seq, hash }`, the head
+of the sender's account's device list (ADR-111 D2).
 
 **Key statement** — compact JWS (EdDSA) by the runtime key over
 `{ v: "peko-runtime-key/1", runtime_id, agreement_key, iat }`. The
@@ -54,14 +55,12 @@ the runtime key's seed. **Vouch** — compact JWS by a runtime over
 `{ v: "peko-computer-vouch/1", account: "user:hub:<id>", runtime_id, iat }`.
 **Host statement** — the announce's `principalPop` (JWS by the peko's
 signing key over `{ runtimeId, principalDid, iat, exp }`), served by the
-directory as `hostStatement`. `tunnel_device_paired`'s signed payload gains
-`agreement_key`.
+directory as `hostStatement`.
 
 **`<config>/runtime/sealing.json`** — mode `0600`. `keys`: runtime id →
-agreement key (base64url), from verified statements. `accounts`:
-`user:hub:<id>` → runtime id → `{ via: "first" | "vouch:<runtime>", at }`,
-the other people's computers this one seals to. A missing file is learned
-again from PekoHub; the pins start afresh.
+agreement key (base64url), from verified statements. A missing file is
+learned again from PekoHub. Which computers are a person's is the device
+list's (ADR-111), not this file's.
 
 **`<config>/runtime/peko_keys.json`** — mode `0600`. `pins`: Hub ID →
 `{ signing_did, pinned_at }`, the key each peko this runtime talks to was
@@ -69,53 +68,54 @@ first seen with. `changes`: `[{ hub_id, name?, pinned, offered,
 reported_at }]`, waiting for the owner as approval requests
 `apr_keychange<hex>` (kind `key_change`).
 
-## Paired phones and the person's read mark (ADR-108)
+## Devices and the person's read mark (ADR-108, ADR-111)
 
 **`<config>/runtime/device_uploads/<deviceId>/<id>`** — a file a phone is
 sending, piece by piece, until its post names it (ADR-108 D10). The post
 moves it into the channel's file store; one that is never posted is
 removed after an hour, when that phone next starts a file.
 
-**`<config>/runtime/own_computers.json`** — the owner's other computers
-this one trusts, and owner changes PekoHub reported that wait for the owner
-(ADR-109), mode `0600`. It belongs to one Hub account (`account`); another
-account starts it afresh. A missing or unreadable file trusts no other
-computer: the owner is asked again. `seeded` records that the upgrade pass
-approved the computers already carrying the account here.
+**`<config>/runtime/device_lists.json`** — every account's device list
+this runtime holds (ADR-111), mode `0600`. `accounts`: `user:hub:<id>` →
+the chain of links, each `{ by, signed, joiner? }` (`signed` a compact JWS
+by `by` over the link payload; `joiner` the added device's own JWS over the
+same payload). `resets`: `[{ account, links, reported_at }]`, a contact's
+chain with another genesis, waiting for the owner as `apr_devreset<hex>`.
+`upgraded`: the accounts whose per-computer files were moved onto the list
+(ADR-111 D7). A missing file holds no lists: the own list is fetched again,
+and contacts are pinned afresh at the next contact.
 
 ```json
-{ "account": "6f1c2a52-58b6-4b8e-9d1c-6a3f0b6f1a01",
-  "seeded": true,
-  "computers": [ {
-    "runtime": "did:key:z6Mk…",
-    "status": "approved | pending | denied",
-    "first_seen": "2026-11-17T10:00:00Z",
-    "decided_at": "2026-11-17T10:02:00Z",
-    "via": "local | <runtime did> | device:<id> | upgrade",
-    "held_channels": ["chan_…"] } ],
-  "owner_changes": [ {
-    "local_id": "prin_…", "hub_id": "…", "owner_id": "…",
-    "reported_at": "2026-11-17T10:00:00Z" } ] }
+{ "accounts": { "user:hub:6f1c…": [
+    { "by": "did:key:z6Mk…", "signed": "eyJ…" },
+    { "by": "did:key:z6Mk…", "signed": "eyJ…", "joiner": "eyJ…" } ] },
+  "upgraded": ["user:hub:6f1c…"] }
 ```
 
-**`<config>/runtime/devices.json`** — the phones paired with this runtime,
-mode `0600`. A missing file is no phones; an unreadable one is read as
-none, so every phone must pair again.
+Link payload (the JWS body; `prev` = base64url SHA-256 of the previous
+link's `signed`, absent at 0; `via: "upgrade"` only on an add moved from
+the old files):
 
 ```json
-{ "devices": [ {
-  "deviceId": "dev_5f0c1c1e9a7b4f52",
-  "name": "Mira's iPhone",
-  "platform": "ios",
-  "signingKey": "<ed25519 public key, 32 bytes, base64url>",
-  "agreementKey": "<X25519 public key, 32 bytes, base64url>",
-  "pairedAt": "2026-11-14T10:00:00+00:00",
-  "lastSeen": "2026-11-14T10:05:00Z"
-} ] }
+{ "v": "peko-device-list/1", "account": "user:hub:6f1c…", "seq": 1,
+  "prev": "…", "op": "add",
+  "device": { "id": "did:key:z6Mk…", "kind": "computer | phone",
+              "name": "Mira's iPhone", "agreement_key": "<X25519, base64url>",
+              "hub_device_id": "dev_…" },
+  "iat": 1795000000 }
 ```
 
-`lastSeen` is kept to the minute. At most 16 devices. Open pairings, the
-seen request ids and watches are in memory only.
+A remove is `"op": "remove", "device_id": "did:key:…"`. At most 64 devices
+and 4096 links.
+
+**`<config>/runtime/own_computers.json`** — owner changes PekoHub reported
+that wait for the owner (ADR-109 D5), mode `0600`. Its `computers` list of
+approved computers is read once, by the upgrade pass, and no longer
+decides anything (ADR-111 D7).
+
+**`<config>/runtime/devices.json`** — the phones paired with this runtime
+before device lists, read once by the upgrade pass (ADR-111 D7). Phones
+are now on the device list; last-seen times are in memory only.
 
 **`read_marks.json`** (per channel) gains two keys beside the session
 keys: `person`, the `msg_id` of the newest post this runtime's person has

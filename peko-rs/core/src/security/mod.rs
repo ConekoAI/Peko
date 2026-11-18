@@ -14,7 +14,9 @@
 //! the principal layer supplies trust through [`stamps::TrustSource`].
 
 pub mod computers;
+pub mod device_list;
 pub mod floor;
+pub mod join;
 pub mod judge;
 pub mod ledger;
 pub mod memory_gate;

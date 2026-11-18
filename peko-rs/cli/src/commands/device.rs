@@ -1,59 +1,62 @@
-//! `peko device`: the phones paired with this computer (ADR-108) and your
-//! other computers it trusts (ADR-109).
+//! `peko device`: your account's devices (ADR-111).
 //!
-//! A paired phone reads and posts as you through this computer. Pairing
-//! shows a code for the phone to scan; the code is shown here and nowhere
-//! else, so only someone at this computer can add a phone.
+//! Your computers and phones are one list, signed by the devices on it.
+//! A device joins with a code shown on one already on the list: `peko
+//! device add` here shows it, and on the new device you type it (`peko
+//! device join` on a computer) or scan it (the phone app). Nothing else
+//! adds a device: a PekoHub sign-in alone does not.
 //!
-//! Another computer signed in to your PekoHub account speaks as you here
-//! only once you approve it: the first time it tries, it waits, and is
-//! listed here as pending.
+//! `approve` and `deny` decide what waits about your account: a peko's
+//! owner changed on PekoHub, a peko PekoHub names with a new identity, or
+//! a contact whose devices started over.
 
 use crate::commands::GlobalPaths;
 use clap::Subcommand;
 use peko_core::ipc::{DaemonClient, ResponsePacket};
 
-/// Phone and computer subcommands
+/// Device subcommands
 #[derive(Subcommand)]
 #[command(disable_version_flag = true)]
 pub enum DeviceCommands {
-    /// Show a code for a phone to scan
+    /// Show a code that adds a device to your account
     ///
-    /// The code works once and for ten minutes. Open Peko on the phone,
-    /// sign in, and scan it.
-    Pair,
+    /// The code works once and for ten minutes. On a phone, open Peko and
+    /// scan it; on another computer, run `peko device join <code>`.
+    Add,
 
-    /// List the phones paired with this computer and your other computers
+    /// Join this computer to your account with a code from another device
+    ///
+    /// On a device already on your account, choose Add a device (or run
+    /// `peko device add`) and type the code it shows here.
+    Join {
+        /// The code, like ABCD-EFGH-JKMN
+        code: String,
+    },
+
+    /// List your account's devices, and what waits for you about it
     List,
 
-    /// Let one of your other computers use your pekos here as you
+    /// Remove a device from your account
     ///
-    /// Approve only a computer you just started using Peko on: it can then
-    /// do anything you can with your pekos here.
-    Approve {
-        /// The computer's id (`apr_computer…` or `did:key:…`), from `peko device list`
-        id: String,
-    },
-
-    /// Refuse a computer that asked to use your pekos here as you
-    Deny {
-        /// The computer's id (`apr_computer…` or `did:key:…`), from `peko device list`
-        id: String,
-    },
-
-    /// Remove a paired phone, or stop trusting one of your computers
-    ///
-    /// Neither can read or act as you through this computer afterwards.
+    /// No computer of yours acts on it afterwards. It can join again with a
+    /// new code.
     Remove {
-        /// The phone's id, or the computer's (`apr_computer…` or `did:key:…`),
-        /// from `peko device list`
+        /// The device's id (`did:key:…`, or a phone's `dev_…`), from
+        /// `peko device list`
         device_id: String,
     },
-}
 
-/// Whether `id` names a computer rather than a phone.
-fn is_computer_id(id: &str) -> bool {
-    id.starts_with("apr_computer") || id.starts_with("did:key:")
+    /// Approve something that waits about your account (from `peko device list`)
+    Approve {
+        /// Its id (`apr_owner…`, `apr_keychange…`, `apr_devreset…`)
+        id: String,
+    },
+
+    /// Refuse something that waits about your account
+    Deny {
+        /// Its id (`apr_owner…`, `apr_keychange…`, `apr_devreset…`)
+        id: String,
+    },
 }
 
 /// The code as text a terminal can show: two modules per character row.
@@ -63,6 +66,13 @@ fn render_qr(text: &str) -> anyhow::Result<String> {
         .render::<qrcode::render::unicode::Dense1x2>()
         .quiet_zone(true)
         .build())
+}
+
+fn unexpected(packet: ResponsePacket) -> anyhow::Error {
+    match packet {
+        ResponsePacket::Error { message, .. } => anyhow::anyhow!("{message}"),
+        other => anyhow::anyhow!("unexpected answer: {}", other.variant_name()),
+    }
 }
 
 /// Handle `peko device`
@@ -75,118 +85,109 @@ pub async fn handle_device(
         .await
         .map_err(|_| anyhow::anyhow!("Peko is not running. Start it with `peko daemon start`."))?;
     match cmd {
-        DeviceCommands::Pair => {
-            match client.device_pair_start().await? {
-                ResponsePacket::DevicePairStarted {
-                    code,
-                    qr,
-                    expires_at,
-                    ..
-                } => {
+        DeviceCommands::Add => match client.device_add().await? {
+            ResponsePacket::DeviceCodeShown {
+                code,
+                qr,
+                expires_at,
+                ..
+            } => {
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({ "code": code, "qr": qr, "expires_at": expires_at })
+                    );
+                } else {
+                    println!("{}", render_qr(&qr)?);
+                    println!("  {code}");
+                    println!();
+                    println!("Scan it with Peko on your phone, or run `peko device join {code}` on another computer.");
+                    println!("It works once, until {expires_at}. Whoever uses it acts as you: show it to your own device only.");
+                }
+                Ok(())
+            }
+            other => Err(unexpected(other)),
+        },
+        DeviceCommands::Join { code } => {
+            if !json {
+                println!("Joining… keep the device that shows the code open.");
+            }
+            match client.device_join(&code).await? {
+                ResponsePacket::Done { success: true, .. } => {
                     if json {
-                        println!(
-                            "{}",
-                            serde_json::json!({ "code": code, "qr": qr, "expires_at": expires_at })
-                        );
+                        println!("{}", serde_json::json!({ "joined": true }));
                     } else {
-                        println!("{}", render_qr(&qr)?);
-                        println!(
-                            "Scan this with Peko on your phone. It works once, until {expires_at}."
-                        );
-                        println!("Anyone who scans it can read and post as you: show it to your phone only.");
+                        println!("This computer is on your account now.");
                     }
                     Ok(())
                 }
-                ResponsePacket::Error { message, .. } => anyhow::bail!("{message}"),
-                other => anyhow::bail!("unexpected answer: {}", other.variant_name()),
+                other => Err(unexpected(other)),
             }
         }
         DeviceCommands::List => {
-            let devices = match client.device_list().await? {
-                ResponsePacket::DeviceListResult { devices, .. } => devices,
-                ResponsePacket::Error { message, .. } => anyhow::bail!("{message}"),
-                other => anyhow::bail!("unexpected answer: {}", other.variant_name()),
-            };
-            let (runtime, computers) = match client.computer_list().await? {
-                ResponsePacket::ComputerListResult {
-                    runtime, computers, ..
-                } => (runtime, computers),
-                ResponsePacket::Error { message, .. } => anyhow::bail!("{message}"),
-                other => anyhow::bail!("unexpected answer: {}", other.variant_name()),
+            let view = match client.device_list().await? {
+                ResponsePacket::DeviceListResult { view, .. } => view,
+                other => return Err(unexpected(other)),
             };
             if json {
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "phones": devices,
-                        "computers": computers,
-                        "this_computer": runtime,
-                    })
-                );
+                println!("{}", serde_json::to_string(&view)?);
                 return Ok(());
             }
-            println!("Phones");
-            if devices.is_empty() {
-                println!("  None paired. Add one with `peko device pair`.");
+            let Some(account) = &view.account else {
+                println!("This computer is not registered with PekoHub. Run `peko runtime register` first.");
+                return Ok(());
+            };
+            println!("Devices of {account}");
+            if !view.on_list {
+                println!("  This computer is not on them yet: on a device you already use, choose");
+                println!("  Add a device (or run `peko device add`), then `peko device join <code>` here.");
             }
-            for device in devices {
+            for device in &view.devices {
+                let name = device.name.as_deref().unwrap_or("unnamed");
+                let this = if device.this { "  (this computer)" } else { "" };
+                let seen = device
+                    .last_seen
+                    .as_deref()
+                    .map(|s| format!("  last seen {s}"))
+                    .unwrap_or_default();
                 println!(
-                    "  {}  {} ({})  paired {}  last seen {}",
-                    device.device_id,
-                    device.name,
-                    device.platform,
-                    device.paired_at,
-                    device.last_seen.as_deref().unwrap_or("never"),
+                    "  {} {name}{this}\n      {}  added {}{seen}",
+                    device.kind,
+                    device.hub_device_id.as_deref().unwrap_or(&device.id),
+                    device.added_at,
                 );
             }
-            println!();
-            println!("Computers (this one is {runtime})");
-            if computers.is_empty() {
-                println!("  None of your other computers has reached this one.");
-            }
-            for computer in computers {
-                let status = match computer.status.as_str() {
-                    "pending" => "waiting for you: `peko device approve` or `peko device deny`",
-                    other => other,
-                };
-                println!(
-                    "  {}  {}  first seen {}  {status}",
-                    computer.id, computer.runtime, computer.first_seen,
-                );
+            if !view.security.is_empty() {
+                println!();
+                println!("Waiting for you");
+                for item in &view.security {
+                    println!("  {}  {}", item.id, item.summary);
+                    if !item.reason.is_empty() {
+                        println!("      {}", item.reason);
+                    }
+                }
+                println!("  Decide with `peko device approve <id>` or `peko device deny <id>`.");
             }
             Ok(())
-        }
-        DeviceCommands::Approve { id } => decide_computer(&client, &id, true, json).await,
-        DeviceCommands::Deny { id } => decide_computer(&client, &id, false, json).await,
-        DeviceCommands::Remove { device_id } if is_computer_id(&device_id) => {
-            decide_computer(&client, &device_id, false, json).await
         }
         DeviceCommands::Remove { device_id } => match client.device_remove(&device_id).await? {
             ResponsePacket::Done { success: true, .. } => {
                 if json {
                     println!("{}", serde_json::json!({ "removed": device_id }));
                 } else {
-                    println!("Removed {device_id}. It can no longer reach this computer.");
+                    println!("Removed {device_id} from your account.");
                 }
                 Ok(())
             }
-            ResponsePacket::Done { error, .. } => {
-                anyhow::bail!("{}", error.unwrap_or_else(|| "not removed".into()))
-            }
-            ResponsePacket::Error { message, .. } => anyhow::bail!("{message}"),
-            other => anyhow::bail!("unexpected answer: {}", other.variant_name()),
+            other => Err(unexpected(other)),
         },
+        DeviceCommands::Approve { id } => decide(&client, &id, true, json).await,
+        DeviceCommands::Deny { id } => decide(&client, &id, false, json).await,
     }
 }
 
-/// Approve or deny one of your other computers (ADR-109 D3).
-async fn decide_computer(
-    client: &DaemonClient,
-    id: &str,
-    approve: bool,
-    json: bool,
-) -> anyhow::Result<()> {
-    match client.computer_decide(id, approve).await? {
+async fn decide(client: &DaemonClient, id: &str, approve: bool, json: bool) -> anyhow::Result<()> {
+    match client.security_decide(id, approve).await? {
         ResponsePacket::ApprovalDecided { message, .. } => {
             if json {
                 println!(
@@ -198,8 +199,7 @@ async fn decide_computer(
             }
             Ok(())
         }
-        ResponsePacket::Error { message, .. } => anyhow::bail!("{message}"),
-        other => anyhow::bail!("unexpected answer: {}", other.variant_name()),
+        other => Err(unexpected(other)),
     }
 }
 
@@ -208,17 +208,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_pairing_code_renders_as_a_qr_code() {
-        let text = "peko://pair?v=1&hub=https%3A%2F%2Fapi.pekohub.ai&runtime=did%3Akey%3Az6Mk&id=pair_0123456789abcdef&secret=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    fn the_join_code_renders_as_a_qr_code() {
+        let text = "peko://join?v=1&hub=https%3A%2F%2Fapi.pekohub.ai&code=K7DXKQ7RMTPZ";
         let rendered = render_qr(text).unwrap();
         assert!(rendered.lines().count() > 10);
         assert!(rendered.contains('\u{2588}') || rendered.contains('\u{2580}'));
-    }
-
-    #[test]
-    fn computers_are_told_apart_from_phones() {
-        assert!(is_computer_id("apr_computer0123456789abcdef0123"));
-        assert!(is_computer_id("did:key:z6MkTest"));
-        assert!(!is_computer_id("iphone-4F7K"));
     }
 }

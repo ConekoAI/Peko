@@ -12,6 +12,7 @@ mod contract;
 pub mod credential;
 pub mod cross_runtime;
 pub mod cross_runtime_channel;
+pub mod device_sync;
 pub mod devices;
 pub mod did_key;
 pub mod dispatcher;

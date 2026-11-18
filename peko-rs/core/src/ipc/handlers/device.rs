@@ -1,8 +1,9 @@
-//! `device` domain request handler (ADR-108): the owner pairs, lists and
-//! removes phones on this computer, and the person's read mark.
+//! `device` domain request handler (ADR-108, ADR-111): the owner adds,
+//! joins, lists and removes the account's devices, decides what waits
+//! about the account, and the person's read mark.
 //!
-//! Every request here is the local user's: a paired phone is a way to
-//! act as the owner, so only someone at the computer may add or remove
+//! Every request here is the local user's: a device on the list is a way
+//! to act as the owner, so only someone at the computer may add or remove
 //! one. The phone's own requests never come through IPC; they arrive
 //! over the tunnel (`tunnel/devices.rs`, `daemon/state/devices.rs`).
 //!
@@ -13,26 +14,30 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::ipc::handlers::RequestHandler;
-use crate::ipc::packet::{
-    ChannelReadInfo, ComputerInfo, DeviceInfo, RequestPacket, ResponsePacket,
-};
+use crate::ipc::packet::{ChannelReadInfo, DevicesView, RequestPacket, ResponsePacket};
 use crate::ipc::response_sink::ResponseSink;
 use crate::ipc::send_response::send_response;
 use crate::ipc::server::PeerAddr;
-use crate::tunnel::devices::PairingOffer;
+use crate::tunnel::device_sync::ShownCode;
 use peko_auth::caller::CallerContext;
 
 /// Narrow port the `device` handler uses to reach daemon state.
 #[async_trait]
 pub(crate) trait DeviceHost: Send + Sync {
-    /// Open a pairing to show on this computer.
-    fn pair_start(&self) -> Result<PairingOffer, String>;
+    /// Show a code that adds a device.
+    async fn show_code(&self) -> Result<ShownCode, String>;
 
-    /// The paired phones, oldest pairing first.
-    fn paired_devices(&self) -> Vec<DeviceInfo>;
+    /// Join this computer to its account's devices with a code.
+    async fn join(&self, code: &str) -> Result<(), String>;
 
-    /// Remove a paired phone. `Ok(false)` when none has that id.
+    /// The account's devices and what waits about the account.
+    async fn devices(&self) -> DevicesView;
+
+    /// Remove a device from the account.
     async fn remove_device(&self, device_id: &str) -> Result<bool, String>;
+
+    /// The owner's decision on something about the account.
+    async fn decide_security(&self, id: &str, approve: bool) -> Result<String, String>;
 
     /// Move the person's read mark to the post `msg_id`, or to the newest
     /// post at or before `at`; whether it moved.
@@ -45,13 +50,6 @@ pub(crate) trait DeviceHost: Send + Sync {
 
     /// The person's read state in each of their conversations.
     async fn read_state(&self) -> Result<Vec<ChannelReadInfo>, String>;
-
-    /// This computer's Hub account and id, and the owner's computers it
-    /// knows (ADR-109).
-    async fn computers(&self) -> (Option<String>, String, Vec<ComputerInfo>);
-
-    /// The owner's decision on one of their computers (ADR-109 D3).
-    async fn decide_computer(&self, id: &str, approve: bool) -> Result<String, String>;
 }
 
 /// `device` domain request handler.
@@ -74,11 +72,11 @@ impl RequestHandler for DeviceHandler {
     fn matches(&self, request: &RequestPacket) -> bool {
         matches!(
             request,
-            RequestPacket::DevicePairStart { .. }
+            RequestPacket::DeviceAdd { .. }
+                | RequestPacket::DeviceJoin { .. }
                 | RequestPacket::DeviceList { .. }
                 | RequestPacket::DeviceRemove { .. }
-                | RequestPacket::ComputerList { .. }
-                | RequestPacket::ComputerDecide { .. }
+                | RequestPacket::SecurityDecide { .. }
                 | RequestPacket::ChannelMarkRead { .. }
                 | RequestPacket::ChannelReadState { .. }
         )
@@ -104,40 +102,39 @@ impl RequestHandler for DeviceHandler {
             .await;
         }
         let response = match request {
-            RequestPacket::DevicePairStart { .. } => match self.host.pair_start() {
-                Ok(offer) => ResponsePacket::DevicePairStarted {
+            RequestPacket::DeviceAdd { .. } => match self.host.show_code().await {
+                Ok(shown) => ResponsePacket::DeviceCodeShown {
                     request_id,
-                    qr: offer.qr_text(),
-                    code: offer.pairing_id,
-                    expires_at: offer.expires_at,
+                    code: shown.code,
+                    qr: shown.qr,
+                    expires_at: shown.expires_at,
+                },
+                Err(message) => error(message),
+            },
+            RequestPacket::DeviceJoin { code, .. } => match self.host.join(&code).await {
+                Ok(()) => ResponsePacket::Done {
+                    request_id,
+                    success: true,
+                    error: None,
                 },
                 Err(message) => error(message),
             },
             RequestPacket::DeviceList { .. } => ResponsePacket::DeviceListResult {
                 request_id,
-                devices: self.host.paired_devices(),
+                view: self.host.devices().await,
             },
             RequestPacket::DeviceRemove { device_id, .. } => {
                 match self.host.remove_device(&device_id).await {
                     Ok(removed) => ResponsePacket::Done {
                         request_id,
                         success: removed,
-                        error: (!removed).then(|| format!("no phone `{device_id}` is paired")),
+                        error: None,
                     },
                     Err(message) => error(message),
                 }
             }
-            RequestPacket::ComputerList { .. } => {
-                let (account, runtime, computers) = self.host.computers().await;
-                ResponsePacket::ComputerListResult {
-                    request_id,
-                    account,
-                    runtime,
-                    computers,
-                }
-            }
-            RequestPacket::ComputerDecide { id, approve, .. } => {
-                match self.host.decide_computer(&id, approve).await {
+            RequestPacket::SecurityDecide { id, approve, .. } => {
+                match self.host.decide_security(&id, approve).await {
                     Ok(message) => ResponsePacket::ApprovalDecided {
                         request_id,
                         id,

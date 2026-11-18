@@ -592,6 +592,16 @@ impl TunnelClient {
                 let msg = match &read_sealer {
                     Some(sealer) => match sealer.inbound(&frame).await {
                         Inbound::Message(msg) => *msg,
+                        Inbound::MessageAnd(msg, first) => {
+                            // A newer device list was seen: ask for it,
+                            // then handle the message.
+                            for ask in first {
+                                if handle.tx.send(ask).await.is_err() {
+                                    break;
+                                }
+                            }
+                            *msg
+                        }
                         Inbound::Release(msgs) => {
                             // Keys arrived: these can be sealed now.
                             for msg in msgs {
@@ -751,14 +761,14 @@ impl TunnelClient {
             | TunnelMessage::TunnelPekoApprovals { .. }
             | TunnelMessage::TunnelPekoApprovalDecide { .. }
             | TunnelMessage::TunnelPekoApprovalDecided { .. }
-            | TunnelMessage::TunnelDevicePair { .. }
-            | TunnelMessage::TunnelDevicePaired { .. }
             | TunnelMessage::TunnelDeviceRequest { .. }
             | TunnelMessage::TunnelDeviceResponse { .. }
             | TunnelMessage::TunnelDeviceEvent { .. }
             | TunnelMessage::TunnelDeviceGone { .. }
-            | TunnelMessage::TunnelDeviceRemoved { .. }
             | TunnelMessage::TunnelDeviceNotify { .. }
+            | TunnelMessage::DeviceList { .. }
+            | TunnelMessage::DeviceListAppended { .. }
+            | TunnelMessage::DeviceJoin { .. }
             | TunnelMessage::TunnelReadMark { .. }
             | TunnelMessage::GroupRegistered { .. }
             | TunnelMessage::GroupRegisterRejected { .. }
@@ -775,7 +785,8 @@ impl TunnelClient {
             | TunnelMessage::TunnelChallengeAck { .. }
             | TunnelMessage::RuntimeKeysRequest { .. }
             | TunnelMessage::RuntimeKeys { .. }
-            | TunnelMessage::RuntimeVouch { .. } => {
+            | TunnelMessage::DeviceListRequest { .. }
+            | TunnelMessage::DeviceListAppend { .. } => {
                 warn!("Unexpected control message received after auth");
             }
             TunnelMessage::TunnelReady { .. } => {

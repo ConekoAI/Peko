@@ -449,34 +449,6 @@ impl TunnelDispatcher {
         let _ = self.sealer.set(sealer);
     }
 
-    /// ADR-110 D4: vouch to PekoHub for every computer of this account the
-    /// owner approved here, so people who pinned one of the owner's
-    /// computers seal to the others too. Sent on every connect and on
-    /// every approval; PekoHub keeps the latest.
-    async fn publish_vouches(&self, handle: &TunnelHandle) {
-        use crate::security::computers::ComputerStatus;
-        let Some(sealer) = self.sealer.get() else {
-            return;
-        };
-        let manager = self.host.principal_manager();
-        let Some(account) = manager.local_account().await else {
-            return;
-        };
-        let approved = manager
-            .own_computers()
-            .list(&account)
-            .into_iter()
-            .filter(|c| c.status == ComputerStatus::Approved)
-            .map(|c| c.runtime);
-        let statements = sealer.vouches(&account, approved);
-        if statements.is_empty() {
-            return;
-        }
-        if let Err(e) = handle.send(TunnelMessage::RuntimeVouch { statements }) {
-            warn!("could not publish vouches for the owner's computers: {e}");
-        }
-    }
-
     /// Handle a tunnel message (called from the tunnel client's read loop)
     pub async fn handle_message(&self, msg: TunnelMessage, handle: TunnelHandle) {
         // Store the handle synchronously so set_instance_status can use it immediately
@@ -517,8 +489,8 @@ impl TunnelDispatcher {
         });
     }
 
-    /// Act on the owner's decisions about their computers and owner
-    /// changes (ADR-109): call once per dispatcher; the latest wins.
+    /// Act on the owner's decisions about owner changes (ADR-109 D5): call
+    /// once per dispatcher; the latest wins.
     pub fn watch_own_computers(&self) {
         let dispatcher = self.clone();
         self.host
@@ -536,23 +508,6 @@ impl TunnelDispatcher {
     async fn on_own_computers_decided(&self, decided: crate::security::computers::Decided) {
         use crate::security::computers::Decided;
         match decided {
-            // ADR-109 D3: ask the computer for what it sent while it
-            // waited (an empty receipt: "resend what waits for me").
-            Decided::ComputerApproved { runtime, channels } => {
-                let handle = self.tunnel_handle_slot.read().await.clone();
-                if let Some(handle) = handle {
-                    self.publish_vouches(&handle).await;
-                }
-                let port = self.host.tunnel_channel_port();
-                for channel in channels {
-                    port.send_receipt(
-                        &runtime,
-                        &peko_protocol::channel::ChannelId(channel),
-                        Vec::new(),
-                    )
-                    .await;
-                }
-            }
             Decided::OwnerChangeApproved { principal_name } => {
                 if let Err(e) = self.announce_single_instance(&principal_name).await {
                     warn!(principal = %principal_name, "re-announce after an approved owner change failed: {e}");
@@ -563,46 +518,25 @@ impl TunnelDispatcher {
 
     /// ADR-109 D2: whether a message from `source_runtime` speaking as
     /// `speaker` may be acted on. Anything that does not speak for this
-    /// computer's own account passes; this computer itself always does.
-    /// The first message from an unknown computer files it for the
-    /// owner's approval.
+    /// computer's own account passes; this computer itself always does;
+    /// another computer must be on the account's device list (ADR-111 D5).
     async fn admits_own_account(
         &self,
         source_runtime: &str,
         speaker: &str,
         channel: Option<&str>,
     ) -> bool {
-        use crate::security::computers::Admission;
         let manager = self.host.principal_manager();
         let Some(account) = manager.local_account().await else {
             return true;
         };
-        let mine = format!("user:hub:{account}");
-        if speaker != mine || source_runtime == self.host.runtime_did() {
+        if speaker != format!("user:hub:{account}") || source_runtime == self.host.runtime_did() {
             return true;
         }
-        let computers = manager.own_computers();
-        if computers.needs_seed(&account) {
-            // D4: computers already carrying this account here keep going.
-            let runtimes = self
-                .host
-                .tunnel_channel_port()
-                .local()
-                .runtimes_carrying(&mine)
-                .await
-                .unwrap_or_default();
-            computers.seed(&account, runtimes);
-        }
-        match computers.admit(&account, source_runtime, channel) {
-            Admission::Approved => true,
-            Admission::Held => {
-                info!(source_runtime, "a computer not yet approved speaks for this account; held for the owner's approval");
-                false
-            }
-            Admission::Denied => {
-                warn!(source_runtime, "refusing a computer the owner denied");
-                false
-            }
+        // ADR-111 D5: the computers on the account's device list.
+        match self.host.device_sync() {
+            Some(sync) => sync.admits(source_runtime, channel).await,
+            None => false,
         }
     }
 
@@ -1110,7 +1044,10 @@ impl TunnelDispatcher {
                     // ADR-094: files that did not arrive yet.
                     port.retry_wanted(None).await;
                 });
-                self.publish_vouches(&handle).await;
+                // ADR-111: the owner's device list, current from here on.
+                if let Some(sync) = self.host.device_sync() {
+                    tokio::spawn(async move { sync.on_ready().await });
+                }
                 // Announce all instances after auth
                 if let Err(e) = self.announce_instances(&handle).await {
                     warn!("Failed to announce instances: {}", e);
@@ -1681,8 +1618,54 @@ impl TunnelDispatcher {
                     )
                     .await;
             }
-            message @ (TunnelMessage::TunnelDevicePair { .. }
-            | TunnelMessage::TunnelDeviceRequest { .. }
+            TunnelMessage::DeviceList {
+                account,
+                from,
+                links,
+                ..
+            } => {
+                if let Some(sync) = self.host.device_sync() {
+                    let outcome = sync.on_list(account, from, links).await;
+                    for message in outcome.released {
+                        let _ = handle.send(message);
+                    }
+                    // ADR-109 D3's receipt: a computer just added sends
+                    // again what it posted while it was not on the list.
+                    let port = self.host.tunnel_channel_port();
+                    for (runtime, channels) in outcome.resend {
+                        for channel in channels {
+                            port.send_receipt(
+                                &runtime,
+                                &peko_protocol::channel::ChannelId(channel),
+                                Vec::new(),
+                            )
+                            .await;
+                        }
+                    }
+                }
+            }
+            TunnelMessage::DeviceListAppended {
+                request_id,
+                ok,
+                error,
+                seq,
+            } => {
+                if let Some(sync) = self.host.device_sync() {
+                    sync.on_appended(&request_id, ok, error, seq);
+                }
+            }
+            TunnelMessage::DeviceJoin {
+                account,
+                nameplate,
+                from,
+                to,
+                body,
+            } => {
+                if let Some(sync) = self.host.device_sync() {
+                    sync.on_join(account, nameplate, from, to, body).await;
+                }
+            }
+            message @ (TunnelMessage::TunnelDeviceRequest { .. }
             | TunnelMessage::TunnelDeviceGone { .. }
             | TunnelMessage::TunnelReadMark { .. }) => {
                 // ADR-108: the daemon decides whether a device is
@@ -2813,15 +2796,18 @@ impl TunnelDispatcher {
             {
                 return Ok(());
             }
-            if !self
-                .host
-                .tunnel_channel_port()
+            let port = self.host.tunnel_channel_port();
+            // ADR-111 D5: a person writes from a computer on their list.
+            if !port
                 .is_remote_member(
                     &channel_id_typed,
                     &source_runtime_id,
                     &payload.source_principal_did,
                 )
                 .await?
+                || !port
+                    .person_route_allowed(&payload.source_principal_did, &source_runtime_id)
+                    .await
             {
                 // Often a post that overtook its DM's invite: unanswered,
                 // the sender sends it again once the invite is confirmed.
@@ -5084,11 +5070,11 @@ mod tests {
         .unwrap();
     }
 
-    /// ADR-109 D2–D3: a computer signed in to the person's account but not
-    /// yet approved is held; its post arrives once the owner approves it on
-    /// this computer, and a denied one is refused.
+    /// ADR-111 D5 (ADR-109 D2–D3): a computer signed in to the person's
+    /// account but not on her device list is not obeyed; its post arrives
+    /// once it is added, and a removed one is refused again.
     #[tokio::test]
-    async fn a_computer_speaks_as_you_only_once_you_approve_it() {
+    async fn a_computer_speaks_as_you_only_once_it_is_on_your_device_list() {
         let AliceDm {
             mut host,
             mut laptop,
@@ -5097,8 +5083,8 @@ mod tests {
             ..
         } = alice_dm(true).await;
         let laptop_did = laptop.app.runtime_did();
-        let manager = host.dispatcher.host.principal_manager();
-        let computers = manager.own_computers();
+        let person = format!("user:hub:{account}");
+        let lists = host.dispatcher.host.principal_manager().device_lists();
 
         let answer = laptop
             .ipc(RequestPacket::ChannelPost {
@@ -5130,41 +5116,25 @@ mod tests {
             !seen.iter().any(|t| t == "hi from the laptop"),
             "held: {seen:?}"
         );
-        let pending = computers.pending(&account);
-        assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].runtime, laptop_did);
-        assert_eq!(pending[0].held_channels, [channel.as_str().to_string()]);
+        assert_eq!(lists.device_of(&person, &laptop_did), None);
 
-        // The owner sees it among the peko's approvals and approves it.
-        let peko = manager.get_by_name("peko").await.unwrap();
-        let listed =
-            crate::principal::policy_gate::pending_requests_for_owner(&manager, &peko, None).await;
-        let request = listed
-            .iter()
-            .find(|r| crate::principal::policy_gate::request_kind(r).as_deref() == Some("computer"))
-            .expect("the computer is an approval request");
-        assert!(
-            crate::principal::policy_gate::decide_request(
-                &manager,
-                &peko,
-                &request.id,
-                crate::principal::policy_gate::Decision::Approve { always: true },
+        // The laptop joins her list; PekoHub pushes the new list to the
+        // host, which asks the laptop for what it sent meanwhile.
+        let links = device_chain(&[&host, &laptop], &account);
+        let handle = host.app.tunnel_handle_slot().read().await.clone().unwrap();
+        host.dispatcher
+            .dispatch(
+                TunnelMessage::DeviceList {
+                    request_id: None,
+                    account: person.clone(),
+                    from: 0,
+                    links: links.clone(),
+                },
+                handle.clone(),
             )
             .await
-            .is_err(),
-            "never always"
-        );
-        crate::principal::policy_gate::decide_request(
-            &manager,
-            &peko,
-            &request.id,
-            crate::principal::policy_gate::Decision::Approve { always: false },
-        )
-        .await
-        .unwrap();
-
-        // Approving sends the laptop an empty receipt; it resends what
-        // waited, and the invite and the post arrive.
+            .unwrap();
+        assert!(lists.device_of(&person, &laptop_did).is_some());
         let mut seen = Vec::new();
         for _ in 0..100 {
             relay(&mut laptop, &mut host).await;
@@ -5182,13 +5152,37 @@ mod tests {
         }
         assert!(seen.iter().any(|t| t == "hi from the laptop"), "{seen:?}");
 
-        // Denied afterwards: refused again.
-        computers
-            .decide(&account, &laptop_did, false, "test")
+        // Removed from her list: refused again.
+        let list = lists.list(&person).unwrap();
+        let payload = list.next_payload(crate::security::device_list::Change::Remove {
+            device_id: laptop_did.clone(),
+        });
+        let removal = crate::security::device_list::Link {
+            by: host.app.runtime_did(),
+            signed: crate::security::device_list::sign_payload(
+                &host.app.runtime_signing_key,
+                &payload,
+            ),
+            joiner: None,
+        };
+        host.dispatcher
+            .dispatch(
+                TunnelMessage::DeviceList {
+                    request_id: None,
+                    account: person.clone(),
+                    from: 2,
+                    links: vec![removal],
+                },
+                handle,
+            )
+            .await
             .unwrap();
-        assert_eq!(
-            computers.admit(&account, &laptop_did, None),
-            crate::security::computers::Admission::Denied
+        assert_eq!(lists.device_of(&person, &laptop_did), None);
+        assert!(
+            !host
+                .dispatcher
+                .admits_own_account(&laptop_did, &person, None)
+                .await
         );
     }
 
@@ -6017,8 +6011,12 @@ mod tests {
             .filter(|ev| matches!(ev, ChannelEvent::Posted { .. }))
             .count();
         assert_eq!(posted, 1, "applied once");
+        // Bob's device list is asked for (first contact, ADR-111 D5); the
+        // rest are receipts.
+        let mut sent = std::iter::from_fn(|| outbound.try_recv().ok())
+            .filter(|m| !matches!(m, TunnelMessage::DeviceListRequest { .. }));
         for expected in ["req-1", "req-1", "req-echo"] {
-            let (to, ids) = receipt_for(outbound.try_recv().expect("a receipt per arrival"));
+            let (to, ids) = receipt_for(sent.next().expect("a receipt per arrival"));
             assert_eq!(to, source);
             assert_eq!(ids, [expected]);
         }
@@ -6782,17 +6780,40 @@ mod tests {
         outbound: mpsc::Receiver<TunnelMessage>,
     }
 
-    /// ADR-109: computers the person already uses have approved each other.
+    /// `runtimes` on `account`'s device list (ADR-111), the first adding
+    /// the rest.
+    fn device_chain(
+        runtimes: &[&DmRuntime],
+        account: &str,
+    ) -> Vec<crate::security::device_list::Link> {
+        use crate::security::device_list::{test_chain, test_computer};
+        let keys: Vec<_> = runtimes
+            .iter()
+            .map(|rt| Arc::clone(&rt.app.runtime_signing_key))
+            .collect();
+        let devices: Vec<_> = keys
+            .iter()
+            .map(|k| (k.as_ref(), test_computer(k)))
+            .collect();
+        test_chain(&format!("user:hub:{account}"), &devices)
+    }
+
+    /// ADR-111: the computers the person already uses are on one device
+    /// list, which each of them holds.
     fn approve_each_other(runtimes: &[&DmRuntime], account: &str) {
+        let links = device_chain(runtimes, account);
         for rt in runtimes {
-            let computers = rt.dispatcher.host.principal_manager().own_computers();
-            for other in runtimes {
-                let other = other.app.runtime_did();
-                if other != rt.app.runtime_did() {
-                    computers.admit(account, &other, None);
-                    computers.decide(account, &other, true, "test").unwrap();
-                }
-            }
+            rt.dispatcher
+                .host
+                .principal_manager()
+                .device_lists()
+                .accept_own(
+                    &format!("user:hub:{account}"),
+                    links.clone(),
+                    &rt.app.runtime_did(),
+                    &std::collections::HashSet::new(),
+                )
+                .unwrap();
         }
     }
 
@@ -6865,11 +6886,13 @@ mod tests {
                     let handle = self.app.tunnel_handle_slot().read().await.clone().unwrap();
                     self.dispatcher.dispatch(history, handle).await.unwrap();
                 }
-                // To PekoHub itself (ADR-092 D4–D6), not to a runtime.
+                // To PekoHub itself (ADR-092 D4–D6, ADR-111), not to a
+                // runtime.
                 TunnelMessage::GroupRoster { .. }
                 | TunnelMessage::GroupRegister { .. }
                 | TunnelMessage::AccountGroupsRequest { .. }
-                | TunnelMessage::GroupLookupRequest { .. } => {}
+                | TunnelMessage::GroupLookupRequest { .. }
+                | TunnelMessage::DeviceListRequest { .. } => {}
                 other => panic!("unexpected envelope {other:?}"),
             }
         }
@@ -8098,8 +8121,9 @@ mod tests {
             }
         }
 
-        // P2: the same person's new device finds the group through PekoHub
-        // and joins as a member, with no link.
+        // P2: the same person's new device (on their device list, ADR-111)
+        // finds the group through PekoHub and joins as a member, with no
+        // link.
         let mut p2 = DmRuntime::new(Arc::new(FakeAgentDirectory::new())).await;
         let p2_port = p2.app.tunnel_channel_port();
         p2_port
@@ -8107,6 +8131,7 @@ mod tests {
             .link_local_user(&p2.app.runtime_did(), &account)
             .await
             .unwrap();
+        approve_each_other(&[&p, &p2], &account);
         let syncing = {
             let port = Arc::clone(&p2_port);
             tokio::spawn(async move { port.sync_account_groups().await })
@@ -9655,12 +9680,8 @@ mod tests {
                 .link_local_user(&host.app.runtime_did(), &account)
                 .await
                 .unwrap();
-            // A fresh sign-in: no computer carries her here yet.
-            host.dispatcher
-                .host
-                .principal_manager()
-                .own_computers()
-                .seed(&account, Vec::new());
+            // A fresh sign-in: only the host is on her device list yet.
+            approve_each_other(&[&host], &account);
             host.dispatcher.watch_own_computers();
         }
         let peko = create_test_principal(
@@ -9866,10 +9887,10 @@ mod tests {
             .is_err());
     }
 
-    /// ADR-109 + ADR-110 D4: a computer on the person's account that she
-    /// has not approved gets her DM-list request (it carries nothing), but
-    /// its answer must not make it a route in her conversations: her next
-    /// post would then be sealed to it.
+    /// ADR-109 + ADR-111 D5: a computer registered to the person's account
+    /// that is not on her device list must not become a route in her
+    /// conversations by answering her DM-list request: her next post would
+    /// then be sealed to it.
     #[tokio::test]
     async fn an_unapproved_computers_dm_list_does_not_make_it_a_route() {
         use crate::tunnel::hub_directory::FakeAgentDirectory;
@@ -9889,10 +9910,15 @@ mod tests {
         // PekoHub itself) that she never approved.
         let rogue = DmRuntime::new(Arc::new(FakeAgentDirectory::new())).await;
         let rogue_did = rogue.app.runtime_did();
-        let computers = laptop.dispatcher.host.principal_manager().own_computers();
-        assert_ne!(
-            computers.admit(&account, &rogue_did, None),
-            crate::security::computers::Admission::Approved
+        assert_eq!(
+            laptop
+                .dispatcher
+                .host
+                .principal_manager()
+                .device_lists()
+                .device_of(&format!("user:hub:{account}"), &rogue_did),
+            None,
+            "not on her device list"
         );
 
         // Her laptop asks her computers for her DMs; the rogue one gets it.
@@ -9968,6 +9994,371 @@ mod tests {
             !routes.contains(&rogue_did),
             "an unapproved computer became a route in her DM: {routes:?}"
         );
+    }
+
+    /// PekoHub as far as device lists go (ADR-111 D2): it keeps each
+    /// account's chain, takes a link only as the next one, pushes it to
+    /// the account's computers, and relays join steps among them.
+    #[derive(Default)]
+    struct FakeDeviceHub {
+        chains: std::collections::HashMap<String, Vec<crate::security::device_list::Link>>,
+    }
+
+    impl FakeDeviceHub {
+        /// Deliver what each runtime sent about device lists until quiet.
+        /// Everything else is dropped.
+        async fn route(&mut self, runtimes: &mut [&mut DmRuntime]) {
+            use crate::security::device_list::DeviceList;
+            for _ in 0..50 {
+                let mut out: Vec<(String, TunnelMessage)> = Vec::new();
+                for rt in runtimes.iter_mut() {
+                    let me = rt.app.runtime_did();
+                    for message in rt.sent() {
+                        match message {
+                            TunnelMessage::DeviceListRequest {
+                                request_id,
+                                account,
+                                after,
+                            } => {
+                                let chain = self.chains.get(&account).cloned().unwrap_or_default();
+                                let from = after.map_or(0, |a| a + 1);
+                                let links = chain.into_iter().skip(from as usize).collect();
+                                out.push((
+                                    me.clone(),
+                                    TunnelMessage::DeviceList {
+                                        request_id: Some(request_id),
+                                        account,
+                                        from,
+                                        links,
+                                    },
+                                ));
+                            }
+                            TunnelMessage::DeviceListAppend {
+                                request_id,
+                                account,
+                                link,
+                            } => {
+                                let chain = self.chains.entry(account.clone()).or_default();
+                                let mut next = chain.clone();
+                                next.push(link.clone());
+                                let ok = DeviceList::verify(&account, next.clone()).is_ok();
+                                let seq = chain.len() as u64;
+                                if ok {
+                                    *chain = next;
+                                }
+                                out.push((
+                                    me.clone(),
+                                    TunnelMessage::DeviceListAppended {
+                                        request_id,
+                                        ok,
+                                        error: (!ok).then(|| "not the next link".to_string()),
+                                        seq: ok.then_some(seq),
+                                    },
+                                ));
+                                if ok {
+                                    out.push((
+                                        "*".into(),
+                                        TunnelMessage::DeviceList {
+                                            request_id: None,
+                                            account,
+                                            from: seq,
+                                            links: vec![link],
+                                        },
+                                    ));
+                                }
+                            }
+                            TunnelMessage::DeviceJoin {
+                                account,
+                                nameplate,
+                                to,
+                                body,
+                                ..
+                            } => {
+                                let target = to.clone().unwrap_or_else(|| format!("!{me}"));
+                                if to.is_none() {
+                                    // Another joiner's hello on the same nameplate reaches
+                                    // this one too: it is not an answer.
+                                    out.push((
+                                        me.clone(),
+                                        TunnelMessage::DeviceJoin {
+                                            account: account.clone(),
+                                            nameplate: nameplate.clone(),
+                                            from: Some("device:dev_intruder".into()),
+                                            to: None,
+                                            body: body.clone(),
+                                        },
+                                    ));
+                                }
+                                out.push((
+                                    target,
+                                    TunnelMessage::DeviceJoin {
+                                        account,
+                                        nameplate,
+                                        from: Some(me.clone()),
+                                        to,
+                                        body,
+                                    },
+                                ));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                if out.is_empty() {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    continue;
+                }
+                for (target, message) in out {
+                    for rt in runtimes.iter() {
+                        let me = rt.app.runtime_did();
+                        let wanted = target == "*"
+                            || target == me
+                            || target.strip_prefix('!').is_some_and(|not| not != me);
+                        if wanted {
+                            // Each in its own task, as the tunnel client does.
+                            let handle = rt.app.tunnel_handle_slot().read().await.clone().unwrap();
+                            rt.dispatcher.handle_message(message.clone(), handle).await;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// ADR-111 D3, D7: the first computer of an account starts its device
+    /// list; another joins it with a code shown on the first. PekoHub
+    /// relays every step and learns no code. A wrong code is refused, and
+    /// a code works once.
+    #[tokio::test]
+    async fn a_computer_joins_its_account_by_a_code_from_one_on_the_list() {
+        use crate::security::device_list::DeviceKind;
+        use crate::tunnel::hub_directory::FakeAgentDirectory;
+        let account = uuid::Uuid::new_v4().to_string();
+        let person = format!("user:hub:{account}");
+        let mut desk = DmRuntime::new(Arc::new(FakeAgentDirectory::new())).await;
+        let mut laptop = DmRuntime::new(Arc::new(FakeAgentDirectory::new())).await;
+        for rt in [&desk, &laptop] {
+            rt.app
+                .tunnel_channel_port()
+                .local()
+                .link_local_user(&rt.app.runtime_did(), &account)
+                .await
+                .unwrap();
+        }
+        let mut hub = FakeDeviceHub::default();
+        let desk_sync = desk.dispatcher.host.device_sync().unwrap();
+        let laptop_sync = laptop.dispatcher.host.device_sync().unwrap();
+        desk_sync.set_hub("https://hub.test".into());
+
+        // The desk is the account's first device: it starts the list.
+        desk_sync.on_ready().await;
+        for _ in 0..50 {
+            hub.route(&mut [&mut desk, &mut laptop]).await;
+            if desk_sync.status().await.on_list {
+                break;
+            }
+        }
+        assert!(
+            desk_sync.status().await.on_list,
+            "the first device starts the list"
+        );
+        assert_eq!(hub.chains[&person].len(), 1);
+
+        // Not on the list, the laptop sees it and cannot show a code.
+        laptop_sync.on_ready().await;
+        hub.route(&mut [&mut desk, &mut laptop]).await;
+        let status = laptop_sync.status().await;
+        assert!(!status.on_list);
+        assert_eq!(
+            status.devices.len(),
+            1,
+            "the list PekoHub shows, for reference"
+        );
+        assert!(laptop_sync.show_code().await.is_err());
+
+        // A wrong code: refused, and the right one still works after.
+        let shown = desk_sync.show_code().await.unwrap();
+        assert!(shown.qr.starts_with("peko://join?"));
+        let wrong = {
+            let sync = Arc::clone(&laptop_sync);
+            tokio::spawn(async move { sync.join("ZZZZ-ZZZZ-ZZZZ").await })
+        };
+        while !wrong.is_finished() {
+            hub.route(&mut [&mut desk, &mut laptop]).await;
+        }
+        // Another nameplate: nobody holds it, so nobody answers.
+        assert!(wrong.await.unwrap().is_err());
+        let mut guess = shown.code.clone();
+        let last = guess.pop().unwrap();
+        guess.push(if last == '0' { '1' } else { '0' });
+        let wrong = {
+            let sync = Arc::clone(&laptop_sync);
+            tokio::spawn(async move { sync.join(&guess).await })
+        };
+        while !wrong.is_finished() {
+            hub.route(&mut [&mut desk, &mut laptop]).await;
+        }
+        let refused = wrong.await.unwrap().unwrap_err();
+        assert!(refused.contains("does not match"), "{refused}");
+
+        // The right code: the laptop joins.
+        let joining = {
+            let sync = Arc::clone(&laptop_sync);
+            let code = shown.code.clone();
+            tokio::spawn(async move { sync.join(&code).await })
+        };
+        while !joining.is_finished() {
+            hub.route(&mut [&mut desk, &mut laptop]).await;
+        }
+        joining.await.unwrap().unwrap();
+        hub.route(&mut [&mut desk, &mut laptop]).await;
+        let lists_desk = desk.dispatcher.host.principal_manager().device_lists();
+        let lists_laptop = laptop.dispatcher.host.principal_manager().device_lists();
+        for lists in [&lists_desk, &lists_laptop] {
+            assert_eq!(
+                lists.device_of(&person, &laptop.app.runtime_did()),
+                Some(DeviceKind::Computer)
+            );
+            assert_eq!(
+                lists.device_of(&person, &desk.app.runtime_did()),
+                Some(DeviceKind::Computer)
+            );
+        }
+        assert!(laptop_sync.status().await.on_list);
+        // The laptop co-signed its own entry.
+        let list = lists_desk.list(&person).unwrap();
+        assert!(list.member(&laptop.app.runtime_did()).unwrap().cosigned);
+
+        // The code is used up.
+        let again = {
+            let sync = Arc::clone(&laptop_sync);
+            let code = shown.code.clone();
+            tokio::spawn(async move { sync.join(&code).await })
+        };
+        while !again.is_finished() {
+            hub.route(&mut [&mut desk, &mut laptop]).await;
+        }
+        assert!(again.await.unwrap().is_err(), "already on the list");
+
+        // Removing the laptop from the desk: every computer stops trusting it.
+        let removing = {
+            let sync = Arc::clone(&desk_sync);
+            let id = laptop.app.runtime_did();
+            tokio::spawn(async move { sync.remove(&id).await })
+        };
+        while !removing.is_finished() {
+            hub.route(&mut [&mut desk, &mut laptop]).await;
+        }
+        removing.await.unwrap().unwrap();
+        hub.route(&mut [&mut desk, &mut laptop]).await;
+        for lists in [&lists_desk, &lists_laptop] {
+            assert_eq!(lists.device_of(&person, &laptop.app.runtime_did()), None);
+        }
+        assert!(!laptop_sync.status().await.on_list);
+    }
+
+    /// ADR-111 D7: two computers that approved each other under ADR-109
+    /// end up on one device list without being asked again.
+    #[tokio::test]
+    async fn computers_approved_before_move_onto_one_list() {
+        use crate::security::device_list::DeviceKind;
+        use crate::tunnel::hub_directory::FakeAgentDirectory;
+        struct NoPhones;
+        #[async_trait::async_trait]
+        impl crate::tunnel::seal::SealPolicy for NoPhones {
+            async fn own_account(&self) -> Option<String> {
+                None
+            }
+            fn device_key(&self, _: &str) -> Option<String> {
+                None
+            }
+        }
+        let account = uuid::Uuid::new_v4().to_string();
+        let person = format!("user:hub:{account}");
+        let mut desk = DmRuntime::new(Arc::new(FakeAgentDirectory::new())).await;
+        let mut laptop = DmRuntime::new(Arc::new(FakeAgentDirectory::new())).await;
+        for (rt, other) in [
+            (&desk, laptop.app.runtime_did()),
+            (&laptop, desk.app.runtime_did()),
+        ] {
+            rt.app
+                .tunnel_channel_port()
+                .local()
+                .link_local_user(&rt.app.runtime_did(), &account)
+                .await
+                .unwrap();
+            let file = serde_json::json!({
+                "account": account,
+                "seeded": true,
+                "computers": [{
+                    "runtime": other,
+                    "status": "approved",
+                    "first_seen": "2026-11-17T00:00:00Z"
+                }]
+            });
+            let manager = rt.dispatcher.host.principal_manager();
+            let path = manager.own_computers().path().to_path_buf();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, serde_json::to_vec(&file).unwrap()).unwrap();
+        }
+        // The desk knows the laptop's key statement, as PekoHub serves it.
+        let desk_sealer = Arc::new(crate::tunnel::seal::Sealer::new(
+            desk.app.runtime_did(),
+            Arc::clone(&desk.app.runtime_signing_key),
+            Arc::new(NoPhones),
+            desk.dispatcher.host.principal_manager().device_lists(),
+            None,
+        ));
+        let laptop_statement = crate::tunnel::seal::sign_key_statement(
+            &laptop.app.runtime_signing_key,
+            &laptop.app.runtime_did(),
+            &crate::tunnel::seal::AgreementKey::derive(&laptop.app.runtime_signing_key),
+        );
+        let keys = serde_json::to_vec(&TunnelMessage::RuntimeKeys {
+            request_id: "k".into(),
+            account: None,
+            keys: vec![crate::tunnel::protocol::RuntimeKeyEntry {
+                runtime_id: laptop.app.runtime_did(),
+                statement: laptop_statement,
+            }],
+        })
+        .unwrap();
+        let _ = desk_sealer.inbound(&keys).await;
+        let desk_sync = desk.dispatcher.host.device_sync().unwrap();
+        let laptop_sync = laptop.dispatcher.host.device_sync().unwrap();
+        desk_sync.attach(desk_sealer, "https://hub.test".into());
+
+        let mut hub = FakeDeviceHub::default();
+        desk_sync.on_ready().await;
+        let lists = laptop.dispatcher.host.principal_manager().device_lists();
+        for _ in 0..100 {
+            hub.route(&mut [&mut desk, &mut laptop]).await;
+            if hub.chains.get(&person).is_some_and(|c| c.len() == 2) {
+                break;
+            }
+        }
+        assert_eq!(
+            hub.chains[&person].len(),
+            2,
+            "the desk adds the laptop it approved"
+        );
+        laptop_sync.on_ready().await;
+        hub.route(&mut [&mut desk, &mut laptop]).await;
+        assert!(
+            laptop_sync.status().await.on_list,
+            "the laptop anchors the list by its approval"
+        );
+        assert_eq!(
+            lists.device_of(&person, &desk.app.runtime_did()),
+            Some(DeviceKind::Computer)
+        );
+        // Once: removing the laptop later does not bring it back.
+        assert!(desk
+            .dispatcher
+            .host
+            .principal_manager()
+            .device_lists()
+            .upgraded(&person));
     }
 
     /// ADR-095 D5: alice's new computer asks for her DMs while her laptop

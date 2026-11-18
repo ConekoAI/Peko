@@ -6,6 +6,35 @@ All notable changes to Peko.
 
 ### Security
 
+- **Your devices are one signed list, and a device joins by a code
+  (ADR-111).** Which computers and phones are yours used to be answered
+  three ways: a phone paired with one computer by a QR code, another
+  computer approved on a card naming it by six characters (once per
+  computer you already had), and someone else's computers trusted when
+  one of theirs vouched. Each account now has one list, a chain of links
+  each signed by a device already on it, kept by PekoHub, which cannot
+  forge or reorder it. A device is added only by a code shown on one
+  already on the list (`peko device add`, Settings → Devices, the phone's
+  settings) and typed or scanned on the new one (`peko device join`);
+  the two run CPace through PekoHub, so the code never crosses it and
+  PekoHub gets one guess per code. A PekoHub sign-in alone no longer lets
+  a computer act as you. Every check asks the list: what speaks as your
+  account, which phone may ask, which computers a message is sealed to,
+  and which computers may speak for a person in a conversation. Any
+  computer on the list serves your phones. Contacts pin your list on
+  first contact and learn new devices from the head your messages carry;
+  a list that starts over waits for them to accept it. Owner changes,
+  peko key changes and device resets are decided once, in the Devices
+  list, not on every peko's chat. On upgrade, the first computer writes
+  the list and moves the computers you approved and the phones you
+  paired onto it. **This breaks the tunnel wire and IPC**
+  (`device_pair_start`, `computer_list`, `computer_decide`,
+  `tunnel_device_pair*`, `runtime_vouch` are gone; `device_add`,
+  `device_join`, `device_list`, `device_remove`, `security_decide`,
+  `device_list_*`, `device_join` are new) and needs the PekoHub that keeps
+  device lists. It ships in a minor bump. On disk:
+  `runtime/device_lists.json`; `own_computers.json` and `devices.json` are
+  read once, by the upgrade.
 - **A computer you have not approved can no longer join your DMs through
   the DM list.** Your computers ask the others on your account which DMs
   you have, and they ask one you have not approved too, since the request

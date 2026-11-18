@@ -335,22 +335,6 @@
   },
   {
     "deviceId": "dev_5f0c1c1e9a7b4f52a4f1c0de",
-    "proof": "device-signature",
-    "requestId": "pair-1",
-    "runtimeId": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
-    "type": "tunnel_device_pair"
-  },
-  {
-    "deviceId": "dev_5f0c1c1e9a7b4f52a4f1c0de",
-    "error": "That pairing code has expired.",
-    "ok": false,
-    "requestId": "pair-1",
-    "runtimeId": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
-    "signature": "runtime-signature",
-    "type": "tunnel_device_paired"
-  },
-  {
-    "deviceId": "dev_5f0c1c1e9a7b4f52a4f1c0de",
     "requestId": "dreq-1",
     "runtimeId": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
     "sealed": "hpke-sealed-body",
@@ -372,11 +356,6 @@
   {
     "deviceId": "dev_5f0c1c1e9a7b4f52a4f1c0de",
     "type": "tunnel_device_gone"
-  },
-  {
-    "deviceId": "dev_5f0c1c1e9a7b4f52a4f1c0de",
-    "runtimeId": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
-    "type": "tunnel_device_removed"
   },
   {
     "clear": true,
@@ -494,22 +473,58 @@
     "keys": [
       {
         "runtimeId": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
-        "statement": "runtime-key-statement",
-        "vouches": [
-          {
-            "by": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
-            "statement": "vouch-statement"
-          }
-        ]
+        "statement": "runtime-key-statement"
       }
     ],
     "requestId": "keys-1",
     "type": "runtime_keys"
   },
   {
-    "statements": [
-      "vouch-statement"
+    "account": "user:hub:0b6c7a4e-1d2f-4a3b-8c9d-0e1f2a3b4c5d",
+    "after": 2,
+    "requestId": "devices-1",
+    "type": "device_list_request"
+  },
+  {
+    "account": "user:hub:0b6c7a4e-1d2f-4a3b-8c9d-0e1f2a3b4c5d",
+    "from": 3,
+    "links": [
+      {
+        "by": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+        "joiner": "new-device-signature",
+        "signed": "adding-device-signature"
+      }
     ],
-    "type": "runtime_vouch"
+    "requestId": "devices-1",
+    "type": "device_list"
+  },
+  {
+    "account": "user:hub:0b6c7a4e-1d2f-4a3b-8c9d-0e1f2a3b4c5d",
+    "link": {
+      "by": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+      "joiner": "new-device-signature",
+      "signed": "adding-device-signature"
+    },
+    "requestId": "append-1",
+    "type": "device_list_append"
+  },
+  {
+    "error": "not the next link",
+    "ok": false,
+    "requestId": "append-1",
+    "seq": 3,
+    "type": "device_list_appended"
+  },
+  {
+    "account": "user:hub:0b6c7a4e-1d2f-4a3b-8c9d-0e1f2a3b4c5d",
+    "body": {
+      "mac": "mac",
+      "payload": "{\"v\":\"peko-device-list/1\"}",
+      "step": "payload"
+    },
+    "from": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+    "nameplate": "K7",
+    "to": "device:dev_5f0c1c1e9a7b4f52a4f1c0de",
+    "type": "device_join"
   }
 ]

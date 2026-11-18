@@ -2504,6 +2504,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "cron",
+ "curve25519-dalek",
  "dirs",
  "ed25519-dalek",
  "encoding_rs",

@@ -14,8 +14,8 @@
 use super::protocol::{
     AccountDm, AccountGroup, AccountPersonDm, DmBlock, DmRoute, ExposureUpdatePayload,
     InstanceAnnouncePayload, InstanceDeregisterPayload, InstanceExposure, InstanceHeartbeatPayload,
-    InstanceStatus, InstanceType, PekoApproval, PekoModel, RuntimeKeyEntry, RuntimeVouchEntry,
-    StatusUpdatePayload, TunnelMessage,
+    InstanceStatus, InstanceType, PekoApproval, PekoModel, RuntimeKeyEntry, StatusUpdatePayload,
+    TunnelMessage,
 };
 use peko_protocol::channel::{
     Attachment, ChannelEvent, ChannelId, ConversationKind, InitialMember,
@@ -73,13 +73,10 @@ fn variant(message: &TunnelMessage) -> &'static str {
         TunnelMessage::TunnelPekoApprovals { .. } => "tunnel_peko_approvals",
         TunnelMessage::TunnelPekoApprovalDecide { .. } => "tunnel_peko_approval_decide",
         TunnelMessage::TunnelPekoApprovalDecided { .. } => "tunnel_peko_approval_decided",
-        TunnelMessage::TunnelDevicePair { .. } => "tunnel_device_pair",
-        TunnelMessage::TunnelDevicePaired { .. } => "tunnel_device_paired",
         TunnelMessage::TunnelDeviceRequest { .. } => "tunnel_device_request",
         TunnelMessage::TunnelDeviceResponse { .. } => "tunnel_device_response",
         TunnelMessage::TunnelDeviceEvent { .. } => "tunnel_device_event",
         TunnelMessage::TunnelDeviceGone { .. } => "tunnel_device_gone",
-        TunnelMessage::TunnelDeviceRemoved { .. } => "tunnel_device_removed",
         TunnelMessage::TunnelDeviceNotify { .. } => "tunnel_device_notify",
         TunnelMessage::TunnelReadMark { .. } => "tunnel_read_mark",
         TunnelMessage::GroupRegister { .. } => "group_register",
@@ -92,7 +89,11 @@ fn variant(message: &TunnelMessage) -> &'static str {
         TunnelMessage::GroupLookup { .. } => "group_lookup",
         TunnelMessage::RuntimeKeysRequest { .. } => "runtime_keys_request",
         TunnelMessage::RuntimeKeys { .. } => "runtime_keys",
-        TunnelMessage::RuntimeVouch { .. } => "runtime_vouch",
+        TunnelMessage::DeviceListRequest { .. } => "device_list_request",
+        TunnelMessage::DeviceList { .. } => "device_list",
+        TunnelMessage::DeviceListAppend { .. } => "device_list_append",
+        TunnelMessage::DeviceListAppended { .. } => "device_list_appended",
+        TunnelMessage::DeviceJoin { .. } => "device_join",
     }
 }
 
@@ -141,13 +142,10 @@ const ALL_VARIANTS: &[&str] = &[
     "tunnel_peko_approvals",
     "tunnel_peko_approval_decide",
     "tunnel_peko_approval_decided",
-    "tunnel_device_pair",
-    "tunnel_device_paired",
     "tunnel_device_request",
     "tunnel_device_response",
     "tunnel_device_event",
     "tunnel_device_gone",
-    "tunnel_device_removed",
     "tunnel_device_notify",
     "tunnel_read_mark",
     "group_register",
@@ -160,7 +158,11 @@ const ALL_VARIANTS: &[&str] = &[
     "group_lookup",
     "runtime_keys_request",
     "runtime_keys",
-    "runtime_vouch",
+    "device_list_request",
+    "device_list",
+    "device_list_append",
+    "device_list_appended",
+    "device_join",
 ];
 
 const RUNTIME_A: &str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
@@ -168,6 +170,14 @@ const RUNTIME_B: &str = "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvkt
 const HUB_ID: &str = "156f1a95-d977-4c4a-979e-8ed4848ae6eb";
 const ACCOUNT: &str = "0b6c7a4e-1d2f-4a3b-8c9d-0e1f2a3b4c5d";
 const DEVICE: &str = "dev_5f0c1c1e9a7b4f52a4f1c0de";
+
+fn device_link() -> crate::security::device_list::Link {
+    crate::security::device_list::Link {
+        by: RUNTIME_A.into(),
+        signed: "adding-device-signature".into(),
+        joiner: Some("new-device-signature".into()),
+    }
+}
 
 fn channel_envelope(event: ChannelEvent) -> TunnelMessage {
     TunnelMessage::TunnelChannelEvent {
@@ -560,20 +570,6 @@ fn samples() -> Vec<TunnelMessage> {
             message: "Approved apr_0123456789ab.".into(),
             signature: "runtime-signature".into(),
         },
-        TunnelMessage::TunnelDevicePair {
-            request_id: "pair-1".into(),
-            runtime_id: RUNTIME_A.into(),
-            device_id: DEVICE.into(),
-            proof: "device-signature".into(),
-        },
-        TunnelMessage::TunnelDevicePaired {
-            request_id: "pair-1".into(),
-            device_id: DEVICE.into(),
-            runtime_id: RUNTIME_A.into(),
-            ok: false,
-            error: Some("That pairing code has expired.".into()),
-            signature: "runtime-signature".into(),
-        },
         TunnelMessage::TunnelDeviceRequest {
             request_id: "dreq-1".into(),
             device_id: DEVICE.into(),
@@ -593,10 +589,6 @@ fn samples() -> Vec<TunnelMessage> {
         },
         TunnelMessage::TunnelDeviceGone {
             device_id: DEVICE.into(),
-        },
-        TunnelMessage::TunnelDeviceRemoved {
-            device_id: DEVICE.into(),
-            runtime_id: RUNTIME_A.into(),
         },
         TunnelMessage::TunnelDeviceNotify {
             device_id: DEVICE.into(),
@@ -705,14 +697,39 @@ fn samples() -> Vec<TunnelMessage> {
             keys: vec![RuntimeKeyEntry {
                 runtime_id: RUNTIME_B.into(),
                 statement: "runtime-key-statement".into(),
-                vouches: vec![RuntimeVouchEntry {
-                    by: RUNTIME_A.into(),
-                    statement: "vouch-statement".into(),
-                }],
             }],
         },
-        TunnelMessage::RuntimeVouch {
-            statements: vec!["vouch-statement".into()],
+        TunnelMessage::DeviceListRequest {
+            request_id: "devices-1".into(),
+            account: format!("user:hub:{ACCOUNT}"),
+            after: Some(2),
+        },
+        TunnelMessage::DeviceList {
+            request_id: Some("devices-1".into()),
+            account: format!("user:hub:{ACCOUNT}"),
+            from: 3,
+            links: vec![device_link()],
+        },
+        TunnelMessage::DeviceListAppend {
+            request_id: "append-1".into(),
+            account: format!("user:hub:{ACCOUNT}"),
+            link: device_link(),
+        },
+        TunnelMessage::DeviceListAppended {
+            request_id: "append-1".into(),
+            ok: false,
+            error: Some("not the next link".into()),
+            seq: Some(3),
+        },
+        TunnelMessage::DeviceJoin {
+            account: format!("user:hub:{ACCOUNT}"),
+            nameplate: "K7".into(),
+            from: Some(RUNTIME_A.into()),
+            to: Some(format!("device:{DEVICE}")),
+            body: crate::security::join::JoinStep::Payload {
+                payload: "{\"v\":\"peko-device-list/1\"}".into(),
+                mac: "mac".into(),
+            },
         },
     ]
 }

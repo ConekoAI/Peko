@@ -763,36 +763,10 @@ pub enum TunnelMessage {
         signature: String,
     },
 
-    /// ADR-108 D2: a phone enrolls its keys with the runtime `runtime_id`.
-    /// PekoHub relays it only from a device signed in to the account that
-    /// runtime is registered to. `proof` is a compact JWS by the phone's
-    /// signing key (`DevicePairPayload`), carrying a MAC under the pairing
-    /// secret the phone read from the computer's screen.
-    #[serde(rename = "tunnel_device_pair", rename_all = "camelCase")]
-    TunnelDevicePair {
-        request_id: String,
-        runtime_id: String,
-        device_id: String,
-        proof: String,
-    },
-
-    /// ADR-108 D2: the runtime's answer to a pairing. `signature` is the
-    /// runtime's compact JWS (`DevicePairedPayload`); `ok` and `error`
-    /// repeat it in the clear so PekoHub can record the pairing.
-    #[serde(rename = "tunnel_device_paired", rename_all = "camelCase")]
-    TunnelDevicePaired {
-        request_id: String,
-        device_id: String,
-        runtime_id: String,
-        ok: bool,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        error: Option<String>,
-        signature: String,
-    },
-
     /// ADR-108 D3: one device verb for the runtime `runtime_id`, from a
-    /// paired phone. Relayed like `TunnelDevicePair`. `signature` is the
-    /// device key's compact JWS (`DeviceRequestPayload`) and carries the
+    /// phone on the account's device list (ADR-111 D5). PekoHub relays it
+    /// only from a phone signed in to the account that runtime is
+    /// registered to. `signature` is the device key's compact JWS (`DeviceRequestPayload`) and carries the
     /// verb and its arguments.
     #[serde(rename = "tunnel_device_request", rename_all = "camelCase")]
     TunnelDeviceRequest {
@@ -828,14 +802,6 @@ pub enum TunnelMessage {
     /// the runtime ends its watch.
     #[serde(rename = "tunnel_device_gone", rename_all = "camelCase")]
     TunnelDeviceGone { device_id: String },
-
-    /// ADR-108 D2: the runtime removed a device's record. PekoHub drops
-    /// the pairing and tells the phone.
-    #[serde(rename = "tunnel_device_removed", rename_all = "camelCase")]
-    TunnelDeviceRemoved {
-        device_id: String,
-        runtime_id: String,
-    },
 
     /// ADR-108 D6: a push notification for a paired phone. `sealed` is
     /// the notification, signed by the runtime and sealed to the device's
@@ -983,8 +949,7 @@ pub enum TunnelMessage {
 
     // --- ADR-110: keys to seal to ---
     /// Ask PekoHub for the key statements of some runtimes, or of every
-    /// computer of an account (`user:hub:<id>`) with the vouches its
-    /// computers published.
+    /// computer of an account (`user:hub:<id>`).
     #[serde(rename = "runtime_keys_request", rename_all = "camelCase")]
     RuntimeKeysRequest {
         request_id: String,
@@ -1004,30 +969,70 @@ pub enum TunnelMessage {
         #[serde(default)]
         keys: Vec<RuntimeKeyEntry>,
     },
-    /// ADR-110 D4: this runtime vouches for the computers of its account
-    /// the owner approved here (each a compact JWS by this runtime), so
-    /// people who pinned one of them seal to the others too.
-    #[serde(rename = "runtime_vouch", rename_all = "camelCase")]
-    RuntimeVouch { statements: Vec<String> },
+
+    // --- ADR-111: each account's device list ---
+    /// Ask PekoHub for `account`'s device list (`user:hub:<id>`): all of
+    /// it, or the links after `after`.
+    #[serde(rename = "device_list_request", rename_all = "camelCase")]
+    DeviceListRequest {
+        request_id: String,
+        account: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after: Option<u64>,
+    },
+    /// PekoHub's answer, or what it pushes to the account's devices when a
+    /// link is appended (no `request_id`): the links from `from` on. An
+    /// account with no list answers no links.
+    #[serde(rename = "device_list", rename_all = "camelCase")]
+    DeviceList {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
+        account: String,
+        #[serde(default)]
+        from: u64,
+        #[serde(default)]
+        links: Vec<crate::security::device_list::Link>,
+    },
+    /// Append `link` to `account`'s list. PekoHub takes it only as the
+    /// next link (`seq` and `prev`), from a device of that account.
+    #[serde(rename = "device_list_append", rename_all = "camelCase")]
+    DeviceListAppend {
+        request_id: String,
+        account: String,
+        link: crate::security::device_list::Link,
+    },
+    /// Whether PekoHub took the link, and where the list ends.
+    #[serde(rename = "device_list_appended", rename_all = "camelCase")]
+    DeviceListAppended {
+        request_id: String,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+    },
+    /// ADR-111 D3: one step of joining a device by a code
+    /// (`security::join::JoinStep`), relayed by PekoHub among the devices
+    /// signed in to `account` by `nameplate`. PekoHub sets `from` to the
+    /// sender (a runtime id, or `device:<id>` for a phone). Without `to`
+    /// it goes to every other device of the account.
+    #[serde(rename = "device_join", rename_all = "camelCase")]
+    DeviceJoin {
+        account: String,
+        nameplate: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to: Option<String>,
+        body: crate::security::join::JoinStep,
+    },
 }
 
-/// A runtime's key statement as PekoHub serves it (ADR-110 D2), with the
-/// vouches other computers of its account published for it (D4).
+/// A runtime's key statement as PekoHub serves it (ADR-110 D2).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeKeyEntry {
     pub runtime_id: String,
-    pub statement: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub vouches: Vec<RuntimeVouchEntry>,
-}
-
-/// A vouch for a computer, by another computer of its account.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RuntimeVouchEntry {
-    /// The vouching runtime's id.
-    pub by: String,
     pub statement: String,
 }
 
