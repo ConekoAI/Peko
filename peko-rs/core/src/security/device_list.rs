@@ -809,22 +809,35 @@ impl DeviceLists {
 #[cfg(any(test, feature = "test-utils"))]
 #[must_use]
 pub fn test_chain(account: &str, devices: &[(&SigningKey, Device)]) -> Vec<Link> {
+    // Fixed times, so the same devices always make the same chain (Ed25519
+    // signatures are deterministic): a test may build it more than once.
+    const IAT: i64 = 1_800_000_000;
     let (first, first_device) = &devices[0];
+    let first_payload = LinkPayload {
+        v: DEVICE_LIST_VERSION.into(),
+        account: account.to_string(),
+        seq: 0,
+        prev: None,
+        change: Change::Add {
+            device: first_device.clone(),
+        },
+        via: None,
+        iat: IAT,
+    };
     let mut list = DeviceList::verify(
         account,
-        vec![genesis(
-            first,
-            account,
-            first_device.kind,
-            first_device.name.as_deref(),
-            &first_device.agreement_key,
-        )],
+        vec![Link {
+            by: did_of(first),
+            signed: sign_payload(first, &first_payload),
+            joiner: None,
+        }],
     )
     .expect("a first link checks out");
     for (key, device) in &devices[1..] {
-        let payload = list.next_payload(Change::Add {
+        let mut payload = list.next_payload(Change::Add {
             device: device.clone(),
         });
+        payload.iat = IAT + payload.seq as i64;
         list = list
             .extended(vec![Link {
                 by: did_of(first),
@@ -917,6 +930,21 @@ mod tests {
             ListError::Invalid { reason, .. } => reason,
             other => panic!("expected an invalid link, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn the_test_chain_is_the_same_each_time_it_is_built() {
+        // Tests build it more than once and expect the host to take the
+        // second as an extension of the first, whatever the clock says.
+        let (desk, laptop) = (key(), key());
+        let devices = [
+            (&desk, test_computer(&desk)),
+            (&laptop, test_computer(&laptop)),
+        ];
+        let once = test_chain(ACCOUNT, &devices[..1]);
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let twice = test_chain(ACCOUNT, &devices);
+        assert_eq!(once[..], twice[..1]);
     }
 
     #[test]
