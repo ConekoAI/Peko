@@ -198,6 +198,17 @@ impl PekoKeys {
         }
     }
 
+    /// The signing key pinned for the peko `hub_id`, if it was met.
+    #[must_use]
+    pub fn pinned(&self, hub_id: &str) -> Option<String> {
+        self.file
+            .lock()
+            .unwrap()
+            .pins
+            .get(hub_id)
+            .map(|p| p.signing_did.clone())
+    }
+
     /// Key changes waiting for the owner, oldest first.
     #[must_use]
     pub fn pending(&self) -> Vec<KeyChange> {

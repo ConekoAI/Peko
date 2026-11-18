@@ -1356,6 +1356,13 @@ impl crate::ipc::handlers::device::DeviceHost for AppState {
         self.device_sync().join(code).await
     }
 
+    async fn identity_code(&self, of: &str) -> (Option<String>, Option<String>) {
+        match crate::principal::policy_gate::identity_code(&self.principal_manager, of).await {
+            Some(found) => (found.name, Some(found.code)),
+            None => (None, None),
+        }
+    }
+
     async fn devices(&self) -> crate::ipc::packet::DevicesView {
         let status = self.device_sync().status().await;
         let last_seen: HashMap<String, Option<String>> = self
@@ -1399,9 +1406,12 @@ impl crate::ipc::handlers::device::DeviceHost for AppState {
                 reason: r.reason,
                 peko: r.peko,
                 created_at: r.created_at.to_rfc3339(),
+                code: r.code,
+                pinned_code: r.pinned_code,
             })
             .collect();
         crate::ipc::packet::DevicesView {
+            code: status.code,
             account: status.account,
             runtime: status.me,
             on_list: status.on_list,
@@ -2330,6 +2340,10 @@ mod tests {
         for request in [
             RequestPacket::DeviceAdd { request_id: 1 },
             RequestPacket::DeviceList { request_id: 1 },
+            RequestPacket::IdentityCode {
+                request_id: 1,
+                of: "account".into(),
+            },
             RequestPacket::DeviceRemove {
                 request_id: 1,
                 device_id: rig.phone.device_id.clone(),
@@ -2368,6 +2382,49 @@ mod tests {
                     .devices
                     .iter()
                     .any(|d| d.hub_device_id.as_deref() == Some(rig.phone.device_id.as_str())));
+                // ADR-112: the account's code is its list's, and the same
+                // answer comes from `identity_code`.
+                let account = view.account.clone().unwrap();
+                let genesis = rig
+                    .app
+                    .principal_manager
+                    .device_lists()
+                    .list(&account)
+                    .unwrap()
+                    .genesis()
+                    .to_string();
+                let expected = crate::security::identity_code::code_of(
+                    crate::security::identity_code::Identity::Person(&genesis),
+                );
+                assert_eq!(view.code.as_deref(), Some(expected.as_str()));
+                match ask(
+                    RequestPacket::IdentityCode {
+                        request_id: 1,
+                        of: "account".into(),
+                    },
+                    CallerContext::local(),
+                )
+                .await
+                {
+                    ResponsePacket::IdentityCodeResult { code, .. } => {
+                        assert_eq!(code.as_deref(), Some(expected.as_str()));
+                    }
+                    other => panic!("{other:?}"),
+                }
+                for of in ["peko:hub:never-met", "user:hub:someone-else"] {
+                    match ask(
+                        RequestPacket::IdentityCode {
+                            request_id: 1,
+                            of: of.into(),
+                        },
+                        CallerContext::local(),
+                    )
+                    .await
+                    {
+                        ResponsePacket::IdentityCodeResult { code: None, .. } => {}
+                        other => panic!("{of}: {other:?}"),
+                    }
+                }
             }
             other => panic!("{other:?}"),
         }

@@ -239,7 +239,10 @@ pub fn verify(paths: &GlobalPaths, peko: &str, json: bool) -> Result<()> {
             println!("   params differ between the logs: {id}");
         }
         println!(
-            "   This shows tampering, it can't prevent it: anyone who can write both logs can rewrite both."
+            "   This catches changes by anything that cannot write both logs (another peko's run, a"
+        );
+        println!(
+            "   damaged disk). A run with Bash runs as you and could rewrite both without a trace."
         );
     }
     if !report.is_intact() {

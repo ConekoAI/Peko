@@ -6,6 +6,15 @@ All notable changes to Peko.
 
 ### Security
 
+- **Every person and peko has a code you can compare (ADR-112).** Thirty
+  digits: a person's comes from their device list's first link, so it stays
+  the same as they add devices; a peko's comes from its key. Your account's
+  code is in Settings → Devices, on the phone's Devices list, and from
+  `peko code`. A peko's code is on its profile, or `peko code <peko>`. When
+  PekoHub says a peko has a new identity, or that someone's devices started
+  over, the request now shows the new code (and the old one). Approve only
+  if the owner reads you the same code. Before this you had nothing to check
+  it against.
 - **`peko auth login` names itself to PekoHub** (`peko/<version> (<os>)`)
   when it asks for a sign-in code. PekoHub's sign-in page shows it beside
   where the request came from, so a code someone else started and sent you

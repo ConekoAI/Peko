@@ -1175,6 +1175,14 @@ pub enum RequestPacket {
     #[serde(rename = "device_list")]
     DeviceList { request_id: u64 },
 
+    /// ADR-112: the code of an identity as this computer holds it, to
+    /// compare with its owner's: `account`, `user:hub:<id>`,
+    /// `peko:hub:<id>`, or one of your pekos by name or id. Local callers
+    /// only. Answered with `IdentityCodeResult` (`code` absent when this
+    /// computer holds no identity for it yet).
+    #[serde(rename = "identity_code")]
+    IdentityCode { request_id: u64, of: String },
+
     /// ADR-111 D4: remove a device from the account (by its id, or a
     /// phone's Hub id); every computer stops acting on it. Local callers
     /// only. Answers `done`.
@@ -1318,6 +1326,7 @@ impl RequestPacket {
             | Self::DeviceAdd { request_id }
             | Self::DeviceJoin { request_id, .. }
             | Self::DeviceList { request_id }
+            | Self::IdentityCode { request_id, .. }
             | Self::DeviceRemove { request_id, .. }
             | Self::SecurityDecide { request_id, .. }
             | Self::ChannelMarkRead { request_id, .. }
@@ -1620,6 +1629,13 @@ pub struct SecurityInfo {
     pub peko: Option<String>,
     /// RFC 3339.
     pub created_at: String,
+    /// ADR-112: the code of what it asks you to trust, to compare with
+    /// its owner's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    /// ADR-112: a key change's code for the key trusted until now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_code: Option<String>,
 }
 
 /// What `device_list` answers (ADR-111).
@@ -1635,6 +1651,9 @@ pub struct DevicesView {
     pub on_list: bool,
     pub devices: Vec<DeviceInfo>,
     pub security: Vec<SecurityInfo>,
+    /// ADR-112: the account's code, once this computer holds its list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
 }
 
 /// The person's read state in one conversation (ADR-108 D5).
@@ -2036,6 +2055,17 @@ pub enum ResponsePacket {
         request_id: u64,
         #[serde(flatten)]
         view: DevicesView,
+    },
+
+    /// Response to `IdentityCode` (ADR-112).
+    #[serde(rename = "identity_code_result")]
+    IdentityCodeResult {
+        request_id: u64,
+        of: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<String>,
     },
 
     /// Response to `ChannelMarkRead` (ADR-108 D5): whether the mark
@@ -3429,6 +3459,7 @@ impl ResponsePacket {
             | Self::ChannelUndeliveredResult { request_id, .. }
             | Self::DeviceCodeShown { request_id, .. }
             | Self::DeviceListResult { request_id, .. }
+            | Self::IdentityCodeResult { request_id, .. }
             | Self::ChannelReadMarked { request_id, .. }
             | Self::ChannelReadStateResult { request_id, .. } => *request_id,
         }
@@ -3537,6 +3568,7 @@ impl ResponsePacket {
             Self::ChannelUndeliveredResult { .. } => "ChannelUndeliveredResult",
             Self::DeviceCodeShown { .. } => "DeviceCodeShown",
             Self::DeviceListResult { .. } => "DeviceListResult",
+            Self::IdentityCodeResult { .. } => "IdentityCodeResult",
             Self::ChannelReadMarked { .. } => "ChannelReadMarked",
             Self::ChannelReadStateResult { .. } => "ChannelReadStateResult",
         }

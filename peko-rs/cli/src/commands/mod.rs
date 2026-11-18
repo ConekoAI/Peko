@@ -12,6 +12,7 @@
 pub mod audit;
 pub mod auth;
 pub mod channel;
+pub mod code;
 pub mod config;
 pub mod credential;
 // 2026-08-25: `peko cron` retired. The cron module was deleted;
@@ -176,6 +177,18 @@ pub enum Commands {
     ///   peko device remove dev_5f0c1c1e9a7b4f52
     #[command(subcommand)]
     Device(device::DeviceCommands),
+
+    /// An identity's code, to read to its owner
+    ///
+    /// Your account's, one of your pekos', or someone else's as this
+    /// computer knows them. Two owners who read matching codes know
+    /// PekoHub put them in touch with each other.
+    ///
+    /// Examples:
+    ///   peko code
+    ///   peko code ada
+    ///   peko code peko:hub:6f1c2a52-58b6-4b8e-9d1c-6a3f0b6f1a01
+    Code(code::CodeArgs),
 
     /// How many tokens and requests a peko may use
     ///

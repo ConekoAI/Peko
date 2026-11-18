@@ -110,7 +110,7 @@ Storing params at all is a deliberate change from the global log's digest-only r
 
 `ToolCallSpec` gains `parent: Option<CallParent>`. This is a new field on a struct that is often built by literal, so every literal site is updated in the same PR.
 
-### D5: Tampering is detectable, not preventable
+### D5: Changes are detectable by anything that cannot rewrite both logs
 
 - **Hash chain.** Each line's `hash` is SHA-256 over its canonical bytes with `hash` removed, and `prev` is the previous line's `hash`. The chain continues across days, so the first line of a day links to the last line of the day before. A principal's first line is a `genesis` record. After an import (D7) the genesis records the snapshot.
 - **Checkpoints.** After a call when an hour has passed, on the hourly daemon janitor tick, and at shutdown, the dispatcher writes a `ledger.checkpoint` event (`principal_id`, `seq`, head `hash`) to the **global** audit log when the head has moved. A rewrite then has to forge two files consistently.
@@ -118,7 +118,7 @@ Storing params at all is a deliberate change from the global log's digest-only r
 - **Fail-closed writes.** If the ledger cannot be written — or could not be opened when the principal was bound — owner runs proceed and a `ledger.write_failed` Security event goes to the global log. An owner must not be locked out of the principal they need to repair. Every other run's call is refused with `tool ledger unavailable`.
 - **The floor protects the ledger directory.** `Write` and `Edit` refuse `local/ledger/` for every run, whatever its trust. This is the same rule as for `kb/inbox/`. `Read`, `Glob`, and `Grep` keep their ADR-078 reach.
 
-**This does not stop the same OS user.** A run with `Bash` can rewrite the ledger, the global log, and the checkpoints together. What actually anchors the chain is a copy outside that user's reach. That is follow-up F-1: posting checkpoints to PekoHub, signed with the principal's DID key, when the tunnel is registered.
+**This does not stop, or even reveal, the same OS user.** A run with `Bash` can rewrite the ledger, the global log, and the checkpoints together, and `verify` then reports them as consistent. Against that run the ledger is an append-only log, not evidence. Only owner runs have `Bash` (ADR-078), and an owner run acting on injected instructions is an accepted residual risk until runs are sandboxed. What would anchor the chain is a copy outside that user's reach. That is follow-up F-1: posting checkpoints to PekoHub, signed with the principal's DID key, when the tunnel is registered.
 
 ### D6: Reading the ledger
 

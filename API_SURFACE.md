@@ -74,6 +74,18 @@ read? }] }`.
 CLI: `peko device add | join <code> | list | remove <id> | approve <id> |
 deny <id>`.
 
+## Identity codes (ADR-112)
+
+`security::identity_code::{code_of, Identity}`: an identity's 30-digit
+code (`Identity::Person(genesis hash)`, `Identity::Peko(signing did)`).
+`principal::policy_gate::identity_code(manager, of)` resolves `account`,
+`user:hub:<id>`, `peko:hub:<id>` or one of the pekos by name or id;
+`PekoKeys::pinned(hub_id)` reads a met peko's key. `SecurityRequest`
+gains `code` / `pinned_code`, `DevicesStatus` gains `code`.
+IPC, local callers only: `identity_code { of }` → `identity_code_result
+{ of, name?, code? }`; `device_list_result` gains `code`, its `security`
+items `code` and `pinned_code`. CLI: `peko code [<who>]`.
+
 A phone's own requests never use IPC. They arrive as `tunnel_device_request`
 and are carried out by the verb table in `daemon/state/devices.rs`:
 `conversations`, `read`, `post`, `mark_read`, `approvals`,

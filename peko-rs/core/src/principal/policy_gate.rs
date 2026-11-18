@@ -920,6 +920,109 @@ pub struct SecurityRequest {
     /// The peko an owner change is about.
     pub peko: Option<String>,
     pub created_at: DateTime<Utc>,
+    /// ADR-112: the code of the identity it asks you to trust (a peko's
+    /// new key, a contact's new device list), to compare with its owner's.
+    pub code: Option<String>,
+    /// ADR-112: a key change's code for the key trusted until now.
+    pub pinned_code: Option<String>,
+}
+
+/// An identity's code (ADR-112) and whose it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdentityCode {
+    /// The peko's or person's name, when known.
+    pub name: Option<String>,
+    pub code: String,
+}
+
+/// The code of `of` as this computer holds it (ADR-112):
+///
+/// - `account`: this computer's own account (its device list, once held);
+/// - `user:hub:<id>`: a person, by the device list held for them;
+/// - `peko:hub:<id>`: a peko, by its key here (one of yours) or the key
+///   pinned when it was met;
+/// - anything else: one of your pekos, by name or local id.
+///
+/// `None` when this computer holds no identity for it yet.
+pub async fn identity_code(manager: &PrincipalManager, of: &str) -> Option<IdentityCode> {
+    use crate::security::identity_code::{code_of, Identity};
+    let person = |account: &str| {
+        manager
+            .device_lists()
+            .list(account)
+            .map(|list| IdentityCode {
+                name: None,
+                code: code_of(Identity::Person(list.genesis())),
+            })
+    };
+    if of == "account" {
+        let own = format!("user:hub:{}", manager.local_account().await?);
+        return person(&own);
+    }
+    if of.starts_with("user:hub:") {
+        return person(of);
+    }
+    let principals = manager.list_all().await;
+    if let Some(hub_id) = of.strip_prefix("peko:hub:") {
+        for principal in &principals {
+            if manager.hub_id_of(principal).await.as_deref() == Some(hub_id) {
+                return Some(IdentityCode {
+                    name: Some(principal.config.read().await.name.clone()),
+                    code: code_of(Identity::Peko(&principal.did().await.0)),
+                });
+            }
+        }
+        return manager.peko_keys().pinned(hub_id).map(|did| IdentityCode {
+            name: None,
+            code: code_of(Identity::Peko(&did)),
+        });
+    }
+    for principal in &principals {
+        let config = principal.config.read().await;
+        if config.name == of || principal.id.0 == of {
+            let name = config.name.clone();
+            drop(config);
+            return Some(IdentityCode {
+                name: Some(name),
+                code: code_of(Identity::Peko(&principal.did().await.0)),
+            });
+        }
+    }
+    None
+}
+
+/// The codes a waiting request asks the owner to compare (ADR-112): what
+/// it would trust, and for a key change what it trusts now.
+fn request_codes(manager: &PrincipalManager, id: &str) -> (Option<String>, Option<String>) {
+    use crate::security::identity_code::{code_of, Identity};
+    if id.starts_with(crate::security::peko_keys::KEY_CHANGE_ID_PREFIX) {
+        if let Some(change) = manager
+            .peko_keys()
+            .pending()
+            .into_iter()
+            .find(|c| c.request_id() == id)
+        {
+            return (
+                Some(code_of(Identity::Peko(&change.offered))),
+                Some(code_of(Identity::Peko(&change.pinned))),
+            );
+        }
+    }
+    if id.starts_with(crate::security::device_list::RESET_ID_PREFIX) {
+        if let Some(reset) = manager
+            .device_lists()
+            .pending_resets()
+            .into_iter()
+            .find(|r| r.request_id() == id)
+        {
+            let list =
+                crate::security::device_list::DeviceList::verify(&reset.account, reset.links);
+            if let Ok(list) = list {
+                return (Some(code_of(Identity::Person(list.genesis()))), None);
+            }
+        }
+    }
+    (None, None)
 }
 
 /// Everything [`decide_account_claim`] decides that waits now, each once,
@@ -936,7 +1039,10 @@ pub async fn security_requests(manager: &PrincipalManager) -> Vec<SecurityReques
         if kind == "owner_task" || out.iter().any(|r| r.id == record.id) {
             return;
         }
+        let (code, pinned_code) = request_codes(manager, &record.id);
         out.push(SecurityRequest {
+            code,
+            pinned_code,
             summary: request_summary(record),
             reason: record.reason.clone(),
             peko: (kind == "owner_change").then_some(peko).flatten(),

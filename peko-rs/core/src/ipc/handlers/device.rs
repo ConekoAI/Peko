@@ -32,6 +32,8 @@ pub(crate) trait DeviceHost: Send + Sync {
 
     /// The account's devices and what waits about the account.
     async fn devices(&self) -> DevicesView;
+    /// ADR-112: `of`'s name and code, as this computer holds them.
+    async fn identity_code(&self, of: &str) -> (Option<String>, Option<String>);
 
     /// Remove a device from the account.
     async fn remove_device(&self, device_id: &str) -> Result<bool, String>;
@@ -75,6 +77,7 @@ impl RequestHandler for DeviceHandler {
             RequestPacket::DeviceAdd { .. }
                 | RequestPacket::DeviceJoin { .. }
                 | RequestPacket::DeviceList { .. }
+                | RequestPacket::IdentityCode { .. }
                 | RequestPacket::DeviceRemove { .. }
                 | RequestPacket::SecurityDecide { .. }
                 | RequestPacket::ChannelMarkRead { .. }
@@ -123,6 +126,15 @@ impl RequestHandler for DeviceHandler {
                 request_id,
                 view: self.host.devices().await,
             },
+            RequestPacket::IdentityCode { of, .. } => {
+                let (name, code) = self.host.identity_code(&of).await;
+                ResponsePacket::IdentityCodeResult {
+                    request_id,
+                    of,
+                    name,
+                    code,
+                }
+            }
             RequestPacket::DeviceRemove { device_id, .. } => {
                 match self.host.remove_device(&device_id).await {
                     Ok(removed) => ResponsePacket::Done {

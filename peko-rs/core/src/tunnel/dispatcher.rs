@@ -5041,6 +5041,26 @@ mod tests {
             .find(|r| request_kind(r).as_deref() == Some("key_change"))
             .expect("the owner is asked");
         assert!(crate::principal::policy_gate::request_summary(request).contains("ada"));
+        // ADR-112: the request carries the new key's code and the old one's,
+        // and ada's owner reads the new one from ada's key on their side.
+        use crate::security::identity_code::{code_of, Identity};
+        let listed = crate::principal::policy_gate::security_requests(&manager).await;
+        let item = listed.iter().find(|r| r.kind == "key_change").unwrap();
+        assert_eq!(item.code, Some(code_of(Identity::Peko(&new_did))));
+        assert_eq!(item.pinned_code, Some(code_of(Identity::Peko(&did))));
+        let held = crate::principal::policy_gate::identity_code(&manager, "peko:hub:hub-ada")
+            .await
+            .unwrap();
+        assert_eq!(
+            held.code,
+            code_of(Identity::Peko(&did)),
+            "still the pinned key"
+        );
+        let mine = crate::principal::policy_gate::identity_code(&manager, "mine")
+            .await
+            .unwrap();
+        assert_eq!(mine.name.as_deref(), Some("mine"));
+        assert_eq!(mine.code, code_of(Identity::Peko(&principal.did().await.0)));
         assert!(
             decide_request(
                 &manager,
