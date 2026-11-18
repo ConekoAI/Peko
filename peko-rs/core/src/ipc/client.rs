@@ -336,6 +336,16 @@ impl DaemonClient {
             .await
     }
 
+    /// The code of an identity as this computer holds it (ADR-112).
+    pub async fn identity_code(&self, of: &str) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        self.device_request(RequestPacket::IdentityCode {
+            request_id,
+            of: of.to_string(),
+        })
+        .await
+    }
+
     /// Remove a device from this account (ADR-111 D4).
     pub async fn device_remove(&self, device_id: &str) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();

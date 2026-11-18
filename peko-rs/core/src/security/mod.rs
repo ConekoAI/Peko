@@ -16,6 +16,7 @@
 pub mod computers;
 pub mod device_list;
 pub mod floor;
+pub mod identity_code;
 pub mod join;
 pub mod judge;
 pub mod ledger;

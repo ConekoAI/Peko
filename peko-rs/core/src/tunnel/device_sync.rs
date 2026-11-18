@@ -116,6 +116,8 @@ pub struct DevicesStatus {
     /// The devices on the list (or on the one PekoHub shows, while this
     /// computer is not on it).
     pub devices: Vec<Member>,
+    /// The account's code (ADR-112), once this computer holds its list.
+    pub code: Option<String>,
 }
 
 /// See the module docs.
@@ -550,10 +552,15 @@ impl DeviceSync {
         let lists = self.lists();
         let held = own.as_deref().and_then(|a| lists.list(a));
         let on_list = held.as_ref().is_some_and(|l| l.member(&self.me).is_some());
+        let code = held.as_ref().map(|l| {
+            use crate::security::identity_code::{code_of, Identity};
+            code_of(Identity::Person(l.genesis()))
+        });
         let shown = held.or_else(|| lists.unanchored());
         DevicesStatus {
             account: own,
             me: self.me.clone(),
+            code,
             on_list,
             devices: shown
                 .map(|l| l.members().cloned().collect())

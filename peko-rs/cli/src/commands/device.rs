@@ -138,6 +138,9 @@ pub async fn handle_device(
                 return Ok(());
             };
             println!("Devices of {account}");
+            if let Some(code) = &view.code {
+                println!("  Your account's code: {code}");
+            }
             if !view.on_list {
                 println!("  This computer is not on them yet: on a device you already use, choose");
                 println!("  Add a device (or run `peko device add`), then `peko device join <code>` here.");
@@ -164,6 +167,14 @@ pub async fn handle_device(
                     println!("  {}  {}", item.id, item.summary);
                     if !item.reason.is_empty() {
                         println!("      {}", item.reason);
+                    }
+                    // ADR-112: what to compare before approving.
+                    if let Some(code) = &item.code {
+                        println!("      Its code: {code}");
+                        if let Some(old) = &item.pinned_code {
+                            println!("      Until now: {old}");
+                        }
+                        println!("      Approve only if its owner reads you the same code.");
                     }
                 }
                 println!("  Decide with `peko device approve <id>` or `peko device deny <id>`.");

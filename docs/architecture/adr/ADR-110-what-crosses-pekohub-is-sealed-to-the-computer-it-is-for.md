@@ -114,7 +114,7 @@ All five phases are implemented, runtime and PekoHub together (each side refuses
 
 ## 6. Open
 
-1. **Comparing a code.** A short code computed from both computers' keys, shown in the desktop and `peko contact verify`, so two owners can confirm a first meeting the Hub could have intercepted.
+1. **Comparing a code.** Done in [ADR-112](ADR-112-identity-codes.md): one code per person (their device list, ADR-111) and per peko (its key), shown on profiles, on key-change and reset requests, and by `peko code`.
 2. **Key rotation.** A new agreement key every N days, with the old one kept long enough to open what is still in flight. This bounds what a stolen key exposes.
 3. **Padding.** Rounding sealed sizes up to fixed buckets so the Hub learns less from lengths.
 4. **People with no computer** (ADR-108 §6.4). They use the proxy, which D8 leaves readable.
