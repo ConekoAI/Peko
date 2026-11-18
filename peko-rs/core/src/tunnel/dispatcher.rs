@@ -1270,6 +1270,19 @@ impl TunnelDispatcher {
                 blocks,
                 signature,
             } => {
+                // ADR-109 D2: the answer speaks for this computer's own
+                // account. An unapproved computer gets the request (it
+                // carries nothing), but what it answers would make it a
+                // route in the person's conversations.
+                let Some(account) = self.host.principal_manager().local_account().await else {
+                    return Ok(());
+                };
+                if !self
+                    .admits_own_account(&source_runtime_id, &format!("user:hub:{account}"), None)
+                    .await
+                {
+                    return Ok(());
+                }
                 self.host
                     .tunnel_channel_port()
                     .on_account_dms(
@@ -9851,6 +9864,110 @@ mod tests {
             .conversation_kind(&peko_channel::ChannelId(forged.channel_id))
             .await
             .is_err());
+    }
+
+    /// ADR-109 + ADR-110 D4: a computer on the person's account that she
+    /// has not approved gets her DM-list request (it carries nothing), but
+    /// its answer must not make it a route in her conversations: her next
+    /// post would then be sealed to it.
+    #[tokio::test]
+    async fn an_unapproved_computers_dm_list_does_not_make_it_a_route() {
+        use crate::tunnel::hub_directory::FakeAgentDirectory;
+        use peko_channel::ChannelPort;
+
+        let AliceDm {
+            mut laptop,
+            channel,
+            account,
+            peko_did,
+            ..
+        } = alice_dm_with_a_peko_elsewhere().await;
+        let laptop_port = laptop.app.tunnel_channel_port();
+        let _ = laptop.sent();
+
+        // A computer signed in to her account (a stolen Hub sign-in, or
+        // PekoHub itself) that she never approved.
+        let rogue = DmRuntime::new(Arc::new(FakeAgentDirectory::new())).await;
+        let rogue_did = rogue.app.runtime_did();
+        let computers = laptop.dispatcher.host.principal_manager().own_computers();
+        assert_ne!(
+            computers.admit(&account, &rogue_did, None),
+            crate::security::computers::Admission::Approved
+        );
+
+        // Her laptop asks her computers for her DMs; the rogue one gets it.
+        laptop_port.sync_account_dms().await;
+        let request_id = laptop
+            .sent()
+            .into_iter()
+            .find_map(|m| match m {
+                TunnelMessage::TunnelAccountDmsRequest { request_id, .. } => Some(request_id),
+                _ => None,
+            })
+            .expect("the laptop asks for her DMs");
+
+        // It answers with her DM with the peko, naming itself.
+        let peer = laptop_port
+            .actor_info(&ActorRef::Principal(peko_did.clone().into()))
+            .await;
+        let host_runtime = laptop_port
+            .local()
+            .list_remote_members(&channel)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|m| m.principal_id == peko_did)
+            .unwrap()
+            .runtime_id;
+        let dms = vec![crate::tunnel::AccountDm {
+            channel_id: channel.as_str().into(),
+            peer_hub_id: peer.hub_id.clone().unwrap(),
+            peer_signing_did: peko_did.clone(),
+            peer_identity_key: peer.identity_key.clone(),
+            peer_name: None,
+            peer_runtime_id: host_runtime,
+            peer_exposure: "private".into(),
+        }];
+        fn b64u<T: serde::Serialize>(v: &T) -> String {
+            crate::tunnel::AccountDmsPayload::dms_b64u_of(&serde_json::to_vec(v).unwrap())
+        }
+        let iat = chrono::Utc::now().timestamp();
+        let payload = crate::tunnel::AccountDmsPayload {
+            v: crate::tunnel::ACCOUNT_DMS_VERSION.into(),
+            request_id: request_id.clone(),
+            source_runtime_id: rogue_did.clone(),
+            recipient_runtime_id: laptop.app.runtime_did(),
+            dms_b64u: b64u(&dms),
+            people_b64u: b64u(&Vec::<crate::tunnel::AccountPersonDm>::new()),
+            blocks_b64u: b64u(&Vec::<crate::tunnel::DmBlock>::new()),
+            iat,
+            exp: iat + 300,
+        };
+        let signature = crate::tunnel::sign_history(&rogue.app.runtime_signing_key, &payload);
+        laptop
+            .receive(TunnelMessage::TunnelAccountDms {
+                request_id,
+                source_runtime_id: rogue_did.clone(),
+                recipient_runtime_id: laptop.app.runtime_did(),
+                dms,
+                people: Vec::new(),
+                blocks: Vec::new(),
+                signature,
+            })
+            .await;
+
+        let routes: Vec<String> = laptop_port
+            .local()
+            .list_remote_members(&channel)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|m| m.runtime_id)
+            .collect();
+        assert!(
+            !routes.contains(&rogue_did),
+            "an unapproved computer became a route in her DM: {routes:?}"
+        );
     }
 
     /// ADR-095 D5: alice's new computer asks for her DMs while her laptop

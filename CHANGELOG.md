@@ -6,6 +6,13 @@ All notable changes to Peko.
 
 ### Security
 
+- **A computer you have not approved can no longer join your DMs through
+  the DM list.** Your computers ask the others on your account which DMs
+  you have, and they ask one you have not approved too, since the request
+  carries nothing. Its answer was used anyway: it became a place your DM
+  posts were delivered to, sealed to it, and it could change whom you
+  block and open DMs for you. The answer is now held like anything else
+  that computer says for you, until you approve it (ADR-109).
 - **What crosses PekoHub is sealed to the computer it is for (ADR-110).**
   Posts, invites, conversation history, files, DM lists, approvals and
   their decisions, read marks, and everything a paired phone asks and is
