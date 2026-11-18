@@ -164,16 +164,15 @@ pub enum Commands {
     #[command(subcommand, hide = true)]
     Tunnel(tunnel::TunnelCommands),
 
-    /// Your phones and other computers
+    /// Your account's computers and phones
     ///
-    /// A paired phone reads and posts as you through this computer.
-    /// Another computer on your PekoHub account uses your pekos here as
-    /// you only once you approve it.
+    /// They are one list, and a device joins it only with a code shown on
+    /// one already on it: a PekoHub sign-in alone adds nothing.
     ///
     /// Examples:
-    ///   peko device pair
+    ///   peko device add
+    ///   peko device join K7DX-KQ7R-MTPZ
     ///   peko device list
-    ///   peko device approve apr_computer3f1a9d2e47b5c6081aa
     ///   peko device remove dev_5f0c1c1e9a7b4f52
     #[command(subcommand)]
     Device(device::DeviceCommands),

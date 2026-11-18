@@ -768,6 +768,11 @@ impl AppState {
             } else {
                 tracing::warn!("Skipping actor locality reconciliation: hosted principal inventory is incomplete");
             }
+            // ADR-111 D5: routes for a person are checked against their list.
+            tunnel_channel_port
+                .as_ref()
+                .expect("channel port initialized")
+                .set_device_lists(manager.device_lists());
             // ADR-081 D3: the runtime's one local user, with its fixed key.
             if let Err(e) = tunnel_channel_port
                 .as_ref()
@@ -1309,6 +1314,9 @@ impl AppState {
 
         let dispatcher = TunnelDispatcher::new(Arc::new(self.clone()));
         dispatcher.watch_own_computers();
+        // ADR-111: phones on the list this computer holds are believed
+        // from the start.
+        self.device_sync().load_phones().await;
 
         // Build the cross-runtime dispatch ctx for `ChannelSend`'s principal
         // branch (sprint 4: this used to live in `send_peer`; sprint 4
@@ -1357,9 +1365,13 @@ impl AppState {
                 manager: Arc::clone(&self.principal_manager),
                 devices: Arc::clone(&self.devices.gate),
             }),
+            self.principal_manager.device_lists(),
             Some(self.path_resolver.runtime_dir().join("sealing.json")),
         ));
         dispatcher_for_handler.set_sealer(Arc::clone(&sealer));
+        if let Some(hub) = crate::tunnel::hub_origin(&cred.url) {
+            self.device_sync().attach(Arc::clone(&sealer), hub);
+        }
 
         let mut client = TunnelClient::new_with(
             cred,
@@ -2405,6 +2417,10 @@ impl crate::tunnel::TunnelHost for AppState {
     /// background; the dispatcher does not wait for it.
     async fn device_message(&self, message: crate::tunnel::TunnelMessage) {
         self.on_device_message(message).await;
+    }
+
+    fn device_sync(&self) -> Option<Arc<crate::tunnel::device_sync::DeviceSync>> {
+        Some(AppState::device_sync(self))
     }
 
     async fn human_dm_post(
@@ -3633,17 +3649,6 @@ struct DaemonSealPolicy {
 impl crate::tunnel::seal::SealPolicy for DaemonSealPolicy {
     async fn own_account(&self) -> Option<String> {
         self.manager.local_account().await
-    }
-
-    fn own_computer(
-        &self,
-        account: &str,
-        runtime: &str,
-    ) -> Option<crate::security::computers::ComputerStatus> {
-        self.manager
-            .own_computers()
-            .find(account, runtime)
-            .map(|c| c.status)
     }
 
     fn device_key(&self, device_id: &str) -> Option<String> {

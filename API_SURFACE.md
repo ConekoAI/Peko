@@ -17,46 +17,62 @@ This document defines the public API surface for Peko, including the new Unified
 `tunnel::seal` holds the sealing: `AgreementKey::derive(&SigningKey)`,
 `seal_to` / `AgreementKey::open` (HPKE), `seal_frame` / `open_frame`,
 `header_aad`, `SEALED_TYPES` / `HEADER_FIELDS`, key statements
-(`sign_key_statement`, `verify_key_statement`) and vouches (`sign_vouch`,
-`verify_vouch`). `Sealer` (`outbound`, `inbound` → `Inbound`) sits in
-`TunnelClient`'s write and read loops (`TunnelClient::with_sealer`); a
-`SealPolicy` tells it the local account, the owner's computers, and paired
-phones' keys (`daemon::state::DaemonSealPolicy`).
-`TunnelDispatcher::set_sealer` publishes vouches (`RuntimeVouch`) on
-connect and on each approved computer.
+(`sign_key_statement`, `verify_key_statement`). `Sealer::new(runtime_id,
+signing, policy, device_lists, path)` (`outbound`, `inbound` → `Inbound`,
+with `Inbound::MessageAnd` when a sender's device-list head is ahead of the
+one held) sits in `TunnelClient`'s write and read loops
+(`TunnelClient::with_sealer`); a `SealPolicy` tells it the local account
+and phones' keys (`daemon::state::DaemonSealPolicy`), and copies to an
+account go to that account's listed computers (ADR-111 D5).
 
 `security::peko_keys::PekoKeys` (one per `PrincipalManager`,
 `peko_keys()`) pins each peko's signing key and holds key changes;
 `HubAgentDirectoryClient::with_peko_keys` checks every directory answer
 (`AgentResolution::host_statement`), refusing with
-`DirectoryError::Untrusted`. Key changes are approval requests of kind
-`key_change` beside `computer` and `owner_change`.
+`DirectoryError::Untrusted`. Key changes are account security requests of
+kind `key_change` beside `owner_change` and `devices_reset`.
 
-## Paired phones (ADR-108)
+## The account's devices (ADR-111)
 
-IPC, local callers only: `device_pair_start` → `device_pair_started
-{ code, qr, expires_at }`; `device_list` → `device_list_result { devices }`;
-`device_remove { device_id }` → `done`; `channel_mark_read { channel,
-msg_id | at }` (a post by id, or the newest post at or before an RFC 3339
-time) → `channel_read_marked { channel, moved }`; `channel_read_state`
-→ `channel_read_state_result { channels: [{ channel, kind, peer?, unread,
-read? }] }` (`peer` is a DM's other member).
-CLI: `peko device pair | list | approve <id> | deny <id> | remove <id>`
-(phones and computers; `list --json` is `{ phones, computers,
-this_computer }`).
+`security::device_list`: `DeviceList` (`verify`, `extended`, `head`,
+`device_of`, `members`, `computers`, `phone`, `next_payload`), `Link`,
+`LinkPayload`, `Change`, `Device`, `DeviceKind`, `sign_payload`, and
+`DeviceLists` (one per `PrincipalManager`, `device_lists()`, at
+`runtime/device_lists.json`): `accept` (a contact's list, pinned by its
+genesis), `accept_own` (pinned only when this computer is on it and the
+owner's decision shows), `device_of`, `pending_resets`, `decide_reset`.
+`security::join`: `JoinCode` (`generate`, `parse`, `display`, `qr_text`),
+`Cpace` (`start`, `finish` → `JoinKey`), `JoinStep`.
+`tunnel::device_sync::DeviceSync` (`AppState::device_sync()`,
+`TunnelHost::device_sync`) keeps the own list with PekoHub and runs joins:
+`on_ready`, `admits` (whether a computer may speak as this account),
+`on_list`, `on_appended`, `show_code`, `join`, `remove`, `on_join`,
+`status`. `TunnelChannelPort::{routes_allowed, person_route_allowed}` gate
+a person's routes on their list.
 
-## Your other computers (ADR-109)
+Tunnel: `device_list_request { requestId?, account, from? }` →
+`device_list { requestId?, account, from, links }`; `device_list_append
+{ requestId, account, link }` → `device_list_appended { requestId, ok,
+seq?, error? }`; `device_join { account, nameplate, from?, to?, body }`
+(`body` a `JoinStep`: `hello`, `device`, `payload`, `signed`, `done`,
+`failed`). Removed: `tunnel_device_pair`, `tunnel_device_paired`,
+`tunnel_device_removed`, `runtime_vouch`, and `vouches` in `runtime_keys`.
 
-IPC, local callers only: `computer_list` → `computer_list_result
-{ account?, runtime, computers: [{ runtime, id, status, first_seen,
-decided_at?, via? }] }`; `computer_decide { id, approve }` (an
-`apr_computer…` id or a runtime id) → `approval_decided`. A pending
-computer and an owner change PekoHub reported are also approval requests
-on each of the owner's pekos (`approval_list`, kinds `computer` and
-`owner_change`), decided with `approval_decide` (never `always`).
-`security::computers::OwnComputers` (one per `PrincipalManager`,
-`own_computers()`) holds the list; `principal::policy_gate::
-pending_requests_for_owner` lists requests with them.
+IPC, local callers only: `device_add` → `device_code_shown { code, qr,
+expires_at }`; `device_join { code }` → `done` (once this computer is on the list);
+`device_list` → `device_list_result { account?, runtime, on_list,
+devices: [{ id, kind, name, hub_device_id?, added_at, added_by, this,
+last_seen? }], security: [{ id, kind, summary, reason, created_at }] }`;
+`device_remove { device_id }` → `done`; `security_decide
+{ id, approve }` → `approval_decided` (owner changes, key changes, device
+resets; `principal::policy_gate::decide_account_claim`). Removed:
+`device_pair_start`, `computer_list`, `computer_decide`. These requests
+are no longer filed on peko chats. `channel_mark_read { channel, msg_id |
+at }` → `channel_read_marked { channel, moved }`; `channel_read_state` →
+`channel_read_state_result { channels: [{ channel, kind, peer?, unread,
+read? }] }`.
+CLI: `peko device add | join <code> | list | remove <id> | approve <id> |
+deny <id>`.
 
 A phone's own requests never use IPC. They arrive as `tunnel_device_request`
 and are carried out by the verb table in `daemon/state/devices.rs`:

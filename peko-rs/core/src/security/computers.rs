@@ -1,12 +1,9 @@
-//! The owner's computers this one trusts, and owner changes PekoHub
-//! reported that wait for the owner (ADR-109).
+//! Owner changes PekoHub reported that wait for the owner (ADR-109 D5),
+//! and the computers the owner approved here before ADR-111.
 //!
-//! PekoHub vouches that a runtime is registered to an account (ADR-090
-//! D3), but anyone who can sign in as the person, or PekoHub itself, can
-//! register one. So a runtime that speaks for this computer's account is
-//! obeyed only once the owner approved it on a computer they already use
-//! (D1–D3), and an owner change this computer did not ask for waits for
-//! the owner too (D5).
+//! Which computers speak for the owner's account is the account's device
+//! list's to say now (ADR-111 D5). What ADR-109 recorded here is read only
+//! by the upgrade pass that moves it onto that list (ADR-111 D7).
 //!
 //! On disk: `<runtime>/own_computers.json`, `0600`.
 
@@ -16,14 +13,12 @@ use std::sync::Mutex;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-/// Approval-request ids of a pending computer start with this
-/// (`apr_computer<hex>`), an owner change's with [`OWNER_CHANGE_ID_PREFIX`].
-/// Ordinary requests are `apr_<hex>`, so neither prefix can collide.
-pub const COMPUTER_ID_PREFIX: &str = "apr_computer";
-/// See [`COMPUTER_ID_PREFIX`].
+/// Approval-request ids of an owner change start with this
+/// (`apr_owner<hex>`). Ordinary requests are `apr_<hex>`, so the prefix
+/// cannot collide.
 pub const OWNER_CHANGE_ID_PREFIX: &str = "apr_owner";
 
-/// Where a computer stands with this one.
+/// Where a computer stood with this one under ADR-109.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ComputerStatus {
@@ -32,7 +27,7 @@ pub enum ComputerStatus {
     Denied,
 }
 
-/// One of the account's computers, as this one knows it.
+/// One of the account's computers, as ADR-109 recorded it here.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Computer {
     /// Its runtime id (`did:key:…`).
@@ -49,14 +44,6 @@ pub struct Computer {
     /// receipt once it is approved, so the sender resends at once.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub held_channels: Vec<String>,
-}
-
-impl Computer {
-    /// The approval-request id the owner decides it by.
-    #[must_use]
-    pub fn request_id(&self) -> String {
-        format!("{COMPUTER_ID_PREFIX}{}", short_hash(&self.runtime))
-    }
 }
 
 /// An owner change PekoHub reported that this computer did not ask for.
@@ -81,17 +68,6 @@ impl OwnerChange {
     }
 }
 
-/// What to do with a message from a computer that speaks for the account.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Admission {
-    /// Apply it.
-    Approved,
-    /// Hold it: the owner has not decided yet (and is now asked).
-    Held,
-    /// Refuse it: the owner said no.
-    Denied,
-}
-
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct ComputersFile {
     /// The account the list belongs to; another account starts afresh.
@@ -107,18 +83,11 @@ struct ComputersFile {
 }
 
 /// An owner's decision the tunnel acts on (it lives where `principal/`
-/// may not reach): a computer approved, so what it sent while waiting is
-/// asked for again; an owner change approved, so the peko is announced
+/// may not reach): an owner change approved, so the peko is announced
 /// again.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decided {
-    ComputerApproved {
-        runtime: String,
-        channels: Vec<String>,
-    },
-    OwnerChangeApproved {
-        principal_name: String,
-    },
+    OwnerChangeApproved { principal_name: String },
 }
 
 type DecidedHook = std::sync::Arc<dyn Fn(Decided) + Send + Sync>;
@@ -159,6 +128,13 @@ impl OwnComputers {
             file: Mutex::new(None),
             on_decided: Mutex::new(None),
         }
+    }
+
+    /// Where the file lives (tests write an ADR-109 file to upgrade from).
+    #[cfg(test)]
+    #[must_use]
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
     }
 
     /// Who acts on the owner's decisions (the tunnel; the latest wins).
@@ -214,131 +190,10 @@ impl OwnComputers {
         }
     }
 
-    /// Whether the upgrade pass (D4) still has to run for `account`.
-    #[must_use]
-    pub fn needs_seed(&self, account: &str) -> bool {
-        self.with(account, |f| (!f.seeded, false))
-    }
-
-    /// The upgrade pass (D4): approve `runtimes`, the computers already
-    /// carrying the account's person in a conversation here. Runs once.
-    pub fn seed(&self, account: &str, runtimes: impl IntoIterator<Item = String>) {
-        let runtimes: Vec<String> = runtimes.into_iter().collect();
-        self.with(account, |f| {
-            if f.seeded {
-                return ((), false);
-            }
-            let now = Utc::now();
-            for runtime in runtimes {
-                if f.computers.iter().any(|c| c.runtime == runtime) {
-                    continue;
-                }
-                f.computers.push(Computer {
-                    runtime,
-                    status: ComputerStatus::Approved,
-                    first_seen: now,
-                    decided_at: Some(now),
-                    via: Some("upgrade".into()),
-                    held_channels: Vec::new(),
-                });
-            }
-            f.seeded = true;
-            ((), true)
-        });
-    }
-
-    /// Whether `runtime` may speak for `account`; an unknown one is filed
-    /// as pending (the owner is asked) and held. `channel` is the
-    /// conversation a held post was for.
-    pub fn admit(&self, account: &str, runtime: &str, channel: Option<&str>) -> Admission {
-        self.with(account, |f| {
-            if let Some(c) = f.computers.iter_mut().find(|c| c.runtime == runtime) {
-                return match c.status {
-                    ComputerStatus::Approved => (Admission::Approved, false),
-                    ComputerStatus::Denied => (Admission::Denied, false),
-                    ComputerStatus::Pending => {
-                        let added = channel.is_some_and(|ch| {
-                            !c.held_channels.iter().any(|h| h == ch) && c.held_channels.len() < 64
-                        });
-                        if added {
-                            c.held_channels
-                                .push(channel.unwrap_or_default().to_string());
-                        }
-                        (Admission::Held, added)
-                    }
-                };
-            }
-            f.computers.push(Computer {
-                runtime: runtime.to_string(),
-                status: ComputerStatus::Pending,
-                first_seen: Utc::now(),
-                decided_at: None,
-                via: None,
-                held_channels: channel.map(str::to_string).into_iter().collect(),
-            });
-            (Admission::Held, true)
-        })
-    }
-
-    /// Every computer this one knows for `account`.
+    /// Every computer ADR-109 recorded here for `account`.
     #[must_use]
     pub fn list(&self, account: &str) -> Vec<Computer> {
         self.with(account, |f| (f.computers.clone(), false))
-    }
-
-    /// The computers waiting for the owner, oldest first.
-    #[must_use]
-    pub fn pending(&self, account: &str) -> Vec<Computer> {
-        let mut out: Vec<_> = self
-            .list(account)
-            .into_iter()
-            .filter(|c| c.status == ComputerStatus::Pending)
-            .collect();
-        out.sort_by_key(|c| c.first_seen);
-        out
-    }
-
-    /// The computer an approval-request id (or runtime id) names.
-    #[must_use]
-    pub fn find(&self, account: &str, id_or_runtime: &str) -> Option<Computer> {
-        self.list(account)
-            .into_iter()
-            .find(|c| c.runtime == id_or_runtime || c.request_id() == id_or_runtime)
-    }
-
-    /// The owner's decision on a computer (by approval-request id or
-    /// runtime id). Returns the computer as it was before (its held
-    /// conversations included). Deciding again changes the decision:
-    /// approving a denied computer, or denying an approved one.
-    pub fn decide(
-        &self,
-        account: &str,
-        id_or_runtime: &str,
-        approve: bool,
-        via: &str,
-    ) -> anyhow::Result<Computer> {
-        self.with(account, |f| {
-            let Some(c) = f
-                .computers
-                .iter_mut()
-                .find(|c| c.runtime == id_or_runtime || c.request_id() == id_or_runtime)
-            else {
-                return (
-                    Err(anyhow::anyhow!("No computer {id_or_runtime} has asked.")),
-                    false,
-                );
-            };
-            let before = c.clone();
-            c.status = if approve {
-                ComputerStatus::Approved
-            } else {
-                ComputerStatus::Denied
-            };
-            c.decided_at = Some(Utc::now());
-            c.via = Some(via.to_string());
-            c.held_channels.clear();
-            (Ok(before), true)
-        })
     }
 
     /// Note an owner change PekoHub reported (D5). Replaces an earlier
@@ -404,67 +259,29 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_computer_waits_until_the_owner_approves_it() {
-        let (_dir, computers) = store();
-        assert_eq!(
-            computers.admit("acct", "did:key:zNew", Some("chan_a")),
-            Admission::Held
-        );
-        assert_eq!(
-            computers.admit("acct", "did:key:zNew", Some("chan_b")),
-            Admission::Held
-        );
-        let pending = computers.pending("acct");
-        assert_eq!(pending.len(), 1);
-        let id = pending[0].request_id();
-        assert!(id.starts_with(COMPUTER_ID_PREFIX));
-
-        let before = computers.decide("acct", &id, true, "local").unwrap();
-        assert_eq!(before.held_channels, ["chan_a", "chan_b"]);
-        assert_eq!(
-            computers.admit("acct", "did:key:zNew", Some("chan_a")),
-            Admission::Approved
-        );
-        assert!(computers.pending("acct").is_empty());
-    }
-
-    #[test]
-    fn a_denied_computer_is_refused_without_asking_again() {
-        let (_dir, computers) = store();
-        computers.admit("acct", "did:key:zNew", None);
-        computers
-            .decide("acct", "did:key:zNew", false, "local")
-            .unwrap();
-        assert_eq!(
-            computers.admit("acct", "did:key:zNew", None),
-            Admission::Denied
-        );
-        assert!(computers.pending("acct").is_empty());
-    }
-
-    #[test]
-    fn the_list_survives_a_restart_and_belongs_to_one_account() {
-        let (dir, computers) = store();
-        computers.seed("acct", ["did:key:zOld".to_string()]);
-        assert!(!computers.needs_seed("acct"));
+    fn the_old_approvals_are_read_for_one_account() {
+        let (dir, _) = store();
         let path = dir.path().join("own_computers.json");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
-            assert_eq!(mode & 0o777, 0o600);
-        }
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "account": "acct",
+                "seeded": true,
+                "computers": [{
+                    "runtime": "did:key:zOld",
+                    "status": "approved",
+                    "first_seen": "2026-11-17T00:00:00Z"
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         let reopened = OwnComputers::new(path);
-        assert_eq!(
-            reopened.admit("acct", "did:key:zOld", None),
-            Admission::Approved
-        );
+        let listed = reopened.list("acct");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].status, ComputerStatus::Approved);
         // Another account: nothing carries over.
-        assert!(reopened.needs_seed("other"));
-        assert_eq!(
-            reopened.admit("other", "did:key:zOld", None),
-            Admission::Held
-        );
+        assert!(reopened.list("other").is_empty());
     }
 
     #[test]

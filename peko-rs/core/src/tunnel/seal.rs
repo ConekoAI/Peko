@@ -11,9 +11,9 @@
 //! Each runtime's agreement key is derived from its signing key under its
 //! own label and published as a key statement signed by the signing key
 //! (D2), so the Hub can withhold a key but never make one. Which
-//! computers of an account a message is sealed to follows D4: the
-//! owner's own computers by their ADR-109 approval, another person's by
-//! first use and then by a vouch from a computer already pinned.
+//! computers of an account a message is sealed to is the account's device
+//! list's to say (ADR-111 D5): the owner's own list, and another person's
+//! pinned the first time it is seen.
 //!
 //! The [`Sealer`] sits in the tunnel client's read and write loops, so
 //! every handler above it keeps working on the opened message. Nothing
@@ -37,7 +37,7 @@ use tracing::{debug, warn};
 use super::did_key::did_key_to_verifying_key;
 use super::protocol::{RuntimeKeyEntry, TunnelMessage};
 use super::tunnel_channel_signature::{jws_sign, jws_verify};
-use crate::security::computers::ComputerStatus;
+use crate::security::device_list::{DeviceLists, Head};
 
 type Kem = X25519HkdfSha256;
 
@@ -45,21 +45,24 @@ type Kem = X25519HkdfSha256;
 pub const SEAL_INFO: &str = "peko-tunnel-seal/1";
 /// Version tag of a runtime's key statement.
 pub const KEY_STATEMENT_VERSION: &str = "peko-runtime-key/1";
-/// Version tag of a computer vouching for another of its account.
-pub const VOUCH_VERSION: &str = "peko-computer-vouch/1";
 /// Prefix of the input the agreement key is derived from, so it is never
 /// the signing key (D2).
 const AGREEMENT_KEY_LABEL: &[u8] = b"peko-agreement-key/1";
 /// The field of a sealed body that carries the sender's key statement.
 const SENDER_KEY_FIELD: &str = "senderKey";
+/// The field of a sealed body that carries where the sender's account's
+/// device list ends (ADR-111 D2), so a receiver that holds less asks.
+const SENDER_DEVICES_FIELD: &str = "senderDevices";
 /// How long a message waits for its recipient's key before it is dropped
 /// (a post stays in the outbox and is sent again; ADR-072).
 const PARK_FOR: Duration = Duration::from_secs(30);
 /// How long a key request is left to answer before it is asked again.
 const ASK_AGAIN_AFTER: Duration = Duration::from_secs(10);
-/// How long the Hub's list of an account's computers is used before it is
-/// asked for again.
+/// How long a contact's device list is used before it is asked for again
+/// (ADR-111 D5). The owner's own list is kept current by PekoHub's pushes.
 const ACCOUNT_LIST_FOR: Duration = Duration::from_mins(1);
+/// A newer head seen in an envelope is asked about at most this often.
+const HEAD_ASK_EVERY: Duration = Duration::from_secs(10);
 
 /// The envelope types that are sealed (D1, D7).
 pub const SEALED_TYPES: &[&str] = &[
@@ -272,44 +275,6 @@ pub fn verify_key_statement(compact: &str) -> Result<KeyStatement, String> {
     Ok(statement)
 }
 
-/// A computer's word that another computer belongs to its account (D4).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Vouch {
-    pub v: String,
-    /// `user:hub:<id>`.
-    pub account: String,
-    pub runtime_id: String,
-    pub iat: i64,
-}
-
-/// Vouch, as this runtime, that `runtime` is one of `account`'s computers.
-#[must_use]
-pub fn sign_vouch(signing: &SigningKey, account: &str, runtime: &str) -> String {
-    let payload = Vouch {
-        v: VOUCH_VERSION.into(),
-        account: account.into(),
-        runtime_id: runtime.into(),
-        iat: chrono::Utc::now().timestamp(),
-    };
-    jws_sign(
-        signing,
-        &serde_json::to_vec(&payload).expect("payload serializes"),
-    )
-}
-
-/// Check that `voucher` vouched for a computer.
-///
-/// # Errors
-///
-/// `voucher` did not sign it, or it is not a vouch.
-pub fn verify_vouch(voucher: &str, compact: &str) -> Result<Vouch, String> {
-    let vouch: Vouch = verified_by(voucher, compact)?;
-    if vouch.v != VOUCH_VERSION {
-        return Err(format!("vouch version must be {VOUCH_VERSION:?}"));
-    }
-    Ok(vouch)
-}
-
 // ---------------------------------------------------------------------------
 // Frames
 // ---------------------------------------------------------------------------
@@ -330,8 +295,27 @@ pub fn header_aad(frame: &Map<String, Value>) -> Vec<u8> {
     out.into_bytes()
 }
 
+/// Where the sender's account's device list ends (ADR-111 D2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SenderDevices {
+    /// `user:hub:<id>`.
+    pub account: String,
+    pub seq: u64,
+    pub hash: String,
+}
+
+/// What [`open_frame`] found in a sealed body besides the message.
+#[derive(Debug, Default)]
+pub struct Opened {
+    /// The sender's key statement.
+    pub sender: Option<String>,
+    /// Where the sender's account's device list ends.
+    pub devices: Option<SenderDevices>,
+}
+
 /// Seal `frame` to `recipient` (an X25519 key): the header stays, the
-/// rest (with `sender_statement`, when given) goes into `sealed`.
+/// rest (with `sender_statement` and `devices`, when given) goes into
+/// `sealed`.
 ///
 /// # Errors
 ///
@@ -340,6 +324,7 @@ pub fn seal_frame(
     frame: Map<String, Value>,
     recipient: &str,
     sender_statement: Option<&str>,
+    devices: Option<&SenderDevices>,
 ) -> Result<Map<String, Value>, String> {
     let mut header = Map::new();
     let mut body = Map::new();
@@ -353,14 +338,20 @@ pub fn seal_frame(
     if let Some(statement) = sender_statement {
         body.insert(SENDER_KEY_FIELD.into(), Value::String(statement.into()));
     }
+    if let Some(devices) = devices {
+        body.insert(
+            SENDER_DEVICES_FIELD.into(),
+            serde_json::to_value(devices).expect("a head serializes"),
+        );
+    }
     let plaintext = serde_json::to_vec(&body).expect("body serializes");
     let sealed = seal_to(recipient, SEAL_INFO, &plaintext, &header_aad(&header))?;
     header.insert("sealed".into(), Value::String(sealed));
     Ok(header)
 }
 
-/// Open a sealed frame with `key`. Returns the whole frame and the
-/// sender's key statement, when the body carried one.
+/// Open a sealed frame with `key`. Returns the whole frame, and the
+/// sender's key statement and device-list head when the body carried them.
 ///
 /// # Errors
 ///
@@ -369,7 +360,7 @@ pub fn seal_frame(
 pub fn open_frame(
     mut frame: Map<String, Value>,
     key: &AgreementKey,
-) -> Result<(Map<String, Value>, Option<String>), String> {
+) -> Result<(Map<String, Value>, Opened), String> {
     let sealed = match frame.remove("sealed") {
         Some(Value::String(s)) => s,
         _ => return Err("not sealed".into()),
@@ -383,10 +374,14 @@ pub fn open_frame(
     let plaintext = key.open(&sealed, SEAL_INFO, &header_aad(&frame))?;
     let body: Map<String, Value> =
         serde_json::from_slice(&plaintext).map_err(|e| format!("sealed body: {e}"))?;
-    let mut sender = None;
+    let mut found = Opened::default();
     for (name, value) in body {
         if name == SENDER_KEY_FIELD {
-            sender = value.as_str().map(str::to_owned);
+            found.sender = value.as_str().map(str::to_owned);
+            continue;
+        }
+        if name == SENDER_DEVICES_FIELD {
+            found.devices = serde_json::from_value(value).ok();
             continue;
         }
         if frame.contains_key(&name) {
@@ -394,7 +389,7 @@ pub fn open_frame(
         }
         frame.insert(name, value);
     }
-    Ok((frame, sender))
+    Ok((frame, found))
 }
 
 // ---------------------------------------------------------------------------
@@ -406,17 +401,16 @@ pub fn open_frame(
 pub trait SealPolicy: Send + Sync {
     /// The Hub account of this computer's local user (the bare id).
     async fn own_account(&self) -> Option<String>;
-    /// Where `runtime` stands among the owner's computers (ADR-109).
-    fn own_computer(&self, account: &str, runtime: &str) -> Option<ComputerStatus>;
-    /// A paired phone's agreement key (ADR-108 D2).
+    /// A phone's agreement key, by its Hub id (ADR-108 D2, ADR-111 D5).
     fn device_key(&self, device_id: &str) -> Option<String>;
 }
 
 /// Who a message waits for.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Want {
+    /// A runtime's key statement.
     Runtime(String),
-    /// `user:hub:<id>`.
+    /// An account's device list (`user:hub:<id>`, ADR-111 D5).
     Account(String),
 }
 
@@ -428,33 +422,18 @@ struct Parked {
 #[derive(Default)]
 struct Pending {
     waiting: HashMap<Want, Vec<Parked>>,
-    /// Key requests in flight, by request id.
+    /// Requests in flight, by request id.
     asked: HashMap<String, (Want, Instant)>,
 }
 
-struct AccountList {
-    at: Instant,
-    entries: Vec<RuntimeKeyEntry>,
-}
-
-/// How a computer of another person's account came to be trusted.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct Pin {
-    /// `first` (D4, first use) or `vouch:<runtime>`.
-    via: String,
-    at: chrono::DateTime<chrono::Utc>,
-}
-
-/// `<runtime>/sealing.json`: keys learned, and other people's computers
-/// pinned.
+/// `<runtime>/sealing.json`: agreement keys learned from verified key
+/// statements. Which computers are whose is the device lists' to say
+/// (ADR-111 D5).
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct SealingFile {
     /// Runtime id → agreement key (base64url), from verified statements.
     #[serde(default)]
     keys: BTreeMap<String, String>,
-    /// `user:hub:<id>` → runtime id → how it was pinned.
-    #[serde(default)]
-    accounts: BTreeMap<String, BTreeMap<String, Pin>>,
 }
 
 /// What [`Sealer::inbound`] made of a frame.
@@ -462,6 +441,9 @@ struct SealingFile {
 pub enum Inbound {
     /// A message to handle, opened if it was sealed.
     Message(Box<TunnelMessage>),
+    /// A message to handle, and requests to send first (a device list the
+    /// envelope showed is newer than the one held).
+    MessageAnd(Box<TunnelMessage>, Vec<TunnelMessage>),
     /// Keys arrived: send these again, they can be sealed now.
     Release(Vec<TunnelMessage>),
     /// Nothing to handle (refused, or not understood).
@@ -471,14 +453,17 @@ pub enum Inbound {
 /// Seals what this runtime sends and opens what it receives (ADR-110).
 pub struct Sealer {
     runtime_id: String,
-    signing: Arc<SigningKey>,
     key: AgreementKey,
     statement: String,
     policy: Arc<dyn SealPolicy>,
+    devices: Arc<DeviceLists>,
     path: Option<PathBuf>,
     file: Mutex<SealingFile>,
     pending: Mutex<Pending>,
-    lists: Mutex<HashMap<String, AccountList>>,
+    /// When each contact's device list was last fetched.
+    fetched: Mutex<HashMap<String, Instant>>,
+    /// When a newer head of each account was last asked about.
+    heads_asked: Mutex<HashMap<String, Instant>>,
 }
 
 impl std::fmt::Debug for Sealer {
@@ -491,13 +476,14 @@ impl std::fmt::Debug for Sealer {
 }
 
 impl Sealer {
-    /// A sealer for `runtime_id`, keeping what it learns at `path`
-    /// (`None`: in memory only).
+    /// A sealer for `runtime_id`, keeping the keys it learns at `path`
+    /// (`None`: in memory only), sealing to the computers `devices` lists.
     #[must_use]
     pub fn new(
         runtime_id: String,
         signing: Arc<SigningKey>,
         policy: Arc<dyn SealPolicy>,
+        devices: Arc<DeviceLists>,
         path: Option<PathBuf>,
     ) -> Self {
         let key = AgreementKey::derive(&signing);
@@ -511,14 +497,15 @@ impl Sealer {
             .insert(runtime_id.clone(), key.public().to_string());
         Self {
             runtime_id,
-            signing,
             key,
             statement,
             policy,
+            devices,
             path,
             file: Mutex::new(file),
             pending: Mutex::new(Pending::default()),
-            lists: Mutex::new(HashMap::new()),
+            fetched: Mutex::new(HashMap::new()),
+            heads_asked: Mutex::new(HashMap::new()),
         }
     }
 
@@ -534,23 +521,14 @@ impl Sealer {
         &self.key
     }
 
-    /// Vouches for every computer of this computer's account the owner
-    /// approved here (D4), to publish to the Hub.
-    pub fn vouches(
-        &self,
-        account: &str,
-        approved: impl IntoIterator<Item = String>,
-    ) -> Vec<String> {
-        let account = format!("user:hub:{account}");
-        approved
-            .into_iter()
-            .filter(|r| r != &self.runtime_id)
-            .map(|r| sign_vouch(&self.signing, &account, &r))
-            .collect()
-    }
-
     fn known_key(&self, runtime: &str) -> Option<String> {
         self.file.lock().unwrap().keys.get(runtime).cloned()
+    }
+
+    /// `runtime`'s agreement key, when its statement was learned.
+    #[must_use]
+    pub fn known_key_of(&self, runtime: &str) -> Option<String> {
+        self.known_key(runtime)
     }
 
     fn learn(&self, statement: &str) -> Option<KeyStatement> {
@@ -579,10 +557,16 @@ impl Sealer {
         }
     }
 
+    async fn own_devices(&self) -> Option<SenderDevices> {
+        let account = format!("user:hub:{}", self.policy.own_account().await?);
+        let Head { seq, hash } = self.devices.head(&account)?;
+        Some(SenderDevices { account, seq, hash })
+    }
+
     /// Seal `msg` for the wire. Returns the frames to write now: the
-    /// sealed message (one per computer for an account), and any key
-    /// request it is waiting on. A message of a sealed type is never
-    /// written unsealed (D5).
+    /// sealed message (one per computer for an account), and any request
+    /// it is waiting on. A message of a sealed type is never written
+    /// unsealed (D5).
     pub async fn outbound(&self, msg: TunnelMessage) -> Vec<Vec<u8>> {
         let value = match serde_json::to_value(&msg) {
             Ok(Value::Object(map)) => map,
@@ -599,18 +583,19 @@ impl Sealer {
                 .unwrap_or_default();
         }
         self.sweep();
+        let devices = self.own_devices().await;
         if is_device_type(&ty) {
             let device = value.get("deviceId").and_then(Value::as_str).unwrap_or("");
             let Some(key) = self.policy.device_key(device) else {
-                warn!(device, %ty, "no paired phone with that id; not sent");
+                warn!(device, %ty, "no phone with that id on this account's list; not sent");
                 return Vec::new();
             };
-            return self.sealed_bytes(value, &key, false);
+            return self.sealed_bytes(value, &key, false, devices.as_ref());
         }
         if let Some(recipient) = value.get("recipientRuntimeId").and_then(Value::as_str) {
             let recipient = recipient.to_string();
             if let Some(key) = self.known_key(&recipient) {
-                return self.sealed_bytes(value, &key, true);
+                return self.sealed_bytes(value, &key, true, devices.as_ref());
             }
             return self.park(Want::Runtime(recipient), msg);
         }
@@ -624,27 +609,37 @@ impl Sealer {
             warn!(%ty, "a sealed envelope with no recipient; not sent");
             return Vec::new();
         };
-        let fresh = {
-            let lists = self.lists.lock().unwrap();
-            lists
+        let own = self
+            .policy
+            .own_account()
+            .await
+            .map(|a| format!("user:hub:{a}"));
+        let fresh = own.as_deref() == Some(account.as_str())
+            || self
+                .fetched
+                .lock()
+                .unwrap()
                 .get(&account)
-                .filter(|l| l.at.elapsed() < ACCOUNT_LIST_FOR)
-                .map(|l| l.entries.clone())
-        };
-        let Some(entries) = fresh else {
+                .is_some_and(|at| at.elapsed() < ACCOUNT_LIST_FOR);
+        let Some(list) = self.devices.list(&account).filter(|_| fresh) else {
             return self.park(Want::Account(account), msg);
         };
         let mut frames = Vec::new();
-        for runtime in self.computers_of(&account, &entries, &ty).await {
-            let Some(key) = self.known_key(&runtime) else {
-                continue;
-            };
+        for computer in list.computers().filter(|d| d.id != self.runtime_id) {
+            // The computer's own statement when this one learned it; the
+            // key its list entry carries otherwise (both are its word).
+            let key = self
+                .known_key(&computer.id)
+                .unwrap_or_else(|| computer.agreement_key.clone());
             let mut copy = value.clone();
-            copy.insert("recipientRuntimeId".into(), Value::String(runtime));
-            frames.extend(self.sealed_bytes(copy, &key, true));
+            copy.insert(
+                "recipientRuntimeId".into(),
+                Value::String(computer.id.clone()),
+            );
+            frames.extend(self.sealed_bytes(copy, &key, true, devices.as_ref()));
         }
         if frames.is_empty() {
-            debug!(%account, %ty, "no computer of the account to seal to; not sent");
+            debug!(%account, %ty, "no other computer on the account's list; not sent");
         }
         frames
     }
@@ -654,9 +649,10 @@ impl Sealer {
         frame: Map<String, Value>,
         key: &str,
         with_sender: bool,
+        devices: Option<&SenderDevices>,
     ) -> Vec<Vec<u8>> {
         let sender = with_sender.then_some(self.statement.as_str());
-        match seal_frame(frame, key, sender) {
+        match seal_frame(frame, key, sender, devices) {
             Ok(sealed) => serde_json::to_vec(&sealed)
                 .map(|b| vec![b])
                 .unwrap_or_default(),
@@ -684,21 +680,29 @@ impl Sealer {
         if asked {
             return Vec::new();
         }
-        let request_id = format!("keys_{}", uuid::Uuid::new_v4().simple());
-        pending
-            .asked
-            .insert(request_id.clone(), (want.clone(), Instant::now()));
-        let request = match want {
-            Want::Runtime(runtime) => TunnelMessage::RuntimeKeysRequest {
-                request_id,
-                runtime_ids: vec![runtime],
-                account: None,
-            },
-            Want::Account(account) => TunnelMessage::RuntimeKeysRequest {
-                request_id,
-                runtime_ids: Vec::new(),
-                account: Some(account),
-            },
+        let request = match &want {
+            Want::Runtime(runtime) => {
+                let request_id = format!("keys_{}", uuid::Uuid::new_v4().simple());
+                pending
+                    .asked
+                    .insert(request_id.clone(), (want.clone(), Instant::now()));
+                TunnelMessage::RuntimeKeysRequest {
+                    request_id,
+                    runtime_ids: vec![runtime.clone()],
+                    account: None,
+                }
+            }
+            Want::Account(account) => {
+                let request_id = format!("devices_{}", uuid::Uuid::new_v4().simple());
+                pending
+                    .asked
+                    .insert(request_id.clone(), (want.clone(), Instant::now()));
+                TunnelMessage::DeviceListRequest {
+                    request_id,
+                    account: account.clone(),
+                    after: None,
+                }
+            }
         };
         request.to_bytes().map(|b| vec![b]).unwrap_or_default()
     }
@@ -712,7 +716,7 @@ impl Sealer {
                 warn!(
                     ?want,
                     dropped = before - parked.len(),
-                    "no key arrived for these envelopes; not sent"
+                    "nothing arrived to seal these envelopes to; not sent"
                 );
             }
         }
@@ -720,85 +724,47 @@ impl Sealer {
         pending.asked.retain(|_, (_, at)| at.elapsed() < PARK_FOR);
     }
 
-    /// The computers of `account` to seal a `ty` envelope to (D4).
-    async fn computers_of(
-        &self,
-        account: &str,
-        entries: &[RuntimeKeyEntry],
-        ty: &str,
-    ) -> Vec<String> {
-        let listed: Vec<&RuntimeKeyEntry> = entries
-            .iter()
-            .filter(|e| e.runtime_id != self.runtime_id && self.known_key(&e.runtime_id).is_some())
-            .collect();
-        let own = self.policy.own_account().await;
-        let bare = account.strip_prefix("user:hub:").unwrap_or(account);
-        if own.as_deref() == Some(bare) {
-            // The owner's own computers: approved ones (ADR-109). One not
-            // approved yet may only be asked for the DM list, which carries
-            // nothing; it answers nothing until approved anyway.
-            return listed
-                .into_iter()
-                .filter(|e| match self.policy.own_computer(bare, &e.runtime_id) {
-                    Some(ComputerStatus::Approved) => true,
-                    Some(ComputerStatus::Denied) => false,
-                    Some(ComputerStatus::Pending) | None => ty == "tunnel_account_dms_request",
-                })
-                .map(|e| e.runtime_id.clone())
-                .collect();
+    /// `account`'s device list was just taken (ADR-111): the envelopes
+    /// waiting for it, to send again now.
+    pub fn release_account(&self, account: &str) -> Vec<TunnelMessage> {
+        self.fetched
+            .lock()
+            .unwrap()
+            .insert(account.to_string(), Instant::now());
+        let mut pending = self.pending.lock().unwrap();
+        pending
+            .asked
+            .retain(|_, (w, _)| w != &Want::Account(account.to_string()));
+        pending
+            .waiting
+            .remove(&Want::Account(account.to_string()))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|p| p.at.elapsed() < PARK_FOR)
+            .map(|p| p.msg)
+            .collect()
+    }
+
+    /// A request for what follows the held list of `account`, when an
+    /// envelope showed a head this computer does not hold.
+    fn behind(&self, devices: &SenderDevices) -> Option<TunnelMessage> {
+        let held = self.devices.head(&devices.account);
+        if held.as_ref().is_some_and(|h| h.seq >= devices.seq) {
+            return None;
         }
-        let mut file = self.file.lock().unwrap();
-        let pins = file.accounts.entry(account.to_string()).or_default();
-        let mut changed = false;
-        let now = chrono::Utc::now();
-        if pins.is_empty() {
-            // First use: the computers the account has now.
-            for e in &listed {
-                pins.insert(
-                    e.runtime_id.clone(),
-                    Pin {
-                        via: "first".into(),
-                        at: now,
-                    },
-                );
-                changed = true;
-            }
-        } else {
-            for e in &listed {
-                if pins.contains_key(&e.runtime_id) {
-                    continue;
-                }
-                let voucher = e.vouches.iter().find_map(|v| {
-                    if !pins.contains_key(&v.by) {
-                        return None;
-                    }
-                    let vouch = verify_vouch(&v.by, &v.statement).ok()?;
-                    (vouch.account == account && vouch.runtime_id == e.runtime_id)
-                        .then(|| v.by.clone())
-                });
-                if let Some(by) = voucher {
-                    pins.insert(
-                        e.runtime_id.clone(),
-                        Pin {
-                            via: format!("vouch:{by}"),
-                            at: now,
-                        },
-                    );
-                    changed = true;
-                } else {
-                    debug!(%account, runtime = %e.runtime_id, "a computer no pinned computer of the account vouches for; not sealed to");
-                }
-            }
+        let mut asked = self.heads_asked.lock().unwrap();
+        if asked
+            .get(&devices.account)
+            .is_some_and(|at| at.elapsed() < HEAD_ASK_EVERY)
+        {
+            return None;
         }
-        let targets: Vec<String> = listed
-            .iter()
-            .filter(|e| pins.contains_key(&e.runtime_id))
-            .map(|e| e.runtime_id.clone())
-            .collect();
-        if changed {
-            self.persist(&file);
-        }
-        targets
+        asked.insert(devices.account.clone(), Instant::now());
+        Some(TunnelMessage::DeviceListRequest {
+            request_id: format!("devices_{}", uuid::Uuid::new_v4().simple()),
+            account: devices.account.clone(),
+            after: held.map(|h| h.seq),
+        })
     }
 
     /// Read a frame from the wire: open it if it is sealed, take in keys
@@ -817,10 +783,8 @@ impl Sealer {
         if ty == "runtime_keys" {
             return match serde_json::from_value::<TunnelMessage>(Value::Object(frame)) {
                 Ok(TunnelMessage::RuntimeKeys {
-                    request_id,
-                    account,
-                    keys,
-                }) => Inbound::Release(self.keys_arrived(&request_id, account, keys)),
+                    request_id, keys, ..
+                }) => Inbound::Release(self.keys_arrived(&request_id, keys)),
                 _ => Inbound::Ignore,
             };
         }
@@ -847,22 +811,26 @@ impl Sealer {
             .get("sourceRuntimeId")
             .and_then(Value::as_str)
             .map(str::to_owned);
-        let (opened, sender) = match open_frame(frame, &self.key) {
+        let (opened, found) = match open_frame(frame, &self.key) {
             Ok(opened) => opened,
             Err(e) => {
                 warn!(%ty, "refusing an envelope: {e}");
                 return Inbound::Ignore;
             }
         };
-        if let (Some(statement), Some(source)) = (sender, source) {
+        if let (Some(statement), Some(source)) = (found.sender, source) {
             if let Some(s) = self.learn(&statement) {
                 if s.runtime_id != source {
                     warn!(%ty, "an envelope carried another runtime's key statement");
                 }
             }
         }
+        let ask = found.devices.as_ref().and_then(|d| self.behind(d));
         match serde_json::from_value(Value::Object(opened)) {
-            Ok(msg) => Inbound::Message(Box::new(msg)),
+            Ok(msg) => match ask {
+                Some(ask) => Inbound::MessageAnd(Box::new(msg), vec![ask]),
+                None => Inbound::Message(Box::new(msg)),
+            },
             Err(e) => {
                 warn!(%ty, "failed to parse an opened envelope: {e}");
                 Inbound::Ignore
@@ -870,16 +838,10 @@ impl Sealer {
         }
     }
 
-    fn keys_arrived(
-        &self,
-        request_id: &str,
-        account: Option<String>,
-        keys: Vec<RuntimeKeyEntry>,
-    ) -> Vec<TunnelMessage> {
-        let mut verified = Vec::new();
+    fn keys_arrived(&self, request_id: &str, keys: Vec<RuntimeKeyEntry>) -> Vec<TunnelMessage> {
         for entry in keys {
             match self.learn(&entry.statement) {
-                Some(s) if s.runtime_id == entry.runtime_id => verified.push(entry),
+                Some(s) if s.runtime_id == entry.runtime_id => {}
                 Some(_) => {
                     warn!(runtime = %entry.runtime_id, "the Hub served another runtime's key statement")
                 }
@@ -890,18 +852,6 @@ impl Sealer {
         let Some((want, _)) = pending.asked.remove(request_id) else {
             return Vec::new();
         };
-        if let (Want::Account(wanted), Some(account)) = (&want, account.as_ref()) {
-            if wanted != account {
-                return Vec::new();
-            }
-            self.lists.lock().unwrap().insert(
-                account.clone(),
-                AccountList {
-                    at: Instant::now(),
-                    entries: verified,
-                },
-            );
-        }
         let released: Vec<TunnelMessage> = pending
             .waiting
             .remove(&want)
@@ -922,7 +872,7 @@ impl Sealer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tunnel::protocol::RuntimeVouchEntry;
+    use crate::security::device_list::{self, Change, Device, DeviceKind, Link};
     use crate::tunnel::verifying_key_to_did_key;
 
     fn runtime() -> (Arc<SigningKey>, String) {
@@ -934,7 +884,6 @@ mod tests {
     #[derive(Default)]
     struct Policy {
         own: Option<String>,
-        computers: Mutex<HashMap<String, ComputerStatus>>,
         devices: Mutex<HashMap<String, String>>,
     }
 
@@ -943,17 +892,67 @@ mod tests {
         async fn own_account(&self) -> Option<String> {
             self.own.clone()
         }
-        fn own_computer(&self, _account: &str, runtime: &str) -> Option<ComputerStatus> {
-            self.computers.lock().unwrap().get(runtime).copied()
-        }
         fn device_key(&self, device_id: &str) -> Option<String> {
             self.devices.lock().unwrap().get(device_id).cloned()
         }
     }
 
     fn sealer(policy: Policy) -> (Sealer, String) {
+        let (s, did, _, _) = sealer_with(policy);
+        (s, did)
+    }
+
+    /// A sealer, its runtime id and key, and the device lists it reads.
+    fn sealer_with(policy: Policy) -> (Sealer, String, Arc<SigningKey>, Arc<DeviceLists>) {
         let (key, did) = runtime();
-        (Sealer::new(did.clone(), key, Arc::new(policy), None), did)
+        let lists = Arc::new(DeviceLists::new(None));
+        (
+            Sealer::new(
+                did.clone(),
+                Arc::clone(&key),
+                Arc::new(policy),
+                Arc::clone(&lists),
+                None,
+            ),
+            did,
+            key,
+            lists,
+        )
+    }
+
+    /// `account`'s list with these computers, the first one adding the rest.
+    fn chain(account: &str, computers: &[(&Arc<SigningKey>, &Sealer)]) -> Vec<Link> {
+        let (first, first_sealer) = computers[0];
+        let mut list = device_list::DeviceList::verify(
+            account,
+            vec![device_list::genesis(
+                first,
+                account,
+                DeviceKind::Computer,
+                None,
+                first_sealer.agreement_key().public(),
+            )],
+        )
+        .unwrap();
+        for (key, s) in &computers[1..] {
+            let payload = list.next_payload(Change::Add {
+                device: Device {
+                    id: device_list::did_of(key),
+                    kind: DeviceKind::Computer,
+                    name: None,
+                    agreement_key: s.agreement_key().public().into(),
+                    hub_device_id: None,
+                },
+            });
+            list = list
+                .extended(vec![Link {
+                    by: device_list::did_of(first),
+                    signed: device_list::sign_payload(first, &payload),
+                    joiner: Some(device_list::sign_payload(key, &payload)),
+                }])
+                .unwrap();
+        }
+        list.links().to_vec()
     }
 
     fn event(from: &str, to: &str) -> TunnelMessage {
@@ -1006,7 +1005,7 @@ mod tests {
         let Value::Object(frame) = frame else {
             unreachable!()
         };
-        let sealed = seal_frame(frame, &phone_public, None).unwrap();
+        let sealed = seal_frame(frame, &phone_public, None, None).unwrap();
         let key = AgreementKey::derive(&runtime);
         let fixture = serde_json::json!({
             "deviceId": device_id,
@@ -1025,10 +1024,10 @@ mod tests {
         let frame: Map<String, Value> =
             serde_json::from_str(include_str!("fixtures/phone_sealed_request.json")).unwrap();
         let runtime = AgreementKey::derive(&SigningKey::from_bytes(&[7u8; 32]));
-        let (opened, sender) = open_frame(frame, &runtime).unwrap();
+        let (opened, found) = open_frame(frame, &runtime).unwrap();
         assert_eq!(opened["type"], "tunnel_device_request");
         assert_eq!(opened["signature"], "a phone's signed request");
-        assert!(sender.is_none());
+        assert!(found.sender.is_none());
     }
 
     #[test]
@@ -1059,16 +1058,6 @@ mod tests {
     }
 
     #[test]
-    fn a_vouch_verifies_only_for_its_voucher() {
-        let (key, did) = runtime();
-        let vouch = sign_vouch(&key, "user:hub:bob", "did:key:znew");
-        let v = verify_vouch(&did, &vouch).unwrap();
-        assert_eq!(v.runtime_id, "did:key:znew");
-        let (_, other) = runtime();
-        assert!(verify_vouch(&other, &vouch).is_err());
-    }
-
-    #[test]
     fn a_frame_keeps_only_its_header_readable() {
         let (key, _) = runtime();
         let recipient = AgreementKey::derive(&key);
@@ -1077,15 +1066,15 @@ mod tests {
         frame.insert("recipientRuntimeId".into(), "did:key:zr".into());
         frame.insert("event".into(), serde_json::json!({"text": "the plans"}));
         frame.insert("signature".into(), "jws".into());
-        let sealed = seal_frame(frame.clone(), recipient.public(), Some("stmt")).unwrap();
+        let sealed = seal_frame(frame.clone(), recipient.public(), Some("stmt"), None).unwrap();
         let wire = serde_json::to_string(&sealed).unwrap();
         assert!(!wire.contains("the plans"));
         assert!(!wire.contains("jws"));
         assert_eq!(sealed.len(), 3);
 
-        let (opened, sender) = open_frame(sealed, &recipient).unwrap();
+        let (opened, found) = open_frame(sealed, &recipient).unwrap();
         assert_eq!(opened, frame);
-        assert_eq!(sender.as_deref(), Some("stmt"));
+        assert_eq!(found.sender.as_deref(), Some("stmt"));
     }
 
     #[test]
@@ -1096,7 +1085,7 @@ mod tests {
         frame.insert("type".into(), "tunnel_channel_event".into());
         frame.insert("channelId".into(), "chan_a".into());
         frame.insert("event".into(), "x".into());
-        let mut sealed = seal_frame(frame, recipient.public(), None).unwrap();
+        let mut sealed = seal_frame(frame, recipient.public(), None, None).unwrap();
         sealed.insert("channelId".into(), "chan_b".into());
         assert!(open_frame(sealed.clone(), &recipient).is_err());
 
@@ -1125,7 +1114,6 @@ mod tests {
             keys: vec![RuntimeKeyEntry {
                 runtime_id: bob_id.clone(),
                 statement: bob.statement().to_string(),
-                vouches: Vec::new(),
             }],
         })
         .unwrap();
@@ -1175,34 +1163,6 @@ mod tests {
         assert_eq!(frame(&frames[0])["type"], "heartbeat");
     }
 
-    fn entry(s: &Sealer, id: &str, vouches: Vec<RuntimeVouchEntry>) -> RuntimeKeyEntry {
-        RuntimeKeyEntry {
-            runtime_id: id.into(),
-            statement: s.statement().into(),
-            vouches,
-        }
-    }
-
-    async fn answer_account(
-        sealer: &Sealer,
-        frames: &[Vec<u8>],
-        account: &str,
-        keys: Vec<RuntimeKeyEntry>,
-    ) -> Vec<TunnelMessage> {
-        let request = frame(&frames[0]);
-        assert_eq!(request["account"], account);
-        let answer = serde_json::to_vec(&TunnelMessage::RuntimeKeys {
-            request_id: request["requestId"].as_str().unwrap().into(),
-            account: Some(account.into()),
-            keys,
-        })
-        .unwrap();
-        match sealer.inbound(&answer).await {
-            Inbound::Release(m) => m,
-            other => panic!("expected a release, got {other:?}"),
-        }
-    }
-
     fn invitation(from: &str, account: &str) -> TunnelMessage {
         TunnelMessage::TunnelGroupInvitation {
             request_id: "inv".into(),
@@ -1226,63 +1186,59 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn another_persons_computers_are_pinned_on_first_use_then_need_a_vouch() {
-        let (alice, alice_id) = sealer(Policy::default());
-        let (b1, b1_id) = sealer(Policy::default());
-        let (b2, b2_id) = sealer(Policy::default());
-        let (b3, b3_id) = sealer(Policy::default());
+    async fn another_persons_computers_are_the_ones_on_their_device_list() {
+        let (alice, alice_id, _, alice_lists) = sealer_with(Policy::default());
+        let (b1, b1_id, b1_key, _) = sealer_with(Policy::default());
+        let (b2, b2_id, b2_key, _) = sealer_with(Policy::default());
         let bob = "user:hub:bob";
 
-        // First use: Bob's one computer is pinned and sealed to.
+        // No list held yet: the invitation waits, and the list is asked for.
         let frames = alice.outbound(invitation(&alice_id, bob)).await;
-        let released = answer_account(&alice, &frames, bob, vec![entry(&b1, &b1_id, vec![])]).await;
-        let frames = alice.outbound(released[0].clone()).await;
-        assert_eq!(recipients(&frames), vec![b1_id.clone()]);
-        assert!(matches!(b1.inbound(&frames[0]).await, Inbound::Message(_)));
+        assert_eq!(frames.len(), 1);
+        let request = frame(&frames[0]);
+        assert_eq!(request["type"], "device_list_request");
+        assert_eq!(request["account"], bob);
 
-        // Later Bob has two more: one vouched for by b1, one by nobody.
-        alice.lists.lock().unwrap().clear();
-        let b1_key = Arc::clone(&b1.signing);
-        let vouch = sign_vouch(&b1_key, bob, &b2_id);
-        let frames = alice.outbound(invitation(&alice_id, bob)).await;
-        let released = answer_account(
-            &alice,
-            &frames,
-            bob,
-            vec![
-                entry(&b1, &b1_id, vec![]),
-                entry(
-                    &b2,
-                    &b2_id,
-                    vec![RuntimeVouchEntry {
-                        by: b1_id.clone(),
-                        statement: vouch,
-                    }],
-                ),
-                entry(&b3, &b3_id, vec![]),
-            ],
-        )
-        .await;
+        // The list arrives and is taken (the tunnel's device sync does
+        // this): the invitation goes to each computer on it, sealed.
+        alice_lists
+            .accept(bob, chain(bob, &[(&b1_key, &b1), (&b2_key, &b2)]))
+            .unwrap();
+        let released = alice.release_account(bob);
+        assert_eq!(released.len(), 1);
         let frames = alice.outbound(released[0].clone()).await;
         let mut want = vec![b1_id, b2_id];
         want.sort();
         assert_eq!(recipients(&frames), want);
+        for f in &frames {
+            let opener = if frame(f)["recipientRuntimeId"] == b1.runtime_id.as_str() {
+                &b1
+            } else {
+                &b2
+            };
+            assert!(matches!(opener.inbound(f).await, Inbound::Message(_)));
+        }
+
+        // A computer PekoHub registers to Bob that is not on his list
+        // gets nothing: the list, not the Hub, says which are his.
+        let again = alice.outbound(invitation(&alice_id, bob)).await;
+        assert_eq!(recipients(&again).len(), 2);
     }
 
     #[tokio::test]
-    async fn own_account_messages_go_only_to_approved_computers() {
+    async fn own_account_messages_go_only_to_computers_on_the_list() {
         let policy = Policy {
             own: Some("alice".into()),
             ..Policy::default()
         };
-        let (c2, c2_id) = sealer(Policy::default());
-        let (c3, c3_id) = sealer(Policy::default());
-        policy
-            .computers
-            .lock()
-            .unwrap()
-            .insert(c2_id.clone(), ComputerStatus::Approved);
-        let (me, me_id) = sealer(policy);
+        let (me, me_id, me_key, lists) = sealer_with(policy);
+        let (c2, c2_id, c2_key, _) = sealer_with(Policy::default());
+        lists
+            .accept(
+                "user:hub:alice",
+                chain("user:hub:alice", &[(&me_key, &me), (&c2_key, &c2)]),
+            )
+            .unwrap();
         let mark = TunnelMessage::TunnelReadMark {
             request_id: "m".into(),
             source_runtime_id: me_id.clone(),
@@ -1292,15 +1248,15 @@ mod tests {
             signature: "sig".into(),
         };
         let frames = me.outbound(mark).await;
-        let released = answer_account(
-            &me,
-            &frames,
-            "user:hub:alice",
-            vec![entry(&c2, &c2_id, vec![]), entry(&c3, &c3_id, vec![])],
-        )
-        .await;
-        let frames = me.outbound(released[0].clone()).await;
         assert_eq!(recipients(&frames), vec![c2_id]);
+        // Each copy says where alice's list ends, so a computer behind asks.
+        let Inbound::MessageAnd(_, ask) = c2.inbound(&frames[0]).await else {
+            panic!("c2 holds no list for alice: it should ask");
+        };
+        let TunnelMessage::DeviceListRequest { account, after, .. } = &ask[0] else {
+            panic!("expected a device list request, got {ask:?}");
+        };
+        assert_eq!((account.as_str(), *after), ("user:hub:alice", None));
     }
 
     #[tokio::test]
@@ -1324,8 +1280,8 @@ mod tests {
         assert!(!serde_json::to_string(&f)
             .unwrap()
             .contains("what the phone shows"));
-        let (opened, sender) = open_frame(f, &phone).unwrap();
+        let (opened, found) = open_frame(f, &phone).unwrap();
         assert_eq!(opened["signature"], "what the phone shows");
-        assert!(sender.is_none());
+        assert!(found.sender.is_none());
     }
 }

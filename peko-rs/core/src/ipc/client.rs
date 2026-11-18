@@ -303,8 +303,7 @@ impl DaemonClient {
         }
     }
 
-    /// One non-streaming device request (ADR-108): `device_pair_start`,
-    /// `device_list`, or `device_remove`.
+    /// One non-streaming device request (ADR-108, ADR-111).
     async fn device_request(&self, packet: RequestPacket) -> anyhow::Result<ResponsePacket> {
         let mut stream = self.send_request(packet).await?;
         match stream.next().await {
@@ -313,21 +312,31 @@ impl DaemonClient {
         }
     }
 
-    /// Open a pairing for a phone to scan (ADR-108 D2).
-    pub async fn device_pair_start(&self) -> anyhow::Result<ResponsePacket> {
+    /// Show a code that adds a device to this account (ADR-111 D3).
+    pub async fn device_add(&self) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
-        self.device_request(RequestPacket::DevicePairStart { request_id })
+        self.device_request(RequestPacket::DeviceAdd { request_id })
             .await
     }
 
-    /// The phones paired with this runtime (ADR-108 D2).
+    /// Join this computer to its account's devices with a code (ADR-111 D3).
+    pub async fn device_join(&self, code: &str) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        self.device_request(RequestPacket::DeviceJoin {
+            request_id,
+            code: code.to_string(),
+        })
+        .await
+    }
+
+    /// This account's devices (ADR-111).
     pub async fn device_list(&self) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
         self.device_request(RequestPacket::DeviceList { request_id })
             .await
     }
 
-    /// Remove a paired phone (ADR-108 D2).
+    /// Remove a device from this account (ADR-111 D4).
     pub async fn device_remove(&self, device_id: &str) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
         self.device_request(RequestPacket::DeviceRemove {
@@ -337,17 +346,10 @@ impl DaemonClient {
         .await
     }
 
-    /// The owner's computers this one knows (ADR-109).
-    pub async fn computer_list(&self) -> anyhow::Result<ResponsePacket> {
+    /// Decide something about the account that waits (ADR-111 D6).
+    pub async fn security_decide(&self, id: &str, approve: bool) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
-        self.device_request(RequestPacket::ComputerList { request_id })
-            .await
-    }
-
-    /// Approve or deny one of the owner's computers (ADR-109 D3).
-    pub async fn computer_decide(&self, id: &str, approve: bool) -> anyhow::Result<ResponsePacket> {
-        let request_id = self.next_id();
-        self.device_request(RequestPacket::ComputerDecide {
+        self.device_request(RequestPacket::SecurityDecide {
             request_id,
             id: id.to_string(),
             approve,

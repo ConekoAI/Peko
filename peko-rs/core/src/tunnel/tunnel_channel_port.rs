@@ -157,6 +157,12 @@ pub struct TunnelChannelPort {
     /// Approval list and decision requests waiting for the peko's host
     /// (ADR-099).
     approvals_pending: Arc<std::sync::Mutex<HashMap<String, remote_approvals::PendingApproval>>>,
+    /// ADR-111 D5: each account's device list, which says whether a
+    /// computer a conversation routes for a person is theirs.
+    device_lists: Arc<std::sync::OnceLock<Arc<crate::security::device_list::DeviceLists>>>,
+    /// When each person's list was last asked for, so a route to someone
+    /// whose list is not held asks once a minute.
+    lists_asked: Arc<std::sync::Mutex<HashMap<String, std::time::Instant>>>,
 }
 
 /// How often pending envelopes are considered for a resend.
@@ -195,6 +201,8 @@ impl TunnelChannelPort {
             account_dm_requests: Arc::default(),
             models_pending: Arc::default(),
             approvals_pending: Arc::default(),
+            device_lists: Arc::default(),
+            lists_asked: Arc::default(),
         }
     }
 
@@ -449,6 +457,13 @@ impl TunnelChannelPort {
                     continue;
                 }
             }
+            if !self
+                .routes_allowed(entry.item.channel(), &entry.recipient_runtime_id)
+                .await
+            {
+                self.outbox.attempted(entry.seq).await;
+                continue;
+            }
             let envelope = match self.envelope_for(&ctx, &entry).await {
                 Ok(envelope) => envelope,
                 Err(e) => {
@@ -468,6 +483,79 @@ impl TunnelChannelPort {
         }
     }
 
+    /// ADR-111 D5: read device lists from `lists` (the daemon sets this
+    /// once; a port without it checks no routes).
+    pub fn set_device_lists(&self, lists: Arc<crate::security::device_list::DeviceLists>) {
+        let _ = self.device_lists.set(lists);
+    }
+
+    /// ADR-111 D5: whether `runtime` is a computer of the person
+    /// `person` (`user:hub:<id>`). Once this computer holds that person's
+    /// device list, only a computer on it is. Before that it is first
+    /// contact: the list is asked for (and pinned when it arrives, as
+    /// ADR-110 D4 pinned their computers), and the route is used.
+    pub(crate) async fn person_route_allowed(&self, person: &str, runtime: &str) -> bool {
+        use crate::security::device_list::DeviceKind;
+        let Some(lists) = self.device_lists.get() else {
+            return true;
+        };
+        if !person.starts_with("user:hub:") {
+            return true;
+        }
+        if let Some(list) = lists.list(person) {
+            let ok = list.device_of(runtime) == Some(DeviceKind::Computer);
+            if !ok {
+                warn!(%person, %runtime, "a route names a computer not on this person's device list; not used");
+            }
+            return ok;
+        }
+        let ask = {
+            let mut asked = self.lists_asked.lock().unwrap();
+            let due = asked
+                .get(person)
+                .is_none_or(|at| at.elapsed() > std::time::Duration::from_mins(1));
+            if due {
+                asked.insert(person.to_string(), std::time::Instant::now());
+            }
+            due
+        };
+        if ask {
+            let handle = match self.ctx.read().await.clone() {
+                Some(ctx) => ctx.tunnel.read().await.clone(),
+                None => None,
+            };
+            if let Some(handle) = handle {
+                let _ = handle.send(crate::tunnel::TunnelMessage::DeviceListRequest {
+                    request_id: format!("devices_{}", uuid::Uuid::new_v4().simple()),
+                    account: person.to_string(),
+                    after: None,
+                });
+            }
+        }
+        true
+    }
+
+    /// Whether every person this channel routes at `runtime` has it on
+    /// their device list (ADR-111 D5). An envelope that fails waits in the
+    /// outbox: it goes once the route checks out, or lapses.
+    async fn routes_allowed(&self, channel: &ChannelId, runtime: &str) -> bool {
+        let Ok(members) = self.local.list_remote_members(channel).await else {
+            return true;
+        };
+        for member in members
+            .iter()
+            .filter(|m| m.runtime_id == runtime && m.principal_id.starts_with("user:hub:"))
+        {
+            if !self
+                .person_route_allowed(&member.principal_id, runtime)
+                .await
+            {
+                return false;
+            }
+        }
+        true
+    }
+
     /// Queue `item` for `recipient` and try it at once. A build failure
     /// is the caller's error (and drops the entry); no tunnel just
     /// leaves it queued.
@@ -482,6 +570,12 @@ impl TunnelChannelPort {
             .enqueue(recipient_runtime_id, item)
             .await
             .map_err(|e| format!("queue envelope for {recipient_runtime_id}: {e}"))?;
+        if !self
+            .routes_allowed(entry.item.channel(), recipient_runtime_id)
+            .await
+        {
+            return Ok(());
+        }
         let envelope = match self.envelope_for(ctx, &entry).await {
             Ok(envelope) => envelope,
             Err(e) => {

@@ -1155,36 +1155,36 @@ pub enum RequestPacket {
         op: Option<peko_protocol::channel::BoardOp>,
     },
 
-    /// ADR-108 D2: open a pairing for a phone to scan from this
-    /// computer's screen: single use, ten minutes. Local callers only;
-    /// the runtime must be registered with PekoHub. Answered with
-    /// `DevicePairStarted`.
-    #[serde(rename = "device_pair_start")]
-    DevicePairStart { request_id: u64 },
+    /// ADR-111 D3: show a code that adds a device to this account (a
+    /// phone scans it, another computer types it): single use, ten
+    /// minutes. Local callers only; this computer must be on its account's
+    /// list. Answered with `DeviceCodeShown`.
+    #[serde(rename = "device_add")]
+    DeviceAdd { request_id: u64 },
 
-    /// ADR-108 D2: the phones paired with this runtime. Local callers
-    /// only. Answered with `DeviceListResult`.
+    /// ADR-111 D3: join this computer to its account's devices with a code
+    /// shown on a device already on them. Answers `done` once the device
+    /// list has this computer on it (up to two minutes). Local callers only.
+    #[serde(rename = "device_join")]
+    DeviceJoin { request_id: u64, code: String },
+
+    /// ADR-111: this account's devices, whether this computer is on them,
+    /// and what waits for the owner about the account (owner changes,
+    /// pekos' new identities, contacts' devices that start over). Local
+    /// callers only. Answered with `DeviceListResult`.
     #[serde(rename = "device_list")]
     DeviceList { request_id: u64 },
 
-    /// ADR-108 D2: remove a paired phone; its next request is refused.
-    /// Local callers only. Answers `done`, `success: false` when no such
-    /// phone is paired.
+    /// ADR-111 D4: remove a device from the account (by its id, or a
+    /// phone's Hub id); every computer stops acting on it. Local callers
+    /// only. Answers `done`.
     #[serde(rename = "device_remove")]
     DeviceRemove { request_id: u64, device_id: String },
 
-    /// ADR-109 D1: the owner's computers this one knows, and this
-    /// computer's own id. Local callers only. Answered with
-    /// `ComputerListResult`.
-    #[serde(rename = "computer_list")]
-    ComputerList { request_id: u64 },
-
-    /// ADR-109 D3: approve or deny one of the owner's computers, by its
-    /// approval-request id (`apr_computer…`) or runtime id. Deciding again
-    /// changes the decision. Local callers only. Answered with
-    /// `ApprovalDecided`.
-    #[serde(rename = "computer_decide")]
-    ComputerDecide {
+    /// ADR-111 D6: decide one of `device_list`'s `security` requests.
+    /// Local callers only. Answered with `ApprovalDecided`.
+    #[serde(rename = "security_decide")]
+    SecurityDecide {
         request_id: u64,
         id: String,
         approve: bool,
@@ -1315,11 +1315,11 @@ impl RequestPacket {
             | Self::ChannelSetWake { request_id, .. }
             | Self::ChannelBoard { request_id, .. }
             | Self::ChannelUndelivered { request_id, .. }
-            | Self::DevicePairStart { request_id }
+            | Self::DeviceAdd { request_id }
+            | Self::DeviceJoin { request_id, .. }
             | Self::DeviceList { request_id }
             | Self::DeviceRemove { request_id, .. }
-            | Self::ComputerList { request_id }
-            | Self::ComputerDecide { request_id, .. }
+            | Self::SecurityDecide { request_id, .. }
             | Self::ChannelMarkRead { request_id, .. }
             | Self::ChannelReadState { request_id } => *request_id,
         }
@@ -1583,40 +1583,58 @@ pub struct PersonDmSummary {
     pub waiting: bool,
 }
 
-/// One of the owner's computers, as `computer_list` reports it (ADR-109).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ComputerInfo {
-    /// Its runtime id (`did:key:…`).
-    pub runtime: String,
-    /// The approval-request id it is decided by (`apr_computer…`).
-    pub id: String,
-    /// `approved`, `pending`, or `denied`.
-    pub status: String,
-    /// RFC 3339.
-    pub first_seen: String,
-    /// RFC 3339.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub decided_at: Option<String>,
-    /// `local`, a runtime id, `device:<id>`, or `upgrade`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub via: Option<String>,
-}
-
-/// A phone paired with this runtime, as `device_list` reports it
-/// (ADR-108 D2). Its keys stay in `devices.json`.
+/// A device on the account's list, as `device_list` reports it (ADR-111).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceInfo {
-    pub device_id: String,
-    /// What the phone calls itself.
-    pub name: String,
-    /// `ios` or `android`.
-    pub platform: String,
+    /// Its key as a `did:key` (a computer's runtime id).
+    pub id: String,
+    /// `computer` or `phone`.
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// A phone's id at PekoHub.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hub_device_id: Option<String>,
     /// RFC 3339.
-    pub paired_at: String,
-    /// RFC 3339, to the minute; absent until the phone first asks for
+    pub added_at: String,
+    /// The device that added it (itself, for the first one).
+    pub added_by: String,
+    /// Whether it is this computer.
+    pub this: bool,
+    /// RFC 3339, to the minute: when a phone last asked this computer for
     /// something.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_seen: Option<String>,
+}
+
+/// Something about the account that waits for the owner (ADR-111 D6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SecurityInfo {
+    pub id: String,
+    /// `owner_change`, `key_change`, or `devices_reset`.
+    pub kind: String,
+    pub summary: String,
+    pub reason: String,
+    /// The peko an owner change is about.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peko: Option<String>,
+    /// RFC 3339.
+    pub created_at: String,
+}
+
+/// What `device_list` answers (ADR-111).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DevicesView {
+    /// `user:hub:<id>`, absent when this computer is not registered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    /// This computer's runtime id.
+    pub runtime: String,
+    /// Whether this computer is on its account's devices. While it is not,
+    /// `devices` is the list PekoHub shows, for reference only.
+    pub on_list: bool,
+    pub devices: Vec<DeviceInfo>,
+    pub security: Vec<SecurityInfo>,
 }
 
 /// The person's read state in one conversation (ADR-108 D5).
@@ -2000,11 +2018,11 @@ pub enum ResponsePacket {
         items: Vec<serde_json::Value>,
     },
 
-    /// Response to `DevicePairStart` (ADR-108 D2). `qr` is the text to
-    /// show as a QR code; it holds the pairing secret, so it is shown on
-    /// this computer's screen and nowhere else. `code` names the pairing.
-    #[serde(rename = "device_pair_started")]
-    DevicePairStarted {
+    /// Response to `DeviceAdd` (ADR-111 D3): the code to show
+    /// (`ABCD-EFGH-JKMN`), and the same as QR text. Shown on this
+    /// computer's screen and nowhere else.
+    #[serde(rename = "device_code_shown")]
+    DeviceCodeShown {
         request_id: u64,
         code: String,
         qr: String,
@@ -2012,22 +2030,12 @@ pub enum ResponsePacket {
         expires_at: String,
     },
 
-    /// Response to `DeviceList` (ADR-108 D2), oldest pairing first.
+    /// Response to `DeviceList` (ADR-111), oldest device first.
     #[serde(rename = "device_list_result")]
     DeviceListResult {
         request_id: u64,
-        devices: Vec<DeviceInfo>,
-    },
-
-    /// Response to `ComputerList` (ADR-109): `account` is this computer's
-    /// Hub account (absent when not registered), `runtime` its own id.
-    #[serde(rename = "computer_list_result")]
-    ComputerListResult {
-        request_id: u64,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        account: Option<String>,
-        runtime: String,
-        computers: Vec<ComputerInfo>,
+        #[serde(flatten)]
+        view: DevicesView,
     },
 
     /// Response to `ChannelMarkRead` (ADR-108 D5): whether the mark
@@ -3419,9 +3427,8 @@ impl ResponsePacket {
             | Self::ChannelWakeSet { request_id, .. }
             | Self::ChannelBoardResult { request_id, .. }
             | Self::ChannelUndeliveredResult { request_id, .. }
-            | Self::DevicePairStarted { request_id, .. }
+            | Self::DeviceCodeShown { request_id, .. }
             | Self::DeviceListResult { request_id, .. }
-            | Self::ComputerListResult { request_id, .. }
             | Self::ChannelReadMarked { request_id, .. }
             | Self::ChannelReadStateResult { request_id, .. } => *request_id,
         }
@@ -3528,9 +3535,8 @@ impl ResponsePacket {
             Self::ChannelWakeSet { .. } => "ChannelWakeSet",
             Self::ChannelBoardResult { .. } => "ChannelBoardResult",
             Self::ChannelUndeliveredResult { .. } => "ChannelUndeliveredResult",
-            Self::DevicePairStarted { .. } => "DevicePairStarted",
+            Self::DeviceCodeShown { .. } => "DeviceCodeShown",
             Self::DeviceListResult { .. } => "DeviceListResult",
-            Self::ComputerListResult { .. } => "ComputerListResult",
             Self::ChannelReadMarked { .. } => "ChannelReadMarked",
             Self::ChannelReadStateResult { .. } => "ChannelReadStateResult",
         }

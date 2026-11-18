@@ -1,5 +1,6 @@
-//! Paired phones on the daemon side (ADR-108): pairing, the device verbs,
-//! the person's read mark between their runtimes, live events, and push.
+//! Phones on the daemon side (ADR-108): the device verbs, the person's
+//! read mark between their runtimes, live events, and push; and the owner's
+//! devices for IPC (ADR-111).
 //!
 //! A phone never names an IPC request. Each verb in [`AppState::device_verb`]
 //! is carried out here as the runtime's local user; a verb that is not in
@@ -19,10 +20,10 @@ use serde_json::{json, Value};
 
 use super::AppState;
 use crate::ipc::packet::{RequestPacket, ResponsePacket};
+use crate::tunnel::device_sync::{DeviceSync, ShownCode};
 use crate::tunnel::devices::{
-    seal_notification, sign_event, sign_paired, sign_read_mark, sign_response, verify_read_mark,
-    DeviceGate, DeviceNotifyPayload, DeviceRecord, PairingOffer, ReadMarkPayload,
-    DEVICE_NOTIFY_VERSION, READ_MARK_VERSION,
+    seal_notification, sign_event, sign_read_mark, sign_response, verify_read_mark, DeviceGate,
+    DeviceNotifyPayload, DeviceRecord, ReadMarkPayload, DEVICE_NOTIFY_VERSION, READ_MARK_VERSION,
 };
 use crate::tunnel::TunnelMessage;
 
@@ -55,9 +56,11 @@ const REMOTE_APPROVALS_WAIT: Duration = Duration::from_secs(5);
 /// Longest notification body.
 const NOTIFY_BODY_CHARS: usize = 240;
 
-/// What the daemon keeps for paired phones.
+/// What the daemon keeps for phones and the device list.
 pub(crate) struct DeviceRuntime {
     pub(crate) gate: Arc<DeviceGate>,
+    /// ADR-111: the owner's device list, kept current (made on first use).
+    sync: std::sync::OnceLock<Arc<DeviceSync>>,
     /// Conversations a notification went out for and no clear has yet.
     notified: Mutex<HashSet<String>>,
     pump_started: AtomicBool,
@@ -67,6 +70,7 @@ impl DeviceRuntime {
     pub(crate) fn new(gate: DeviceGate) -> Self {
         Self {
             gate: Arc::new(gate),
+            sync: std::sync::OnceLock::new(),
             notified: Mutex::new(HashSet::new()),
             pump_started: AtomicBool::new(false),
         }
@@ -138,53 +142,37 @@ impl AppState {
         }
     }
 
-    // ── Pairing ───────────────────────────────────────────────────────
+    // ── The device list (ADR-111) ─────────────────────────────────────
 
-    /// ADR-108 D2: open a pairing for the owner to show on this computer.
-    ///
-    /// # Errors
-    ///
-    /// The runtime is not registered with PekoHub: a phone could not
-    /// reach it.
-    pub(crate) fn device_pair_start(&self) -> Result<PairingOffer, String> {
-        let cred_path = crate::tunnel::PekoHubCredential::path_for_config_dir(&self.config_dir);
-        let hub = crate::tunnel::load_pekohub_credential(
-            Some(&cred_path),
-            &self.runtime_identity.runtime_did,
-        )
-        .ok()
-        .flatten()
-        .and_then(|cred| crate::tunnel::hub_origin(&cred.url))
-        .ok_or_else(|| {
-            "[not_registered] Sign this computer in to PekoHub first; a phone reaches it through PekoHub."
-                .to_string()
-        })?;
-        Ok(self.devices.gate.start_pairing(&hub))
+    /// What keeps the owner's device list current and runs joins.
+    pub(crate) fn device_sync(&self) -> Arc<DeviceSync> {
+        Arc::clone(self.devices.sync.get_or_init(|| {
+            DeviceSync::new(
+                Arc::clone(&self.runtime_signing_key),
+                crate::tunnel::TunnelHost::runtime_display_name(self),
+                Arc::clone(&self.principal_manager),
+                Arc::clone(&self.devices.gate),
+                Arc::clone(&self.tunnel_handle_slot),
+            )
+        }))
     }
 
-    /// ADR-108 D2: delete a device's record, tell PekoHub, and audit it.
-    /// `by` says who removed it (`owner`, or the device itself).
+    /// Remove a device from the owner's list, and audit it. `by` says who
+    /// removed it (`owner`, or the phone itself).
     ///
     /// # Errors
     ///
-    /// The record could not be deleted.
+    /// No such device, or PekoHub did not take the change.
     pub(crate) async fn device_remove(&self, device_id: &str, by: &str) -> Result<bool, String> {
-        let Some(removed) = self.devices.gate.remove(device_id)? else {
-            return Ok(false);
-        };
+        self.device_sync().remove(device_id).await?;
         let _ = self
             .observability
             .audit_security(
                 "device.removed",
                 None,
-                json!({ "device_id": removed.device_id, "name": removed.name, "by": by }),
+                json!({ "device": device_id, "by": by }),
             )
             .await;
-        self.send_to_hub(TunnelMessage::TunnelDeviceRemoved {
-            device_id: removed.device_id,
-            runtime_id: self.devices.gate.runtime_id().to_string(),
-        })
-        .await;
         Ok(true)
     }
 
@@ -195,51 +183,6 @@ impl AppState {
     pub(crate) async fn on_device_message(&self, message: TunnelMessage) {
         let gate = &self.devices.gate;
         match message {
-            TunnelMessage::TunnelDevicePair {
-                request_id,
-                runtime_id,
-                device_id,
-                proof,
-            } => {
-                if runtime_id != gate.runtime_id() {
-                    return;
-                }
-                let outcome = gate.pair(&runtime_id, &device_id, &proof);
-                let (event, details) = match &outcome {
-                    Ok(record) => (
-                        "device.paired",
-                        json!({
-                            "device_id": record.device_id,
-                            "name": record.name,
-                            "platform": record.platform,
-                        }),
-                    ),
-                    Err(reason) => (
-                        "device.pair_refused",
-                        json!({ "device_id": device_id, "reason": reason }),
-                    ),
-                };
-                let _ = self
-                    .observability
-                    .audit_security(event, None, details)
-                    .await;
-                let signature = sign_paired(
-                    &self.runtime_signing_key,
-                    &request_id,
-                    &device_id,
-                    &runtime_id,
-                    &outcome,
-                );
-                self.send_to_hub(TunnelMessage::TunnelDevicePaired {
-                    request_id,
-                    device_id,
-                    runtime_id,
-                    ok: outcome.is_ok(),
-                    error: outcome.err(),
-                    signature,
-                })
-                .await;
-            }
             TunnelMessage::TunnelDeviceRequest {
                 request_id,
                 device_id,
@@ -1404,65 +1347,75 @@ impl AppState {
 
 #[async_trait::async_trait]
 impl crate::ipc::handlers::device::DeviceHost for AppState {
-    fn pair_start(&self) -> Result<PairingOffer, String> {
+    async fn show_code(&self) -> Result<ShownCode, String> {
         self.start_device_pump();
-        self.device_pair_start()
+        self.device_sync().show_code().await
     }
 
-    fn paired_devices(&self) -> Vec<crate::ipc::packet::DeviceInfo> {
-        self.devices
+    async fn join(&self, code: &str) -> Result<(), String> {
+        self.device_sync().join(code).await
+    }
+
+    async fn devices(&self) -> crate::ipc::packet::DevicesView {
+        let status = self.device_sync().status().await;
+        let last_seen: HashMap<String, Option<String>> = self
+            .devices
             .gate
             .devices()
             .into_iter()
-            .map(|d| crate::ipc::packet::DeviceInfo {
-                device_id: d.device_id,
-                name: d.name,
-                platform: d.platform,
-                paired_at: d.paired_at,
-                last_seen: d.last_seen,
+            .map(|d| (d.device_id, d.last_seen))
+            .collect();
+        let devices = status
+            .devices
+            .iter()
+            .map(|m| crate::ipc::packet::DeviceInfo {
+                id: m.device.id.clone(),
+                kind: match m.device.kind {
+                    crate::security::device_list::DeviceKind::Computer => "computer",
+                    crate::security::device_list::DeviceKind::Phone => "phone",
+                }
+                .into(),
+                name: m.device.name.clone(),
+                hub_device_id: m.device.hub_device_id.clone(),
+                added_at: chrono::DateTime::from_timestamp(m.added_at, 0)
+                    .unwrap_or_default()
+                    .to_rfc3339(),
+                added_by: m.added_by.clone(),
+                this: m.device.id == status.me,
+                last_seen: m
+                    .device
+                    .hub_device_id
+                    .as_ref()
+                    .and_then(|id| last_seen.get(id).cloned().flatten()),
             })
-            .collect()
+            .collect();
+        let security = crate::principal::policy_gate::security_requests(&self.principal_manager)
+            .await
+            .into_iter()
+            .map(|r| crate::ipc::packet::SecurityInfo {
+                id: r.id,
+                kind: r.kind,
+                summary: r.summary,
+                reason: r.reason,
+                peko: r.peko,
+                created_at: r.created_at.to_rfc3339(),
+            })
+            .collect();
+        crate::ipc::packet::DevicesView {
+            account: status.account,
+            runtime: status.me,
+            on_list: status.on_list,
+            devices,
+            security,
+        }
     }
 
     async fn remove_device(&self, device_id: &str) -> Result<bool, String> {
         self.device_remove(device_id, "owner").await
     }
 
-    async fn computers(
-        &self,
-    ) -> (
-        Option<String>,
-        String,
-        Vec<crate::ipc::packet::ComputerInfo>,
-    ) {
-        let runtime = self.runtime_identity.runtime_did.clone();
-        let Some(account) = self.principal_manager.local_account().await else {
-            return (None, runtime, Vec::new());
-        };
-        let computers = self
-            .principal_manager
-            .own_computers()
-            .list(&account)
-            .into_iter()
-            .map(|c| crate::ipc::packet::ComputerInfo {
-                id: c.request_id(),
-                status: match c.status {
-                    crate::security::computers::ComputerStatus::Approved => "approved",
-                    crate::security::computers::ComputerStatus::Pending => "pending",
-                    crate::security::computers::ComputerStatus::Denied => "denied",
-                }
-                .to_string(),
-                first_seen: c.first_seen.to_rfc3339(),
-                decided_at: c.decided_at.map(|t| t.to_rfc3339()),
-                via: c.via,
-                runtime: c.runtime,
-            })
-            .collect();
-        (Some(account), runtime, computers)
-    }
-
-    async fn decide_computer(&self, id: &str, approve: bool) -> Result<String, String> {
-        crate::principal::policy_gate::decide_computer(
+    async fn decide_security(&self, id: &str, approve: bool) -> Result<String, String> {
+        crate::principal::policy_gate::decide_account_claim(
             &self.principal_manager,
             id,
             approve,
@@ -1547,7 +1500,7 @@ mod tests {
     use super::*;
     use crate::daemon::state::DaemonConfigSnapshot;
     use crate::tunnel::devices::test_device::TestDevice;
-    use crate::tunnel::devices::{DeviceEventPayload, DevicePairedPayload, DeviceResponsePayload};
+    use crate::tunnel::devices::{DeviceEventPayload, DeviceResponsePayload};
     use crate::tunnel::{TunnelDispatcher, TunnelHandle};
     use peko_channel::{CreateOpts, PostMsg};
     use peko_subject::PrincipalId;
@@ -1585,14 +1538,48 @@ mod tests {
             )
             .await
             .unwrap();
-            let (tx, outbound) = mpsc::channel(256);
+            // The Hub, as far as these tests need it: it takes every link
+            // appended to the device list and passes everything else on.
+            let (tx, mut wire) = mpsc::channel::<TunnelMessage>(256);
+            let (seen_tx, outbound) = mpsc::channel(256);
             *app.tunnel_handle_slot().write().await = Some(TunnelHandle::new(tx));
+            {
+                let app = app.clone();
+                tokio::spawn(async move {
+                    while let Some(message) = wire.recv().await {
+                        match message {
+                            TunnelMessage::DeviceListAppend {
+                                request_id, link, ..
+                            } => {
+                                let seq: Option<u64> = link
+                                    .signed
+                                    .split('.')
+                                    .nth(1)
+                                    .and_then(|p| {
+                                        use base64::Engine as _;
+                                        base64::engine::general_purpose::URL_SAFE_NO_PAD
+                                            .decode(p)
+                                            .ok()
+                                    })
+                                    .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+                                    .and_then(|v| v["seq"].as_u64());
+                                app.device_sync().on_appended(&request_id, true, None, seq);
+                            }
+                            other => {
+                                if seen_tx.send(other).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                });
+            }
             let runtime = app.devices.gate.runtime_id().to_string();
             app.store()
                 .link_local_user(&runtime, ACCOUNT)
                 .await
                 .unwrap();
-            let mut rig = Self {
+            let rig = Self {
                 _dir: dir,
                 app,
                 outbound,
@@ -1600,25 +1587,31 @@ mod tests {
                 runtime,
                 seen: Vec::new(),
             };
-            let offer = rig.app.devices.gate.start_pairing("https://hub.test");
-            let proof = rig.phone.pair_proof(&offer);
+            // ADR-111: the phone is on the person's device list.
+            let key = Arc::clone(&rig.app.runtime_signing_key);
+            let phone_key = rig.phone.signing.clone();
+            let links = crate::security::device_list::test_chain(
+                &format!("user:hub:{ACCOUNT}"),
+                &[
+                    (
+                        key.as_ref(),
+                        crate::security::device_list::test_computer(&key),
+                    ),
+                    (&phone_key, rig.phone.list_device()),
+                ],
+            );
             rig.app
-                .on_device_message(TunnelMessage::TunnelDevicePair {
-                    request_id: "pair-1".into(),
-                    runtime_id: rig.runtime.clone(),
-                    device_id: rig.phone.device_id.clone(),
-                    proof,
-                })
-                .await;
-            match rig.sent().pop() {
-                Some(TunnelMessage::TunnelDevicePaired { ok, signature, .. }) => {
-                    assert!(ok);
-                    let paired: DevicePairedPayload =
-                        TestDevice::read(&rig.runtime, &signature).unwrap();
-                    assert!(paired.ok && paired.device_id == rig.phone.device_id);
-                }
-                other => panic!("expected the pairing answer, got {other:?}"),
-            }
+                .principal_manager
+                .device_lists()
+                .accept_own(
+                    &format!("user:hub:{ACCOUNT}"),
+                    links,
+                    &rig.runtime,
+                    &std::collections::HashSet::new(),
+                )
+                .unwrap();
+            rig.app.device_sync().load_phones().await;
+            assert!(rig.app.devices.gate.device(&rig.phone.device_id).is_some());
             rig
         }
 
@@ -1649,7 +1642,7 @@ mod tests {
                 })
                 .await;
             let mut answer = None;
-            for message in self.sent() {
+            for message in self.sent_within(Duration::from_millis(50)).await {
                 match message {
                     TunnelMessage::TunnelDeviceResponse {
                         request_id: answered,
@@ -2021,7 +2014,7 @@ mod tests {
                     signature: signature.clone(),
                 })
                 .await;
-            for message in rig.sent() {
+            for message in rig.sent_within(Duration::from_millis(50)).await {
                 if let TunnelMessage::TunnelDeviceResponse { signature, .. } = message {
                     let answer: DeviceResponsePayload =
                         TestDevice::read(&rig.runtime, &signature).unwrap();
@@ -2194,23 +2187,33 @@ mod tests {
         rig.app.on_device_message(mark(ACCOUNT, &forger)).await;
         assert_eq!(unread().await, 1);
 
-        // Through the dispatcher, as PekoHub delivers it: held until the
-        // person approves that computer (ADR-109 D2), then applied.
+        // Through the dispatcher, as PekoHub delivers it: not acted on
+        // until that computer is on the person's device list (ADR-111 D5),
+        // then applied.
         let dispatcher = TunnelDispatcher::new(Arc::new(rig.app.clone()));
         let handle = rig.app.tunnel_handle_slot().read().await.clone().unwrap();
         dispatcher
             .handle_message(mark(ACCOUNT, &other), handle.clone())
             .await;
-        let computers = rig.app.principal_manager.own_computers();
-        for _ in 0..50 {
-            if !computers.pending(ACCOUNT).is_empty() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        assert_eq!(computers.pending(ACCOUNT).len(), 1, "the computer waits");
+        tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(unread().await, 1, "held");
-        computers.decide(ACCOUNT, &other_id, true, "test").unwrap();
+        let lists = rig.app.principal_manager.device_lists();
+        let person = format!("user:hub:{ACCOUNT}");
+        let list = lists.list(&person).unwrap();
+        let payload = list.next_payload(crate::security::device_list::Change::Add {
+            device: crate::security::device_list::test_computer(&other),
+        });
+        let me_key = Arc::clone(&rig.app.runtime_signing_key);
+        lists
+            .accept_after(
+                &person,
+                vec![crate::security::device_list::Link {
+                    by: rig.runtime.clone(),
+                    signed: crate::security::device_list::sign_payload(&me_key, &payload),
+                    joiner: Some(crate::security::device_list::sign_payload(&other, &payload)),
+                }],
+            )
+            .unwrap();
         dispatcher
             .handle_message(mark(ACCOUNT, &other), handle)
             .await;
@@ -2325,7 +2328,7 @@ mod tests {
             }
         };
         for request in [
-            RequestPacket::DevicePairStart { request_id: 1 },
+            RequestPacket::DeviceAdd { request_id: 1 },
             RequestPacket::DeviceList { request_id: 1 },
             RequestPacket::DeviceRemove {
                 request_id: 1,
@@ -2341,15 +2344,15 @@ mod tests {
             }
         }
         match ask(
-            RequestPacket::DevicePairStart { request_id: 1 },
+            RequestPacket::DeviceAdd { request_id: 1 },
             CallerContext::local(),
         )
         .await
         {
             ResponsePacket::Error { message, .. } => {
-                assert!(message.starts_with("[not_registered]"), "{message}");
+                assert!(message.contains("PekoHub"), "{message}");
             }
-            other => panic!("an unregistered runtime offered {other:?}"),
+            other => panic!("a computer with no tunnel offered {other:?}"),
         }
         match ask(
             RequestPacket::DeviceList { request_id: 1 },
@@ -2357,9 +2360,14 @@ mod tests {
         )
         .await
         {
-            ResponsePacket::DeviceListResult { devices, .. } => {
-                assert_eq!(devices.len(), 1);
-                assert_eq!(devices[0].device_id, rig.phone.device_id);
+            ResponsePacket::DeviceListResult { view, .. } => {
+                assert!(view.on_list);
+                assert_eq!(view.devices.len(), 2);
+                assert!(view.devices.iter().any(|d| d.this && d.kind == "computer"));
+                assert!(view
+                    .devices
+                    .iter()
+                    .any(|d| d.hub_device_id.as_deref() == Some(rig.phone.device_id.as_str())));
             }
             other => panic!("{other:?}"),
         }
@@ -2371,14 +2379,11 @@ mod tests {
             CallerContext::local(),
         )
         .await;
-        assert!(matches!(
-            removed,
-            ResponsePacket::Done { success: true, .. }
-        ));
-        assert!(rig.sent().iter().any(|m| matches!(
-            m,
-            TunnelMessage::TunnelDeviceRemoved { device_id, .. } if *device_id == rig.phone.device_id
-        )));
+        assert!(
+            matches!(removed, ResponsePacket::Done { success: true, .. }),
+            "{removed:?}"
+        );
+        assert!(rig.app.devices.gate.device(&rig.phone.device_id).is_none());
         let refused = rig.ask("conversations", json!({})).await.unwrap_err();
         assert!(refused.starts_with("[unpaired]"), "{refused}");
     }
