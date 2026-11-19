@@ -1,0 +1,45 @@
+# What this peko's visitors reach (ADR-113). A visitor is anyone who is
+# not the owner: a person, another peko, or an anonymous caller.
+#
+# Nothing is reachable unless it is listed here. The owner's own work is
+# not affected by this file. Whatever it says, a visitor never gets
+# `Bash` or `Plan`, never reaches this peko's sessions, keys or settings,
+# and never reaches another conversation's folder.
+#
+# Paths are relative to this workspace. A path names a file, or a folder
+# and everything under it.
+
+[visitors]
+# Built-in tools a visitor's conversation may use.
+tools = [
+  "Read", "Write", "Edit", "Glob", "Grep", "Fetch",
+  "Agent", "RoleCatalog", "Skill", "Session", "Task", "Async",
+  "Contacts", "ChannelSend", "ChannelRead", "Channel", "Attach", "Suggest",
+  "ModelList", "ModelCall", "Workflow", "Cron", "ToolLog",
+]
+# MCP servers (by id, the folder name under mcp/) a visitor may use.
+mcp = []
+# Files and folders a visitor may read.
+read = ["public/", "kb/CONVENTIONS.md"]
+# Files and folders a visitor may also write.
+write = []
+# Each conversation's own folder, readable and writable only from that
+# conversation. Its notes.md is shown to the peko in every turn there.
+own = "contacts/{conversation}/"
+# The most one conversation's folder may hold, in bytes.
+own_max_bytes = 10485760
+# Whether a visitor's request for more reaches you. When true, a call this
+# section does not list, or one your POLICY.md leaves unclear, becomes an
+# approval request you decide; *Always* then adds it to that visitor's
+# section here. When false, it is refused and nothing is sent to you.
+ask_owner = false
+
+# One section per actor or group that should reach more (or less). A
+# section replaces [visitors] for that actor; it does not add to it.
+#
+# [contact."user:hub:<uuid>"]
+# tools = ["Read", "Write", "Edit", "Glob", "Grep", "Fetch", "Task", "ChannelSend", "ChannelRead", "MCP"]
+# mcp   = ["orders"]
+# read  = ["public/", "playbooks/"]
+# own   = "contacts/{conversation}/"
+# ask_owner = true

@@ -1066,6 +1066,14 @@ pub async fn seed_boot_defaults(
             Err(e) => tracing::warn!("genesis: POLICY.md seed failed for '{name}': {e}"),
         }
 
+        // ADR-113 D9: every principal has an access file to edit, seeded
+        // once with the MCP servers its owner had opened to visitors.
+        match crate::security::access::seed(&shared_root) {
+            Ok(true) => tracing::info!("genesis: seeded ACCESS.toml for principal '{name}'"),
+            Ok(false) => {}
+            Err(e) => tracing::warn!("genesis: ACCESS.toml seed failed for '{name}': {e}"),
+        }
+
         // 2026-09-28 rename: move a pre-rename `kb/agents/` directory
         // to `kb/roles/` so the D8 note directory pairs with the
         // ADR-052 D3 role-file terminology. Runs for EVERY principal,

@@ -138,6 +138,7 @@ pub async fn provision(
     crate::principal::seed::write_files(&shared.root, &files)
         .map_err(|e| failed("write the seed's files", &e))?;
     crate::security::policy::seed(&shared.root).map_err(|e| failed("write POLICY.md", &e))?;
+    crate::security::access::seed(&shared.root).map_err(|e| failed("write ACCESS.toml", &e))?;
     crate::principal::kb::seed_journal_birth_entry(&shared.root, &new.name, chrono::Utc::now())
         .map_err(|e| failed("write the journal's first entry", &e))?;
 

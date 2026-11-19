@@ -330,6 +330,67 @@ checked against their sources (`memory_review`). Only work done for you can
 edit `POLICY.md`, `peko.toml` and the always-included `kb/` files;
 anyone else's changes to them become proposals in `kb/inbox/`.
 
+### `ACCESS.toml`
+
+`ACCESS.toml` says what the peko's visitors can reach. A visitor is anyone
+the peko works for who is not you and whom you have not marked `trusted`:
+another person, another peko, or an anonymous caller. Nothing is reachable
+unless the file lists it.
+
+```toml
+[visitors]
+tools = ["Read", "Write", "Edit", "Glob", "Grep", "Fetch", "Task", "ChannelSend", "ChannelRead"]
+mcp   = ["orders"]                     # MCP servers, by folder name under mcp/
+read  = ["public/", "kb/CONVENTIONS.md"]
+write = []
+own   = "contacts/{conversation}/"     # each conversation's own folder
+ask_owner = false                      # visitors' requests do not reach you
+
+[contact."user:hub:<uuid>"]            # replaces [visitors] for this person
+tools = ["Read", "Glob", "Grep", "Fetch"]
+read  = ["public/", "playbooks/"]
+own   = "contacts/{conversation}/"
+ask_owner = true                       # this person's requests do
+```
+
+- **`tools` and `mcp`** are checked on every call, before any reviewer. A
+  tool that is not listed is not shown to the peko in that conversation.
+- **`read` and `write`** are files or folders in the workspace. Reading or
+  writing them is not checked against `POLICY.md` again: listing a path is
+  your decision. A visitor's
+  conversation cannot read anything else, and `kb/MEMORY.md` and
+  `kb/index.md` are left out of its prompt unless `read` names them.
+- **`own`** gives each conversation a folder only it can read and write
+  (10 MB unless `own_max_bytes` says otherwise). The peko keeps what it
+  learns about that person in the folder's `notes.md`, which it is shown on
+  every turn there. Deleting the folder deletes what the peko kept about
+  them. A folder is per conversation, not per person: the same person in a
+  DM and in a group has two.
+- **`ask_owner`** decides whether that visitor's requests reach you. When
+  `true`, a call the section does not list, a call your `POLICY.md` leaves
+  unclear, and a change to a protected file each come to you as an approval
+  request or a proposal. Approving runs that one call; **Always** adds the
+  tool, server or path to that person's section of this file. When `false`
+  (the default), each is refused and you are not asked, which is what a
+  customer-facing peko wants. At most 5 requests per conversation wait at
+  once.
+- **A `[contact."<address>"]` section** replaces `[visitors]` for one
+  person, peko, or group (by its channel id). Sections do not add up.
+
+Whatever the file says, a visitor never gets `Bash` or `Plan`, never reaches
+the peko's sessions, keys or settings, and never reaches another
+conversation's folder; these cannot be requested or approved either. A file that lists one of those, or that does not
+parse, is refused whole: visitors then get only their conversation and its
+own folder, and the peko tells you why on your next turn. `POLICY.md` still
+decides what the peko should do with what a visitor can reach.
+
+To relay messages from a chat service, email, or a web form, have a script
+call `peko send <peko> --as visitor:<id> [--name <name>] "<message>"`. The
+id is whatever you know the person by. The reply is printed, and
+`peko log <peko> --peer visitor:local:<id> --watch` follows what the peko
+posts later. Only you can send as a visitor; the peko records that you
+vouched and does not check who the person is.
+
 ### Models and keys
 
 ```bash
@@ -404,14 +465,13 @@ appear without a restart. For a server that uses OAuth, ask the peko to
 authenticate it: the `MCP` tool's `authenticate` action returns a link to
 open in your browser. See the [MCP quick start](../mcp/QUICK_START.md).
 
-There are no per-tool grants. What a peko can use depends on whom it is
-working for:
+What a peko can use depends on whom it is working for:
 
 - **You:** everything.
 - **People you have marked `trusted`:** all its tools, with sensitive calls
   checked against `POLICY.md`.
-- **Anyone else:** no `Bash` and no MCP servers (except ones marked
-  `untrusted_ok`), and file tools only inside the peko's workspace.
+- **Anyone else (visitors):** only the tools, MCP servers and files that
+  [`ACCESS.toml`](#accesstoml) lists for them. Never `Bash`.
 
 ---
 

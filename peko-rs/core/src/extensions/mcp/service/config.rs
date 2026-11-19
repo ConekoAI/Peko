@@ -120,9 +120,10 @@ pub struct Definition {
     pub reserved_parameters: BTreeMap<String, ReservedParameter>,
     #[serde(default)]
     pub sampling: Option<Sampling>,
-    /// The owner's declaration that this server's methods are safe for
-    /// runs acting for untrusted actors (ADR-078 D6). Off by default:
-    /// servers usually carry the owner's credentials.
+    /// Retired by ADR-113: which servers a visitor's run may use is the
+    /// `mcp` list in the owner's `ACCESS.toml`. Read once, when that file
+    /// is first seeded, to carry over what the owner had opened
+    /// (`security::access::legacy_visitor_servers`); ignored after.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub untrusted_ok: bool,
 }

@@ -37,7 +37,10 @@ Keep tokens out of `server.json`. Store them in the vault with
 
 A peko's servers are available when it works for you or for people you have
 marked `trusted`. When it works for anyone else, a server is available only if
-its `server.json` sets `untrusted_ok`. Connect only servers you are willing to
+the peko's `ACCESS.toml` lists it under `mcp` (see the
+[user guide](../user-guide/USERS_GUIDE.md#accesstoml)). `untrusted_ok` in
+`server.json` is no longer read; servers that had it were listed in
+`ACCESS.toml` when the file was first written. Connect only servers you are willing to
 let the peko use on its own: scheduled work runs on your behalf and is not
 reviewed (see [Security limits](../user-guide/USERS_GUIDE.md#security-limits)).
 

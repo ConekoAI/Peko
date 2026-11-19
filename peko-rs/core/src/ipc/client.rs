@@ -459,6 +459,7 @@ impl DaemonClient {
             message: message.into(),
             override_model,
             attachments: Vec::new(),
+            send_as: None,
         };
         self.send_request(packet).await
     }
@@ -473,6 +474,21 @@ impl DaemonClient {
         override_model: Option<String>,
         attachments: Vec<String>,
     ) -> anyhow::Result<PacketStream> {
+        self.principal_send_stream_as(name, message, override_model, attachments, None)
+            .await
+    }
+
+    /// [`Self::principal_send_stream`] for a visitor the caller vouches
+    /// for (ADR-113 D7). The daemon accepts `send_as` only from a caller
+    /// with the owner's authority.
+    pub async fn principal_send_stream_as(
+        &self,
+        name: impl Into<String>,
+        message: impl Into<String>,
+        override_model: Option<String>,
+        attachments: Vec<String>,
+        send_as: Option<crate::ipc::packet::SendAs>,
+    ) -> anyhow::Result<PacketStream> {
         let request_id = self.next_id();
         let packet = RequestPacket::PrincipalSendStream {
             request_id,
@@ -480,6 +496,7 @@ impl DaemonClient {
             message: message.into(),
             override_model,
             attachments,
+            send_as,
         };
         self.send_request(packet).await
     }

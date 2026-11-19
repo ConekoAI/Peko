@@ -8,9 +8,7 @@ use std::path::{Component, Path, PathBuf};
 
 use peko_tools_core::ActingFor;
 
-/// Built-in tools an untrusted run never gets: the owner's MCP
-/// administration (the shell is owner-only, [`OWNER_ONLY_TOOLS`]).
-pub const UNTRUSTED_DENIED_TOOLS: &[&str] = &["MCP"];
+use super::access::{Grant, Reach, Unreached};
 
 /// Built-in tools only an owner run gets. `Plan` reads and writes every
 /// plan the principal holds, and plans have no compartment, so a run
@@ -139,6 +137,7 @@ pub const PROTECTED_FILES: &[&str] = &[
     // Legacy name, kept until the rename to `peko.toml` has happened.
     "principal.toml",
     "POLICY.md",
+    "ACCESS.toml",
     "kb/MEMORY.md",
     "kb/index.md",
     "kb/CONVENTIONS.md",
@@ -323,14 +322,24 @@ pub fn in_tool_ledger(path: &Path) -> bool {
         .any(|w| is_pekos_dir_name(w[0]) && w[2] == "local" && w[3] == "ledger")
 }
 
-/// Why `stamp` may not call `tool_name`, if it may not. `mcp_untrusted_ok`
-/// is `Some` for an MCP method: the owner's declaration on its server.
+/// Why `stamp` may not call `tool_name`, if it may not: the fixed floor
+/// ([`floor_tool_refusal`]), then the owner's `ACCESS.toml`
+/// ([`unlisted_tool`]). `mcp_server` is `Some` for an MCP method: the
+/// server it belongs to.
 #[must_use]
 pub fn tool_refusal(
     stamp: &ActingFor,
     tool_name: &str,
-    mcp_untrusted_ok: Option<bool>,
+    mcp_server: Option<&str>,
+    reach: Option<&Reach>,
 ) -> Option<String> {
+    floor_tool_refusal(stamp, tool_name)
+        .or_else(|| unlisted_tool(stamp, tool_name, mcp_server, reach).map(|(reason, _)| reason))
+}
+
+/// Why no rule and no approval gives `stamp` the tool, if none does.
+#[must_use]
+pub fn floor_tool_refusal(stamp: &ActingFor, tool_name: &str) -> Option<String> {
     if tool_name == "Bash" && super::memory_gate::is_memory_run(stamp) {
         return Some(
             "`Bash` is not available in the memory-maintenance run (ADR-080): it reads \
@@ -350,23 +359,52 @@ pub fn tool_refusal(
             stamp.trust.as_str()
         ));
     }
-    if OWNER_ONLY_TOOLS.contains(&tool_name) {
-        return Some(format!(
+    OWNER_ONLY_TOOLS.contains(&tool_name).then(|| {
+        format!(
             "`{tool_name}` holds the owner's internal work and is not available while acting \
              for {} ({}). Track this conversation's work in your replies or with `Task`.",
             shown_actor(&stamp.actor),
             stamp.trust.as_str()
-        ));
-    }
-    if !stamp.is_untrusted() {
+        )
+    })
+}
+
+/// Why the owner's `ACCESS.toml` does not give an untrusted `stamp` the
+/// tool (ADR-113 D2), and what listing it would take. `None` for runs
+/// the file does not bind and for tools the floor holds back. Without a
+/// `reach`, such a run gets [`Reach::none`].
+#[must_use]
+pub fn unlisted_tool(
+    stamp: &ActingFor,
+    tool_name: &str,
+    mcp_server: Option<&str>,
+    reach: Option<&Reach>,
+) -> Option<(String, Grant)> {
+    if !stamp.is_untrusted() || floor_tool_refusal(stamp, tool_name).is_some() {
         return None;
     }
-    let denied = UNTRUSTED_DENIED_TOOLS.contains(&tool_name) || mcp_untrusted_ok == Some(false);
-    denied.then(|| {
-        format!(
-            "`{tool_name}` is not available while acting for {} (untrusted). The owner can \
-             permit this actor as `trusted`, or ask for the result on their behalf.",
-            shown_actor(&stamp.actor)
+    let none = Reach::none();
+    let reach = reach.unwrap_or(&none);
+    let (allowed, what, grant) = match mcp_server {
+        Some(server) => (
+            reach.rule.allows_mcp(server),
+            format!("`{tool_name}` (MCP server `{server}`)"),
+            Grant::Mcp(server.to_string()),
+        ),
+        None => (
+            reach.rule.allows_tool(tool_name),
+            format!("`{tool_name}`"),
+            Grant::Tool(tool_name.to_string()),
+        ),
+    };
+    (!allowed).then(|| {
+        (
+            format!(
+                "{what} is not available while acting for {}: the owner's `ACCESS.toml` does \
+                 not list it for this visitor",
+                shown_actor(&stamp.actor)
+            ),
+            grant,
         )
     })
 }
@@ -428,6 +466,13 @@ pub enum PathDecision {
         relative: String,
     },
     Deny(String),
+    /// The owner's `ACCESS.toml` does not list the path for this visitor
+    /// (ADR-113 D4). Refused, unless the rule sends such requests to the
+    /// owner: `grant` is what listing it would take.
+    Unlisted {
+        reason: String,
+        grant: Grant,
+    },
 }
 
 /// The floor's decision for `stamp` touching `path` (ADR-078 D6).
@@ -438,13 +483,16 @@ pub enum PathDecision {
 ///   runtime's own state ([`is_runtime_state`]: conversation logs,
 ///   sessions, keys, settings), and a write to a protected file becomes a
 ///   proposal.
-/// - Untrusted runs: nothing outside the principal's own workspace.
+/// - Untrusted runs: only this conversation's own folder and the paths
+///   the owner's `ACCESS.toml` lists (`reach`, ADR-113 D4); without a
+///   `reach`, [`Reach::none`].
 #[must_use]
 pub fn check_path(
     stamp: &ActingFor,
     workspace: Option<&Path>,
     path: &Path,
     write: bool,
+    reach: Option<&Reach>,
 ) -> PathDecision {
     let target = resolve(path);
     if in_people_only(&target) {
@@ -480,16 +528,33 @@ pub fn check_path(
         ));
     }
     if stamp.is_untrusted() {
-        let inside = workspace
-            .as_deref()
-            .is_some_and(|workspace| target.starts_with(workspace));
-        if !inside {
+        let Some(workspace) = workspace.as_deref() else {
             return PathDecision::Deny(format!(
-                "{} is outside this peko's workspace; while acting for {} (untrusted) \
-                 only workspace files are reachable",
+                "{} is not reachable while acting for {}: this peko has no workspace bound",
                 target.display(),
                 shown_actor(&stamp.actor)
             ));
+        };
+        // A write to a protected file is never applied: it is filed for
+        // the owner below, whatever the file shares.
+        let proposes = write && protected_relative(workspace, &target).is_some();
+        let none = Reach::none();
+        if !proposes {
+            match reach
+                .unwrap_or(&none)
+                .path_refusal(workspace, &target, write)
+            {
+                None => {}
+                Some(Unreached::Never(reason)) => return PathDecision::Deny(reason),
+                Some(Unreached::Unlisted { reason, relative }) => {
+                    let grant = if write {
+                        Grant::Write(relative)
+                    } else {
+                        Grant::Read(relative)
+                    };
+                    return PathDecision::Unlisted { reason, grant };
+                }
+            }
         }
     }
     if !write {
@@ -649,24 +714,58 @@ mod tests {
         assert!(!in_principal_local(Path::new("/home/u/notes/ada/local/x")));
     }
 
+    /// What `text` (an `ACCESS.toml`) gives the untrusted test stamp.
+    fn reach(text: &str) -> Reach {
+        crate::security::access::Access::parse(text)
+            .unwrap()
+            .for_stamp(&stamp(Trust::Untrusted), &|a: &str, b: &str| a == b)
+    }
+
+    /// ADR-113 D2: an untrusted run gets the tools and MCP servers the
+    /// owner's file lists, and nothing else.
     #[test]
-    fn untrusted_runs_lose_unmarked_mcp() {
+    fn untrusted_runs_get_only_listed_tools_and_mcp_servers() {
         let low = stamp(Trust::Untrusted);
-        assert!(tool_refusal(&low, "MCP", None).is_some());
-        assert!(tool_refusal(&low, "mcp__mail__send", Some(false)).is_some());
-        assert!(tool_refusal(&low, "mcp__docs__search", Some(true)).is_none());
-        assert!(tool_refusal(&low, "Read", None).is_none());
-        assert!(tool_refusal(&stamp(Trust::Trusted), "MCP", None).is_none());
+        let listed = reach("[visitors]\ntools = [\"Read\", \"MCP\"]\nmcp = [\"docs\"]\n");
+        assert!(tool_refusal(&low, "Read", None, Some(&listed)).is_none());
+        assert!(tool_refusal(&low, "MCP", None, Some(&listed)).is_none());
+        assert!(tool_refusal(&low, "Fetch", None, Some(&listed)).is_some());
+        assert!(tool_refusal(&low, "mcp__docs__search", Some("docs"), Some(&listed)).is_none());
+        let refused = tool_refusal(&low, "mcp__mail__send", Some("mail"), Some(&listed)).unwrap();
+        assert!(refused.contains("ACCESS.toml"), "{refused}");
+        // A tool name is no MCP server id, and the reverse.
+        assert!(tool_refusal(&low, "docs", None, Some(&listed)).is_some());
+        assert!(tool_refusal(&low, "Read", Some("Read"), Some(&listed)).is_some());
+        // Without a file's reach: the conversation and nothing shared.
+        assert!(tool_refusal(&low, "ChannelSend", None, None).is_none());
+        assert!(tool_refusal(&low, "Fetch", None, None).is_some());
+        assert!(tool_refusal(&low, "mcp__docs__search", Some("docs"), None).is_some());
+        // What listing it would take, for the owner's *Always*.
+        assert_eq!(
+            unlisted_tool(&low, "Fetch", None, Some(&listed)).map(|(_, grant)| grant),
+            Some(Grant::Tool("Fetch".into()))
+        );
+        assert_eq!(
+            unlisted_tool(&low, "mcp__mail__send", Some("mail"), Some(&listed))
+                .map(|(_, grant)| grant),
+            Some(Grant::Mcp("mail".into()))
+        );
+        // The floor's tools are never "unlisted": no one is asked for them.
+        assert!(unlisted_tool(&low, "Bash", None, Some(&listed)).is_none());
+        assert!(unlisted_tool(&low, "Plan", None, Some(&listed)).is_none());
+        // The file does not bind trusted or owner runs.
+        assert!(tool_refusal(&stamp(Trust::Trusted), "MCP", None, None).is_none());
+        assert!(tool_refusal(&stamp(Trust::Owner), "Fetch", None, None).is_none());
     }
 
     #[test]
     fn only_owner_runs_get_the_shell() {
         for trust in [Trust::Untrusted, Trust::Trusted] {
-            let reason = tool_refusal(&stamp(trust), "Bash", None).expect("refused");
+            let reason = tool_refusal(&stamp(trust), "Bash", None, None).expect("refused");
             assert!(reason.contains("owner"), "{reason}");
         }
-        assert!(tool_refusal(&stamp(Trust::Owner), "Bash", None).is_none());
-        assert!(tool_refusal(&ActingFor::runtime(), "Bash", None).is_none());
+        assert!(tool_refusal(&stamp(Trust::Owner), "Bash", None, None).is_none());
+        assert!(tool_refusal(&ActingFor::runtime(), "Bash", None, None).is_none());
     }
 
     /// ADR-095 D6: a DM between two people, the requests to start one,
@@ -698,7 +797,7 @@ mod tests {
             for write in [false, true] {
                 assert!(
                     matches!(
-                        check_path(&owner, Some(&t.mine), &path, write),
+                        check_path(&owner, Some(&t.mine), &path, write, None),
                         PathDecision::Deny(_)
                     ),
                     "{} write={write}",
@@ -711,7 +810,8 @@ mod tests {
                 &owner,
                 Some(&t.mine),
                 &channels.join("dm_peko/events.jsonl"),
-                false
+                false,
+                None
             ),
             PathDecision::Allow
         ));
@@ -750,7 +850,7 @@ mod tests {
                 for write in [false, true] {
                     assert!(
                         matches!(
-                            check_path(&stamp(trust), Some(&t.mine), path, write),
+                            check_path(&stamp(trust), Some(&t.mine), path, write, None),
                             PathDecision::Deny(_)
                         ),
                         "{trust:?} {} write={write}",
@@ -761,7 +861,7 @@ mod tests {
         }
         for path in &state[..3] {
             assert_eq!(
-                check_path(&stamp(Trust::Owner), Some(&t.mine), path, false),
+                check_path(&stamp(Trust::Owner), Some(&t.mine), path, false, None),
                 PathDecision::Allow
             );
         }
@@ -770,12 +870,13 @@ mod tests {
                 &stamp(Trust::Trusted),
                 Some(&t.mine),
                 &t.mine.join("notes.md"),
-                false
+                false,
+                None
             ),
             PathDecision::Allow
         );
         assert_eq!(
-            check_path(&stamp(Trust::Trusted), Some(&t.mine), &project, false),
+            check_path(&stamp(Trust::Trusted), Some(&t.mine), &project, false, None),
             PathDecision::Allow,
             "a trusted run still reads the owner's projects"
         );
@@ -811,12 +912,12 @@ mod tests {
     #[test]
     fn only_owner_runs_get_plans() {
         for trust in [Trust::Untrusted, Trust::Trusted] {
-            let reason = tool_refusal(&stamp(trust), "Plan", None).expect("refused");
+            let reason = tool_refusal(&stamp(trust), "Plan", None, None).expect("refused");
             assert!(reason.contains(trust.as_str()), "{reason}");
         }
-        assert!(tool_refusal(&stamp(Trust::Owner), "Plan", None).is_none());
-        assert!(tool_refusal(&ActingFor::runtime(), "Plan", None).is_none());
-        assert!(tool_refusal(&ActingFor::unattributed(), "Plan", None).is_some());
+        assert!(tool_refusal(&stamp(Trust::Owner), "Plan", None, None).is_none());
+        assert!(tool_refusal(&ActingFor::runtime(), "Plan", None, None).is_none());
+        assert!(tool_refusal(&ActingFor::unattributed(), "Plan", None, None).is_some());
     }
 
     #[test]
@@ -826,7 +927,7 @@ mod tests {
         std::fs::create_dir_all(&ledger).unwrap();
         let file = ledger.join("ledger-2026-10-14.jsonl");
         for trust in [Trust::Owner, Trust::Trusted, Trust::Untrusted] {
-            let decision = check_path(&stamp(trust), None, &file, true);
+            let decision = check_path(&stamp(trust), None, &file, true, None);
             assert!(
                 matches!(decision, PathDecision::Deny(ref reason) if reason.contains("tool ledger")),
                 "{trust:?}: {decision:?}"
@@ -836,32 +937,87 @@ mod tests {
             .path()
             .join("data/pekos/mine/local/cache/../ledger/x.jsonl");
         assert!(matches!(
-            check_path(&stamp(Trust::Owner), None, &sneaky, true),
+            check_path(&stamp(Trust::Owner), None, &sneaky, true, None),
             PathDecision::Deny(_)
         ));
         assert_eq!(
-            check_path(&stamp(Trust::Owner), None, &file, false),
+            check_path(&stamp(Trust::Owner), None, &file, false, None),
             PathDecision::Allow,
             "reading stays open to owner runs"
         );
         assert!(!in_tool_ledger(Path::new("/w/ledger/notes.md")));
     }
 
+    /// ADR-113 D4: an untrusted run's file tools reach its conversation's
+    /// own folder and the listed paths; everything else is refused.
     #[test]
-    fn untrusted_runs_are_confined_to_the_workspace() {
+    fn untrusted_runs_reach_only_what_the_access_file_names() {
         let t = tree();
         let low = stamp(Trust::Untrusted);
-        assert_eq!(
-            check_path(&low, Some(&t.mine), &t.mine.join("notes.md"), false),
-            PathDecision::Allow
+        let shared = reach(
+            "[visitors]\nread = [\"public\"]\nwrite = [\"drafts\"]\n\
+             own = \"contacts/{conversation}/\"\n",
         );
-        let escape = t.mine.join("../../../etc/passwd");
+        let at = |path: &str, write: bool| {
+            check_path(
+                &low,
+                Some(&t.mine),
+                &t.mine.join(path),
+                write,
+                Some(&shared),
+            )
+        };
+        assert_eq!(at("public/faq.md", false), PathDecision::Allow);
+        // Unlisted, so the owner may be asked: the grant is what to list.
         assert!(matches!(
-            check_path(&low, Some(&t.mine), &escape, false),
+            at("public/faq.md", true),
+            PathDecision::Unlisted { grant: Grant::Write(path), .. } if path == "public/faq.md"
+        ));
+        assert_eq!(at("drafts/a.md", true), PathDecision::Allow);
+        assert_eq!(at("contacts/dm_x/notes.md", true), PathDecision::Allow);
+        assert!(matches!(
+            at("contacts/dm_y/notes.md", false),
             PathDecision::Deny(_)
         ));
         assert!(matches!(
-            check_path(&low, None, &t.mine.join("notes.md"), false),
+            at("notes.md", false),
+            PathDecision::Unlisted { grant: Grant::Read(path), .. } if path == "notes.md"
+        ));
+        assert!(matches!(
+            at("kb/MEMORY.md", false),
+            PathDecision::Unlisted { .. }
+        ));
+        // A protected write is a proposal, listed or not.
+        assert_eq!(
+            at("kb/MEMORY.md", true),
+            PathDecision::Propose {
+                relative: "kb/MEMORY.md".into()
+            }
+        );
+        let escape = t.mine.join("public/../../../etc/passwd");
+        assert!(matches!(
+            check_path(&low, Some(&t.mine), &escape, false, Some(&shared)),
+            PathDecision::Deny(_)
+        ));
+        // No file's reach, or no workspace: nothing.
+        assert!(matches!(
+            check_path(
+                &low,
+                Some(&t.mine),
+                &t.mine.join("public/faq.md"),
+                false,
+                None
+            ),
+            PathDecision::Unlisted { .. }
+        ));
+        assert!(matches!(
+            check_path(
+                &low,
+                None,
+                &t.mine.join("public/faq.md"),
+                false,
+                Some(&shared)
+            ),
             PathDecision::Deny(_)
         ));
     }
@@ -873,7 +1029,13 @@ mod tests {
         std::os::unix::fs::symlink(&t.other, t.mine.join("link")).unwrap();
         let low = stamp(Trust::Untrusted);
         assert!(matches!(
-            check_path(&low, Some(&t.mine), &t.mine.join("link/secret"), false),
+            check_path(
+                &low,
+                Some(&t.mine),
+                &t.mine.join("link/secret"),
+                false,
+                None
+            ),
             PathDecision::Deny(_)
         ));
     }
@@ -884,14 +1046,14 @@ mod tests {
         let memory = t.mine.join("kb/MEMORY.md");
         for trust in [Trust::Untrusted, Trust::Trusted] {
             assert_eq!(
-                check_path(&stamp(trust), Some(&t.mine), &memory, true),
+                check_path(&stamp(trust), Some(&t.mine), &memory, true, None),
                 PathDecision::Propose {
                     relative: "kb/MEMORY.md".into()
                 }
             );
         }
         assert_eq!(
-            check_path(&stamp(Trust::Owner), Some(&t.mine), &memory, true),
+            check_path(&stamp(Trust::Owner), Some(&t.mine), &memory, true, None),
             PathDecision::Allow
         );
         assert_eq!(
@@ -899,7 +1061,8 @@ mod tests {
                 &stamp(Trust::Trusted),
                 Some(&t.mine),
                 &t.mine.join("hooks/x/hook.toml"),
-                true
+                true,
+                None
             ),
             PathDecision::Propose {
                 relative: "hooks/x/hook.toml".into()
@@ -910,7 +1073,8 @@ mod tests {
                 &stamp(Trust::Owner),
                 Some(&t.mine),
                 &t.mine.join("kb/inbox/x.md"),
-                true
+                true,
+                None
             ),
             PathDecision::Deny(_)
         ));
@@ -921,15 +1085,15 @@ mod tests {
         let t = tree();
         let target = t.other.join("kb/MEMORY.md");
         assert!(matches!(
-            check_path(&stamp(Trust::Owner), Some(&t.mine), &target, true),
+            check_path(&stamp(Trust::Owner), Some(&t.mine), &target, true, None),
             PathDecision::Deny(_)
         ));
         assert_eq!(
-            check_path(&stamp(Trust::Owner), Some(&t.mine), &target, false),
+            check_path(&stamp(Trust::Owner), Some(&t.mine), &target, false, None),
             PathDecision::Allow
         );
         assert!(matches!(
-            check_path(&stamp(Trust::Trusted), Some(&t.mine), &target, false),
+            check_path(&stamp(Trust::Trusted), Some(&t.mine), &target, false, None),
             PathDecision::Deny(_)
         ));
     }

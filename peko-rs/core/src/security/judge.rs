@@ -75,6 +75,20 @@ pub enum Verdict {
     AskOwner(String),
 }
 
+/// Whether `a` and `b` are one actor by canonical address alone, for
+/// callers without the actor registry.
+#[must_use]
+pub fn same_canonical_actor(a: &str, b: &str) -> bool {
+    use peko_subject::ActorKeys as _;
+    match (
+        a.parse::<peko_subject::ActorRef>(),
+        b.parse::<peko_subject::ActorRef>(),
+    ) {
+        (Ok(a), Ok(b)) => peko_subject::CanonicalKeys.same_actor(&a, &b),
+        _ => a == b,
+    }
+}
+
 /// What the dispatcher consults for every reviewed call.
 #[async_trait]
 pub trait PolicyGate: Send + Sync {
@@ -82,9 +96,25 @@ pub trait PolicyGate: Send + Sync {
     async fn review(&self, call: &GatedCall) -> Verdict;
     /// File `call` for the owner's decision; returns the request id.
     async fn ask_owner(&self, call: &GatedCall, reason: &str) -> anyhow::Result<String>;
+    /// [`Self::ask_owner`] for a call the owner's `ACCESS.toml` does not
+    /// list (ADR-113 D10): `grant` is what *Always* would add to it.
+    async fn ask_owner_for(
+        &self,
+        call: &GatedCall,
+        reason: &str,
+        grant: &crate::security::access::Grant,
+    ) -> anyhow::Result<String> {
+        let _ = grant;
+        self.ask_owner(call, reason).await
+    }
     /// Whether `call` replays a request the owner approved, so it runs
     /// without another review.
     async fn is_approved_replay(&self, call: &GatedCall) -> bool;
+    /// Whether addresses `a` and `b` name one actor (ADR-081 D1). The
+    /// canonical address unless the gate knows the actor registry.
+    fn same_actor(&self, a: &str, b: &str) -> bool {
+        same_canonical_actor(a, b)
+    }
     /// Review a final reply to a non-owner actor, when the policy asks.
     async fn review_reply(&self, stamp: &ActingFor, principal_id: &str, reply: &str) -> Verdict {
         let _ = (stamp, principal_id, reply);

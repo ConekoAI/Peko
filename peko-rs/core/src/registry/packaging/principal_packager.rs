@@ -361,6 +361,14 @@ impl PrincipalPackager {
                 manifest.add_file(&path, text.as_bytes());
                 files.insert(path, text.into_bytes());
             }
+            // ADR-113: and what the owner lets visitors reach.
+            let access = workspace_dir.join(crate::security::access::ACCESS_FILE);
+            if let Ok(text) = tokio::fs::read_to_string(&access).await {
+                let text = super::portable::rewrite_access(&text, &|s| self.exported(s));
+                let path = crate::security::access::ACCESS_FILE.to_string();
+                manifest.add_file(&path, text.as_bytes());
+                files.insert(path, text.into_bytes());
+            }
         }
         Ok(())
     }

@@ -537,7 +537,8 @@ impl ToolFunnel for ToolingRuntime {
         let stamp = acting_for
             .cloned()
             .unwrap_or_else(peko_tools_core::ActingFor::unattributed);
-        self.catalog.narrow_for(snapshot, &stamp)
+        let reach = self.dispatcher.visitor_reach_for(principal_id, &stamp);
+        self.catalog.narrow_for(snapshot, &stamp, reach.as_ref())
     }
 
     async fn render_prompt_sections(&self, request: &PromptSectionRequest) -> PromptSections {

@@ -9,10 +9,10 @@ use serde::{Deserialize, Serialize};
 pub enum ToolSource {
     /// Built-in tool (part of the core codebase)
     BuiltIn,
-    /// MCP tool from an MCP server. `untrusted_ok` is the owner's
-    /// declaration (`untrusted_ok` in the server's configuration) that
-    /// its methods are safe for runs acting for untrusted actors
-    /// (ADR-078 D6).
+    /// MCP tool from an MCP server. `untrusted_ok` is the retired
+    /// declaration in the server's configuration (ADR-078 D6); the floor
+    /// no longer reads it — a visitor's servers are the `mcp` list in the
+    /// owner's `ACCESS.toml` (ADR-113).
     Mcp { server: String, untrusted_ok: bool },
 }
 

@@ -136,7 +136,9 @@ impl PromptRenderer {
         let agents = rendered.get("roles").unwrap_or("").to_string();
         let session_ctx = rendered.get("session_context").unwrap_or("").to_string();
 
-        let values = build_placeholder_values(ctx, &skills, &agents, &session_ctx);
+        let kb_scope = rendered.get(KB_SCOPE_SECTION).unwrap_or("");
+
+        let values = build_placeholder_values(ctx, &skills, &agents, &session_ctx, kb_scope);
         replace_placeholders(&ctx.body, &values, true)
     }
 
@@ -250,7 +252,8 @@ impl PromptRenderer {
 
         // ADR-055 D2: the hot kb set loads once per render under its
         // shared byte budget.
-        let hot = HotKb::load(&ctx.workspace, &ctx.channel, &ctx.role_name);
+        let hot = HotKb::load(&ctx.workspace, &ctx.channel, &ctx.role_name)
+            .restricted_to(rendered.get(KB_SCOPE_SECTION).unwrap_or(""));
 
         let mut sections: Vec<String> = Vec::new();
 
@@ -404,14 +407,20 @@ enum SectionSlot {
 /// second dispatch under the custom-section path. The tooling runtime
 /// dispatches exactly these names to its providers, plus any custom
 /// workspace-hook names.
-pub const BUILTIN_PROMPT_SECTIONS: [&str; 6] = [
+pub const BUILTIN_PROMPT_SECTIONS: [&str; 7] = [
     "identity",
     "roles",
     "skills",
     "workflows",
     "session_context",
     "plans",
+    KB_SCOPE_SECTION,
 ];
+
+/// The section that says which hot kb files the run may see (ADR-113
+/// D6). It is never shown to the model: the renderer reads it to narrow
+/// the hot set ([`HotKb::restricted_to`]).
+pub const KB_SCOPE_SECTION: &str = "kb_scope";
 
 impl SectionSlot {
     /// Human-readable section name used in the update/retraction
@@ -595,6 +604,7 @@ fn build_placeholder_values(
     skills: &str,
     agents: &str,
     session_ctx: &str,
+    kb_scope: &str,
 ) -> HashMap<Placeholder, String> {
     let mut values = HashMap::new();
 
@@ -619,7 +629,9 @@ fn build_placeholder_values(
     values.insert(Placeholder::ModelAliases, format_model_aliases_section(ctx));
     values.insert(
         Placeholder::Memory,
-        format_memory_section(&HotKb::load(&ctx.workspace, &ctx.channel, &ctx.role_name)),
+        format_memory_section(
+            &HotKb::load(&ctx.workspace, &ctx.channel, &ctx.role_name).restricted_to(kb_scope),
+        ),
     );
     values.insert(
         Placeholder::SessionContext,
@@ -1884,6 +1896,53 @@ mod tests {
                 .is_none_or(|b| !b.contains("## Principal identity")),
             "got: {body:?}"
         );
+    }
+
+    /// ADR-113 D6: a run under a `kb_scope` gets only the hot files the
+    /// scope names, and the scope itself never reaches the model.
+    #[tokio::test]
+    async fn a_kb_scope_narrows_the_hot_files_and_is_never_shown() {
+        let ws = tempfile::tempdir().unwrap();
+        let kb = ws.path().join("kb");
+        std::fs::create_dir_all(&kb).unwrap();
+        std::fs::write(kb.join("MEMORY.md"), "the owner's bank is Acme").unwrap();
+        std::fs::write(kb.join("index.md"), "people/ holds private notes").unwrap();
+        std::fs::write(kb.join("CONVENTIONS.md"), "answer briefly").unwrap();
+        let mut ctx = empty_ctx();
+        ctx.workspace = ws.path().to_path_buf();
+        ctx.body = "You are a peko.\n{{memory}}".to_string();
+
+        let core = EmptyToolingRuntime::default();
+        core.section_texts
+            .lock()
+            .expect("section_texts poisoned")
+            .insert(
+                KB_SCOPE_SECTION.to_string(),
+                "restricted\npublic\nkb/CONVENTIONS.md".to_string(),
+            );
+        let renderer = PromptRenderer::new(Arc::new(core));
+        let mut state = RuntimeContextState::default();
+        let tail = renderer
+            .render_runtime_context(&ctx, &mut state)
+            .await
+            .expect("conventions are due on first render");
+        assert!(tail.contains("answer briefly"), "got: {tail}");
+        assert!(!tail.contains("Acme"), "got: {tail}");
+        assert!(!tail.contains("private notes"), "got: {tail}");
+        assert!(!tail.contains("restricted"), "got: {tail}");
+        assert!(!tail.contains("kb_scope"), "got: {tail}");
+        let system = renderer.render_for_iteration(&ctx).await;
+        assert!(!system.contains("Acme"), "got: {system}");
+
+        // Without a scope the same run sees all of it.
+        let renderer = PromptRenderer::new(empty_funnel());
+        let mut state = RuntimeContextState::default();
+        let tail = renderer
+            .render_runtime_context(&ctx, &mut state)
+            .await
+            .expect("memory is due on first render");
+        assert!(tail.contains("Acme"), "got: {tail}");
+        assert!(tail.contains("private notes"), "got: {tail}");
     }
 
     // ---------- ADR-052 D6: workspace-hook custom prompt sections ----------

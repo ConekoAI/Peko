@@ -62,6 +62,18 @@ pub struct SendArgs {
     #[arg(long, value_name = "MODEL_ID")]
     pub model: Option<String>,
 
+    /// Send the message as a visitor instead of yourself, for a script
+    /// that relays someone's message from a chat service, email, or a
+    /// web form: `--as visitor:<id>`, where the id is what you know them
+    /// by (a phone number, an email address). The peko answers them as a
+    /// visitor, in their own conversation. Only the peko's owner may.
+    #[arg(long = "as", value_name = "VISITOR")]
+    pub send_as: Option<String>,
+
+    /// The visitor's display name (with --as)
+    #[arg(long, value_name = "NAME", requires = "send_as")]
+    pub name: Option<String>,
+
     /// Attach a file (repeatable, up to 8, 20 MB each). The peko keeps
     /// a copy in its workspace; a vision model also sees images.
     #[arg(long = "attach", value_name = "PATH")]
@@ -103,6 +115,9 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths) -> Result<()> {
     // refused: a group post fans out to one run per member principal,
     // so there is no single run to await or steer.
     if let Recipient::Group(slug) = parse_recipient(&args.principal) {
+        if args.send_as.is_some() {
+            anyhow::bail!("--as sends a visitor's direct message; it cannot post to a group");
+        }
         if args.wait {
             anyhow::bail!("groups have no bound agent run; nothing to wait on");
         }
@@ -130,16 +145,41 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths) -> Result<()> {
     // apart from older thread history.
     let attachments = absolute_attachments(&args.attach)?;
     let sent_at = chrono::Utc::now();
+    let send_as = args
+        .send_as
+        .clone()
+        .map(|actor| peko_core::ipc::packet::SendAs {
+            actor,
+            name: args.name.clone(),
+        });
     let stream = client
-        .principal_send_stream(&args.principal, message, args.model.clone(), attachments)
+        .principal_send_stream_as(
+            &args.principal,
+            message,
+            args.model.clone(),
+            attachments,
+            send_as,
+        )
         .await?;
 
     // The CLI's own subject — derived from the same rule the daemon
     // uses (ADR-057): current Hub account when logged into pekohub, else
     // `local`. Used only as the thread selector for `--wait` /
     // ctrl-c stop, never sent as an identity claim.
-    let peer = peko_auth::ActorRef::User(paths.user().into());
+    // With `--as`, the thread is the visitor's.
+    let peer = match args.send_as.as_deref().and_then(visitor_subject) {
+        Some(visitor) => visitor,
+        None => peko_auth::ActorRef::User(paths.user().into()),
+    };
     process_response_stream(stream, &client, &args, &peer, sent_at).await
+}
+
+/// The local visitor `--as` names, when it has the `visitor:<id>` shape.
+/// The daemon validates it; this only selects the thread to wait on.
+fn visitor_subject(actor: &str) -> Option<peko_auth::ActorRef> {
+    let id = actor.strip_prefix("visitor:")?;
+    let id = id.strip_prefix("local:").unwrap_or(id);
+    (!id.is_empty()).then(|| peko_auth::ActorRef::Visitor(peko_subject::Route::local(id)))
 }
 
 /// `peko send group:<slug>` (ADR-049 Phase 2, D7): post `message` to
@@ -693,8 +733,25 @@ mod tests {
             stdin: false,
             wait: false,
             model: None,
+            send_as: None,
+            name: None,
             attach: Vec::new(),
         }
+    }
+
+    #[test]
+    fn as_names_the_visitors_thread() {
+        let visitor = |id: &str| peko_auth::ActorRef::Visitor(peko_subject::Route::local(id));
+        assert_eq!(
+            super::visitor_subject("visitor:+15550100"),
+            Some(visitor("+15550100"))
+        );
+        assert_eq!(
+            super::visitor_subject("visitor:local:ada@example.com"),
+            Some(visitor("ada@example.com"))
+        );
+        assert_eq!(super::visitor_subject("user:local:ada"), None);
+        assert_eq!(super::visitor_subject("visitor:"), None);
     }
 
     /// `GlobalPaths` rooted in a tempdir, with the default `local`

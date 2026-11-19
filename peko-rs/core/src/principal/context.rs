@@ -604,9 +604,11 @@ async fn install_principal_tool_bag(
     crate::tools::installation::install_workspace(core.catalog(), workspace, principal_id).await?;
 
     if !core.tool_bag_installed() {
-        let section_providers: [Arc<dyn crate::tools::prompt_sections::PromptSectionProvider>; 6] = [
+        let section_providers: [Arc<dyn crate::tools::prompt_sections::PromptSectionProvider>; 7] = [
             // ADR-078 D1: whom the run acts for, ahead of who it is.
             Arc::new(crate::principal::acting_for_prompt::ActingForPromptHandler),
+            // ADR-113 D6: which hot kb files a visitor's run may see.
+            Arc::new(crate::principal::acting_for_prompt::KbScopePromptHandler),
             Arc::new(crate::principal::identity_prompt::WorkspaceIdentityPromptHandler::new()),
             Arc::new(WorkspaceRolesPromptHandler::new()),
             Arc::new(WorkspaceSkillsPromptHandler::new()),

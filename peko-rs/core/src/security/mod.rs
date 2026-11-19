@@ -1,8 +1,10 @@
 //! The trust floor and acting-for stamps (ADR-078).
 //!
 //! - [`stamps`] decides whom each run acts for, and at what trust.
-//! - [`floor`] is the fixed floor every call passes: no shell below
-//!   trusted, workspace confinement, and owner-only protected files.
+//! - [`floor`] is the fixed floor every call passes: the shell and plans
+//!   are the owner's, the runtime's own state is, and protected files are
+//!   owner-only.
+//! - [`access`] reads the owner's `ACCESS.toml`: what visitors reach (ADR-113).
 //! - [`proposals`] files a non-owner's protected write for the owner.
 //! - [`memory_gate`] holds back `MEMORY.md` and `CONVENTIONS.md` writes a
 //!   scheduled owner run cannot source to the owner (ADR-080 D4, D8).
@@ -13,6 +15,7 @@
 //! The module never imports `principal/`, so `agents/` can depend on it;
 //! the principal layer supplies trust through [`stamps::TrustSource`].
 
+pub mod access;
 pub mod computers;
 pub mod device_list;
 pub mod floor;
