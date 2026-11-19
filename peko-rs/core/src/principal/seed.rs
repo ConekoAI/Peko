@@ -713,6 +713,24 @@ own = "contacts/{conversation}/"
         }
     }
 
+    /// The example seed the server guide points at stays a seed that
+    /// creates a peko with working rules for visitors.
+    #[test]
+    fn the_example_customer_desk_seed_is_valid() {
+        let seed = parse_seed(include_str!(
+            "../../../../examples/seeds/customer-desk.seed.toml"
+        ))
+        .unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        write_files(ws.path(), &seed.files).unwrap();
+        let access = crate::security::access::Access::load(ws.path());
+        assert!(access.error.is_none(), "{:?}", access.error);
+        assert_eq!(access.visitors.read, ["public"]);
+        assert!(!access.visitors.ask_owner);
+        assert!(ws.path().join("public/faq.md").is_file());
+        assert!(ws.path().join("roles/conversation.md").is_file());
+    }
+
     /// ADR-113 D11: an exported seed carries the rules the owner changed,
     /// without the parts that name particular actors.
     #[test]

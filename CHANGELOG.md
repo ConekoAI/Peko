@@ -40,6 +40,14 @@ All notable changes to Peko.
 
 ### Added
 
+- **A Docker image for running pekos on a server** (`Dockerfile`,
+  [Run a peko on a server](docs/getting-started/RUN_ON_A_SERVER.md)). The
+  runtime runs as an unprivileged user with all its state under `/data`,
+  and the vault is unlocked with `PEKO_MASTER_PASSPHRASE` or a secret file
+  named by `PEKO_MASTER_PASSPHRASE_FILE`. You manage it with
+  `docker exec`. The container is the sandbox: a peko's shell commands run
+  inside it. The image is built from a checkout; it is not published yet.
+
 - **A seed can carry any file in the peko's folder (ADR-113).** It was
   limited to roles, skills, workflows and MCP servers. Now a seed can bring
   a `public/` FAQ, reference notes, hooks, and `ACCESS.toml` and

@@ -188,6 +188,7 @@ no web server; the CLI and the desktop app talk to it on this computer only.
 
 - [Getting Started](docs/getting-started/GETTING_STARTED.md): install and talk to your first peko
 - [Tutorial](docs/getting-started/TUTORIAL_FIRST_PEKO.md): personality, memory, a reminder, a skill, a backup
+- [Run a peko on a server](docs/getting-started/RUN_ON_A_SERVER.md): the runtime in a Docker container, for a peko other people reach
 - [User's Guide](docs/user-guide/USERS_GUIDE.md): how pekos work, sharing, safety, limits, troubleshooting
 - [CLI Reference](docs/user-guide/CLI_REFERENCE.md): every command
 - [MCP](docs/mcp/MCP.md): give a peko outside tools

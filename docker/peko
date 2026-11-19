@@ -1,0 +1,14 @@
+#!/bin/sh
+# `peko` inside the container: the real CLI, with the vault's passphrase
+# read from PEKO_MASTER_PASSPHRASE_FILE when the variable itself is not
+# set. `docker exec <container> peko ...` therefore works with a secret
+# file as well as with the variable.
+if [ -z "${PEKO_MASTER_PASSPHRASE:-}" ] && [ -n "${PEKO_MASTER_PASSPHRASE_FILE:-}" ]; then
+    if [ ! -r "$PEKO_MASTER_PASSPHRASE_FILE" ]; then
+        echo "peko: cannot read PEKO_MASTER_PASSPHRASE_FILE ($PEKO_MASTER_PASSPHRASE_FILE)" >&2
+        exit 78
+    fi
+    PEKO_MASTER_PASSPHRASE="$(cat "$PEKO_MASTER_PASSPHRASE_FILE")"
+    export PEKO_MASTER_PASSPHRASE
+fi
+exec /opt/peko/bin/peko "$@"

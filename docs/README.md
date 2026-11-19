@@ -13,6 +13,7 @@ Complete documentation for the Peko multi-agent runtime.
 
 - **[Getting Started Guide](getting-started/GETTING_STARTED.md)** — Install Peko and talk to your first peko
 - **[Tutorial: shaping your first peko](getting-started/TUTORIAL_FIRST_PEKO.md)** — Persona, memory, a reminder, a skill, backup
+- **[Run a peko on a server](getting-started/RUN_ON_A_SERVER.md)** — The runtime in a Docker container, for a peko other people reach
 
 ### 📚 User Guides
 
