@@ -5345,14 +5345,22 @@ mod tests {
         adapter.queue_text("Nothing is pushed yet.");
         adapter.queue_text("Yes: it's pushed as 7c85eb6.");
         let posting = {
-            let (store, dm, me, bo) = (
+            let (store, dm, me, bo, adapter) = (
                 Arc::clone(&store),
                 dm.clone(),
                 ActorRef::from(&principal.id),
                 bo.clone(),
+                adapter.clone(),
             );
             tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                // Only once the turn is under way (it has asked the model,
+                // so it has read where the conversation stood): a fixed
+                // sleep let a slow runner post before the turn began, and
+                // a post from before the turn is no overlap.
+                while adapter.recorded_requests().is_empty() {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 store
                     .post(
                         &dm,
