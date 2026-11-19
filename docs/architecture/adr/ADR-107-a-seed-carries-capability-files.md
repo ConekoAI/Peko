@@ -37,7 +37,7 @@ The seed stays one text file. Each key is a path inside the new peko's workspace
 
 ### D2. Only the capability folders, only text, and small
 
-- A path is relative, made of plain names (letters, digits, `.`, `_`, `-`, no leading dot), at least two deep, and under `roles/`, `skills/`, `workflows/` or `mcp/`. So a seed cannot write `peko.toml`, `POLICY.md`, anything under `kb/`, or a hook. Hooks are left out because they run on every tool call.
+- A path is relative, made of plain names (letters, digits, `.`, `_`, `-`, no leading dot), at least two deep, and under `roles/`, `skills/`, `workflows/` or `mcp/`. So a seed cannot write `peko.toml`, anything under `kb/`, or a hook. *Amended 2026-11-19 (ADR-113 D11):* the folder limit is lifted. A seed may fill any plain path in the workspace except `peko.toml`, `local/` and `kb/inbox/`; hooks are allowed and shown in full; `ACCESS.toml` and `POLICY.md` are checked and hold rules for everyone only. The export (D5) still reads only the capability folders and those two files. Hooks are left out because they run on every tool call.
 - A value is a TOML string. There is no binary content.
 - At most 64 files and 64 KB of content together. A skill with large references or scripts does not fit and stays a setup step.
 

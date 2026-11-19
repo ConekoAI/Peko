@@ -172,6 +172,39 @@ impl Policy {
     }
 }
 
+/// `text` as a seed carries it (ADR-113 D11): without its per-actor
+/// sections (and the *Always allowed* lines in them), which name actors
+/// that mean nothing to whoever grows the seed. `None` when what is left
+/// is what every peko starts with.
+#[must_use]
+pub fn for_seed(text: &str) -> Option<String> {
+    let mut out = String::with_capacity(text.len());
+    let mut in_actor_section = false;
+    let mut in_comment = false;
+    for line in text.split_inclusive('\n') {
+        // The seed's own example of a section lives in a comment.
+        if !in_comment {
+            if let Some(heading) = line.strip_prefix("## ") {
+                in_actor_section = heading
+                    .split_whitespace()
+                    .next()
+                    .is_some_and(is_actor_address);
+            }
+        }
+        if line.contains("<!--") {
+            in_comment = true;
+        }
+        if line.contains("-->") {
+            in_comment = false;
+        }
+        if !in_actor_section {
+            out.push_str(line);
+        }
+    }
+    let exported = format!("{}\n", out.trim_end());
+    (Policy::parse(&exported) != Policy::parse(SEED)).then_some(exported)
+}
+
 fn today() -> String {
     chrono::Utc::now().format("%Y-%m-%d").to_string()
 }

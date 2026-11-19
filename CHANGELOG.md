@@ -40,6 +40,16 @@ All notable changes to Peko.
 
 ### Added
 
+- **A seed can carry any file in the peko's folder (ADR-113).** It was
+  limited to roles, skills, workflows and MCP servers. Now a seed can bring
+  a `public/` FAQ, reference notes, hooks, and `ACCESS.toml` and
+  `POLICY.md`, so a peko made to serve customers arrives with its content
+  and its rules for visitors. It still cannot write `peko.toml`, `local/`
+  or `kb/inbox/`. Whoever creates the peko is shown the rule files and
+  anything that runs a command in full before accepting. In a seed the rule
+  files hold rules for everyone only. `peko seed` exports the rule files
+  when you have changed them; it does not export the rest of the folder.
+
 - **`peko send <peko> --as visitor:<id> [--name <name>]`** sends a message as
   a visitor, for a script that relays messages from a chat service, email or
   a web form. The peko answers in that visitor's own conversation, with a

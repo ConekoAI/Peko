@@ -129,14 +129,17 @@ pub async fn provision(
     std::fs::create_dir_all(&shared.root).map_err(|e| failed("create the peko's folder", &e))?;
     crate::principal::kb::seed_kb_scaffold(&shared.root)
         .map_err(|e| failed("lay down the knowledge scaffold", &e))?;
+    // ADR-107, ADR-113 D11: the seed's files, before the manager seeds
+    // the default roles and rules (create-if-missing), so what the seed
+    // carries wins.
+    crate::principal::seed::write_files(&shared.root, &files)
+        .map_err(|e| failed("write the seed's files", &e))?;
+    // After the files: a seed may carry `kb/CONVENTIONS.md` and a
+    // persona, and the persona joins whichever conventions are there.
     if let Some(persona) = &persona {
         crate::principal::seed::add_persona(&shared.root, persona)
             .map_err(|e| failed("write the persona", &e))?;
     }
-    // ADR-107: the seed's capability files, before the manager seeds the
-    // default roles (create-if-missing), so a role the seed carries wins.
-    crate::principal::seed::write_files(&shared.root, &files)
-        .map_err(|e| failed("write the seed's files", &e))?;
     crate::security::policy::seed(&shared.root).map_err(|e| failed("write POLICY.md", &e))?;
     crate::security::access::seed(&shared.root).map_err(|e| failed("write ACCESS.toml", &e))?;
     crate::principal::kb::seed_journal_birth_entry(&shared.root, &new.name, chrono::Utc::now())
