@@ -59,7 +59,18 @@ pub struct ApprovalRecord {
     pub status: ApprovalStatus,
     /// The digest of the call the owner saw; a replay must match it.
     pub digest: String,
+    /// What the owner's `ACCESS.toml` would have to list for the call
+    /// (ADR-113 D10), when that is why it was asked. *Always* adds it to
+    /// the actor's section there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant: Option<crate::security::access::Grant>,
 }
+
+/// Most requests one conversation may have waiting for the owner. A
+/// visitor whose rule sends requests to the owner could otherwise fill
+/// the owner's screen; further calls are refused until some are decided
+/// or expire. Tasks the owner hands themselves (ADR-100) do not count.
+pub const MAX_PENDING_PER_CONVERSATION: usize = 5;
 
 fn approvals_dir(principal: &Principal) -> PathBuf {
     // `<local>/sessions` is the sessions dir; approvals sit beside it.
@@ -280,6 +291,50 @@ impl PrincipalPolicyGate {
         Ok((text, truncated))
     }
 
+    /// Store a request for the owner and tell them.
+    async fn file_request(
+        &self,
+        call: &GatedCall,
+        reason: &str,
+        grant: Option<crate::security::access::Grant>,
+    ) -> Result<String> {
+        let (manager, principal) = self
+            .principal(&call.principal_id)
+            .await
+            .context("principal not loaded")?;
+        let dir = approvals_dir(&principal);
+        // ADR-100 D2: the owner learns where the task was asked for.
+        let reason = if is_owner_task(call) {
+            owner_task_origin(&manager, call).await
+        } else {
+            let waiting = pending_records(&dir)
+                .iter()
+                .filter(|r| !is_owner_task(&r.call))
+                .filter(|r| r.call.stamp.compartment == call.stamp.compartment)
+                .count();
+            anyhow::ensure!(
+                waiting < MAX_PENDING_PER_CONVERSATION,
+                "{waiting} requests from this conversation already wait for the owner; no more \
+                 are taken until some are decided. Say this one cannot be done for now"
+            );
+            reason.to_string()
+        };
+        let now = Utc::now();
+        let record = ApprovalRecord {
+            id: format!("apr_{}", &uuid::Uuid::new_v4().simple().to_string()[..12]),
+            call: call.clone(),
+            reason,
+            created_at: now,
+            expires_at: now + chrono::Duration::hours(APPROVAL_TTL_HOURS),
+            status: ApprovalStatus::Pending,
+            digest: call.digest(),
+            grant,
+        };
+        save_record(&dir, &record)?;
+        Self::notify_owner(&principal, &record).await;
+        Ok(record.id)
+    }
+
     /// The owner, as the subject their conversation is keyed by
     /// (ADR-081 D8: the one owner's own conversation).
     async fn owner_subjects(principal: &Principal) -> Vec<ActorRef> {
@@ -308,7 +363,7 @@ impl PrincipalPolicyGate {
             )
         } else {
             format!(
-            "{APPROVAL_NOTICE_PREFIX} ({id}): {actor}{name} ({trust}) wants to run {what}. Reviewer: \
+            "{APPROVAL_NOTICE_PREFIX} ({id}): {actor}{name} ({trust}) wants to run {what}. {why}: \
              {reason}. Approve or deny it in the Peko app, or with `peko approve {peko} {id}` \
              / `peko deny {peko} {id}`. Expires {exp}.",
             id = record.id,
@@ -321,6 +376,7 @@ impl PrincipalPolicyGate {
                 .unwrap_or_default(),
             trust = call.stamp.trust.as_str(),
             what = summarize(call),
+            why = if record.grant.is_some() { "Why you are asked" } else { "Reviewer" },
             reason = peko_tools_core::neutralize_runtime_tags(&record.reason),
             exp = record.expires_at.format("%Y-%m-%d %H:%M UTC"),
             )
@@ -346,6 +402,20 @@ impl PrincipalPolicyGate {
 
 #[async_trait]
 impl PolicyGate for PrincipalPolicyGate {
+    fn same_actor(&self, a: &str, b: &str) -> bool {
+        let Some(manager) = self.principals.upgrade() else {
+            return judge::same_canonical_actor(a, b);
+        };
+        let keys = crate::security::shared_actor_keys(manager.channel_port());
+        match (
+            a.parse::<peko_subject::ActorRef>(),
+            b.parse::<peko_subject::ActorRef>(),
+        ) {
+            (Ok(a), Ok(b)) => keys.same_actor(&a, &b),
+            _ => a == b,
+        }
+    }
+
     async fn review(&self, call: &GatedCall) -> Verdict {
         let Some((manager, principal)) = self.principal(&call.principal_id).await else {
             return Verdict::Deny("the peko is not loaded; nothing can review the call".into());
@@ -381,29 +451,16 @@ impl PolicyGate for PrincipalPolicyGate {
     }
 
     async fn ask_owner(&self, call: &GatedCall, reason: &str) -> Result<String> {
-        let (manager, principal) = self
-            .principal(&call.principal_id)
-            .await
-            .context("principal not loaded")?;
-        // ADR-100 D2: the owner learns where the task was asked for.
-        let reason = if is_owner_task(call) {
-            owner_task_origin(&manager, call).await
-        } else {
-            reason.to_string()
-        };
-        let now = Utc::now();
-        let record = ApprovalRecord {
-            id: format!("apr_{}", &uuid::Uuid::new_v4().simple().to_string()[..12]),
-            call: call.clone(),
-            reason,
-            created_at: now,
-            expires_at: now + chrono::Duration::hours(APPROVAL_TTL_HOURS),
-            status: ApprovalStatus::Pending,
-            digest: call.digest(),
-        };
-        save_record(&approvals_dir(&principal), &record)?;
-        Self::notify_owner(&principal, &record).await;
-        Ok(record.id)
+        self.file_request(call, reason, None).await
+    }
+
+    async fn ask_owner_for(
+        &self,
+        call: &GatedCall,
+        reason: &str,
+        grant: &crate::security::access::Grant,
+    ) -> Result<String> {
+        self.file_request(call, reason, Some(grant.clone())).await
     }
 
     async fn is_approved_replay(&self, call: &GatedCall) -> bool {
@@ -873,6 +930,7 @@ fn hub_claim_record(
         // Waits until decided.
         expires_at: Utc::now() + chrono::Duration::days(1),
         status: ApprovalStatus::Pending,
+        grant: None,
     }
 }
 
@@ -1274,7 +1332,7 @@ pub async fn decide_request_via(
             let record = decide(&dir, id, ApprovalStatus::Approved)?;
             let mut reply = format!("Approved {id}.");
             if always {
-                reply.push_str(&remember_allowance(principal, &record));
+                reply.push_str(&remember_allowance(manager, principal, &record));
             }
             // ADR-100 D5: work someone else has done or is doing meanwhile
             // is not done twice.
@@ -1409,17 +1467,39 @@ fn decide(dir: &Path, id: &str, status: ApprovalStatus) -> Result<ApprovalRecord
     Ok(record)
 }
 
-/// Append the owner's *Always allow* to the actor's `POLICY.md` section.
-fn remember_allowance(principal: &Principal, record: &ApprovalRecord) -> String {
+/// Record the owner's *Always*: for a call their `ACCESS.toml` did not
+/// list (ADR-113 D10), what it would take is added to the actor's section
+/// there; otherwise a rule is appended to the actor's `POLICY.md` section.
+fn remember_allowance(
+    manager: &PrincipalManager,
+    principal: &Principal,
+    record: &ApprovalRecord,
+) -> String {
+    let actor = &record.call.stamp.actor;
+    if let Some(grant) = &record.grant {
+        let keys = crate::security::shared_actor_keys(manager.channel_port());
+        let same_actor = |a: &str, b: &str| match (a.parse::<ActorRef>(), b.parse::<ActorRef>()) {
+            (Ok(a), Ok(b)) => keys.same_actor(&a, &b),
+            _ => a == b,
+        };
+        return match crate::security::access::grant_always(
+            &principal.workspace_path,
+            actor,
+            &same_actor,
+            grant,
+        ) {
+            Ok(()) => format!(
+                " Added {} to {actor}'s section of ACCESS.toml.",
+                grant.describe()
+            ),
+            Err(e) => format!(" ACCESS.toml could not be updated: {e}."),
+        };
+    }
     let path = principal.workspace_path.join(policy::POLICY_FILE);
     let text = std::fs::read_to_string(&path).unwrap_or_default();
-    let updated =
-        policy::Policy::with_allowance(&text, &record.call.stamp.actor, &summarize(&record.call));
+    let updated = policy::Policy::with_allowance(&text, actor, &summarize(&record.call));
     match std::fs::write(&path, updated) {
-        Ok(()) => format!(
-            " Added an always-allow rule for {} to POLICY.md.",
-            record.call.stamp.actor
-        ),
+        Ok(()) => format!(" Added an always-allow rule for {actor} to POLICY.md."),
         Err(e) => format!(" POLICY.md could not be updated: {e}."),
     }
 }
@@ -1626,6 +1706,7 @@ mod tests {
             expires_at: Utc::now(),
             status: ApprovalStatus::Pending,
             digest: String::new(),
+            grant: None,
         };
         assert_eq!(decision_note(&record), None);
         record.status = ApprovalStatus::Approved;
@@ -1682,6 +1763,7 @@ mod tests {
             expires_at: now + chrono::Duration::hours(1),
             status: ApprovalStatus::Pending,
             digest: call().digest(),
+            grant: None,
         };
         save_record(dir.path(), &record).unwrap();
         assert_eq!(pending_records(dir.path()).len(), 1);

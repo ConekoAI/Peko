@@ -29,8 +29,14 @@ struct FakeGate {
     verdict: Verdict,
     approved_replay: bool,
     asked: Mutex<Vec<(GatedCall, String)>>,
+    grants: Mutex<Vec<crate::security::access::Grant>>,
     reviewed: Mutex<usize>,
 }
+
+/// An `ACCESS.toml` like the seeded one, with requests sent to the owner.
+const ASKING: &str =
+    "[visitors]\ntools = [\"Read\", \"Write\", \"Edit\", \"Glob\", \"Grep\", \"Task\"]\n\
+                      read = [\"public\"]\nown = \"contacts/{conversation}/\"\nask_owner = true\n";
 
 impl FakeGate {
     fn new(verdict: Verdict) -> Arc<Self> {
@@ -38,6 +44,7 @@ impl FakeGate {
             verdict,
             approved_replay: false,
             asked: Mutex::default(),
+            grants: Mutex::default(),
             reviewed: Mutex::default(),
         })
     }
@@ -55,6 +62,15 @@ impl PolicyGate for FakeGate {
             .unwrap()
             .push((call.clone(), reason.to_string()));
         Ok("apr_test".into())
+    }
+    async fn ask_owner_for(
+        &self,
+        call: &GatedCall,
+        reason: &str,
+        grant: &crate::security::access::Grant,
+    ) -> anyhow::Result<String> {
+        self.grants.lock().unwrap().push(grant.clone());
+        self.ask_owner(call, reason).await
     }
     async fn is_approved_replay(&self, _call: &GatedCall) -> bool {
         self.approved_replay
@@ -148,6 +164,7 @@ async fn a_trusted_run_cannot_read_the_runtimes_conversation_records() {
 #[tokio::test]
 async fn a_non_owner_write_to_a_protected_file_becomes_a_proposal() {
     let h = ToolHarness::new().await;
+    h.write("ACCESS.toml", ASKING);
     let memory = h.write("kb/MEMORY.md", "original");
     for trust in [Trust::Untrusted, Trust::Trusted] {
         let out = h
@@ -205,11 +222,56 @@ async fn untrusted_runs_cannot_reach_outside_the_workspace() {
         .await;
     assert!(!out.success, "{}", out.display);
 
+    // ADR-113 D4: inside the workspace, only what the owner's
+    // `ACCESS.toml` names (seeded: `public/`) and the conversation's
+    // own folder.
     h.write("notes.md", "inside");
+    h.write("public/faq.md", "shared");
     let out = h
         .call_as(&caller, "Read", json!({"file_path": "notes.md"}))
         .await;
+    assert!(
+        !out.success && out.display.contains("not shared"),
+        "{}",
+        out.display
+    );
+    let out = h
+        .call_as(&caller, "Read", json!({"file_path": "public/faq.md"}))
+        .await;
     assert!(out.success, "{}", out.display);
+    let out = h
+        .call_as(
+            &caller,
+            "Write",
+            json!({"file_path": "public/faq.md", "content": "defaced"}),
+        )
+        .await;
+    assert!(
+        !out.success && out.display.contains("read-only"),
+        "{}",
+        out.display
+    );
+    let own = "contacts/dm_x/notes.md";
+    let out = h
+        .call_as(
+            &caller,
+            "Write",
+            json!({"file_path": own, "content": "likes tea"}),
+        )
+        .await;
+    assert!(out.success, "{}", out.display);
+    let out = h.call_as(&caller, "Read", json!({"file_path": own})).await;
+    assert!(out.success, "{}", out.display);
+    h.write("contacts/dm_y/notes.md", "someone else's");
+    for (tool, params) in [
+        ("Read", json!({"file_path": "contacts/dm_y/notes.md"})),
+        ("Glob", json!({"pattern": "**/*.md", "path": "contacts"})),
+        ("Grep", json!({"pattern": "else", "path": "contacts"})),
+        ("Glob", json!({"pattern": "**/*.md"})),
+    ] {
+        let out = h.call_as(&caller, tool, params).await;
+        assert!(!out.success, "{tool}: {}", out.display);
+    }
     let _ = std::fs::remove_file(outside);
 }
 
@@ -232,15 +294,16 @@ async fn a_call_without_a_stamp_reaches_nothing() {
 async fn the_gate_allows_denies_or_asks_the_owner() {
     let h = ToolHarness::new().await;
     let caller = Caller::acting_for(guest(Trust::Untrusted));
-    h.write("a.md", "a");
-    h.write("b.md", "b");
-    h.write("c.md", "c");
+    h.write("ACCESS.toml", ASKING);
+    h.write("public/a.md", "a");
+    h.write("public/b.md", "b");
+    h.write("public/c.md", "c");
 
     h.tooling
         .dispatcher()
         .set_policy_gate(FakeGate::new(Verdict::Allow));
     let out = h
-        .call_as(&caller, "Read", json!({"file_path": "a.md"}))
+        .call_as(&caller, "Read", json!({"file_path": "public/a.md"}))
         .await;
     assert!(out.success, "{}", out.display);
 
@@ -248,7 +311,7 @@ async fn the_gate_allows_denies_or_asks_the_owner() {
         .dispatcher()
         .set_policy_gate(FakeGate::new(Verdict::Deny("finances".into())));
     let out = h
-        .call_as(&caller, "Read", json!({"file_path": "b.md"}))
+        .call_as(&caller, "Read", json!({"file_path": "public/b.md"}))
         .await;
     assert!(
         !out.success && out.display.contains("finances"),
@@ -259,7 +322,7 @@ async fn the_gate_allows_denies_or_asks_the_owner() {
     let gate = FakeGate::new(Verdict::AskOwner("unclear".into()));
     h.tooling.dispatcher().set_policy_gate(gate.clone());
     let out = h
-        .call_as(&caller, "Read", json!({"file_path": "c.md"}))
+        .call_as(&caller, "Read", json!({"file_path": "public/c.md"}))
         .await;
     assert!(!out.success, "{}", out.display);
     assert_eq!(out.value["pending_approval"], "apr_test");
@@ -286,11 +349,13 @@ async fn the_gate_allows_denies_or_asks_the_owner() {
 #[tokio::test]
 async fn owners_and_exempt_tools_skip_review_and_approved_replays_pass() {
     let h = ToolHarness::new().await;
-    h.write("notes.md", "x");
+    h.write("public/notes.md", "x");
     let gate = FakeGate::new(Verdict::Deny("never".into()));
     h.tooling.dispatcher().set_policy_gate(gate.clone());
 
-    let out = h.call("Read", json!({"file_path": "notes.md"})).await;
+    let out = h
+        .call("Read", json!({"file_path": "public/notes.md"}))
+        .await;
     assert!(
         out.success,
         "owner runs are never reviewed: {}",
@@ -302,6 +367,7 @@ async fn owners_and_exempt_tools_skip_review_and_approved_replays_pass() {
         verdict: Verdict::Deny("never".into()),
         approved_replay: true,
         asked: Mutex::default(),
+        grants: Mutex::default(),
         reviewed: Mutex::default(),
     });
     h.tooling.dispatcher().set_policy_gate(replay.clone());
@@ -313,7 +379,7 @@ async fn owners_and_exempt_tools_skip_review_and_approved_replays_pass() {
         .call_as(
             &Caller::acting_for(stamp),
             "Read",
-            json!({"file_path": h.workspace().join("notes.md")}),
+            json!({"file_path": h.workspace().join("public/notes.md")}),
         )
         .await;
     assert!(out.success, "{}", out.display);
@@ -895,4 +961,294 @@ async fn the_memory_run_has_no_shell() {
         )
         .await;
     assert!(out.success, "{}", out.display);
+}
+
+/// ADR-113 D2: the owner's `ACCESS.toml` decides which tools a visitor's
+/// run sees and may call; a contact section replaces the default.
+#[tokio::test]
+async fn the_access_file_decides_a_visitors_tools() {
+    let h = ToolHarness::new().await;
+    h.tooling
+        .dispatcher()
+        .set_policy_gate(FakeGate::new(Verdict::Allow));
+    h.write(
+        "ACCESS.toml",
+        "[visitors]\ntools = [\"Read\", \"Task\"]\nread = [\"public\"]\n\n\
+         [contact.\"user:hub:vip\"]\ntools = [\"Read\", \"Glob\"]\nread = [\"public\", \"playbooks\"]\n",
+    );
+    h.write("public/faq.md", "shared");
+    h.write("playbooks/refunds.md", "staff only");
+    let principal = PrincipalId(PRINCIPAL.into());
+    let names = |snapshot: peko_engine::tooling::ToolCatalogSnapshot| -> Vec<String> {
+        snapshot.definitions.into_iter().map(|d| d.name).collect()
+    };
+
+    let visitor = guest(Trust::Untrusted);
+    let seen = names(
+        h.tooling
+            .list_tool_definitions(&principal, Some(&visitor))
+            .await,
+    );
+    assert!(seen.contains(&"Read".to_string()), "{seen:?}");
+    assert!(!seen.contains(&"Glob".to_string()), "{seen:?}");
+    assert!(!seen.contains(&"Fetch".to_string()), "{seen:?}");
+    let caller = Caller::acting_for(visitor);
+    let out = h
+        .call_as(
+            &caller,
+            "Glob",
+            json!({"pattern": "*.md", "path": "public"}),
+        )
+        .await;
+    assert!(
+        !out.success && out.display.contains("ACCESS.toml"),
+        "{}",
+        out.display
+    );
+    let out = h
+        .call_as(
+            &caller,
+            "Read",
+            json!({"file_path": "playbooks/refunds.md"}),
+        )
+        .await;
+    assert!(!out.success, "{}", out.display);
+
+    let mut vip = guest(Trust::Untrusted);
+    vip.actor = "user:hub:vip".into();
+    let seen = names(
+        h.tooling
+            .list_tool_definitions(&principal, Some(&vip))
+            .await,
+    );
+    assert!(seen.contains(&"Glob".to_string()), "{seen:?}");
+    assert!(
+        !seen.contains(&"Task".to_string()),
+        "sections do not merge: {seen:?}"
+    );
+    let out = h
+        .call_as(
+            &Caller::acting_for(vip),
+            "Read",
+            json!({"file_path": "playbooks/refunds.md"}),
+        )
+        .await;
+    assert!(out.success, "{}", out.display);
+
+    // The file binds visitors only.
+    let out = h
+        .call("Read", json!({"file_path": "playbooks/refunds.md"}))
+        .await;
+    assert!(out.success, "{}", out.display);
+}
+
+/// ADR-113 D2, D3: a file that grants a floor tool is refused whole, and
+/// visitors drop to the conversation and its own folder.
+#[tokio::test]
+async fn a_refused_access_file_leaves_visitors_the_minimum() {
+    let h = ToolHarness::new().await;
+    h.tooling
+        .dispatcher()
+        .set_policy_gate(FakeGate::new(Verdict::Allow));
+    h.write(
+        "ACCESS.toml",
+        "[visitors]\ntools = [\"Read\", \"Bash\", \"Fetch\"]\nread = [\"public\"]\n",
+    );
+    h.write("public/faq.md", "shared");
+    let caller = Caller::acting_for(guest(Trust::Untrusted));
+    let out = h
+        .call_as(&caller, "Bash", json!({"command": "echo hi"}))
+        .await;
+    assert!(!out.success, "{}", out.display);
+    let out = h
+        .call_as(&caller, "Read", json!({"file_path": "public/faq.md"}))
+        .await;
+    assert!(!out.success, "nothing is shared: {}", out.display);
+    let out = h
+        .call_as(
+            &caller,
+            "Write",
+            json!({"file_path": "contacts/dm_x/notes.md", "content": "ok"}),
+        )
+        .await;
+    assert!(out.success, "{}", out.display);
+}
+
+/// ADR-113 D5: a conversation's own folder holds at most what the file
+/// allows.
+#[tokio::test]
+async fn a_conversations_folder_is_capped() {
+    let h = ToolHarness::new().await;
+    h.tooling
+        .dispatcher()
+        .set_policy_gate(FakeGate::new(Verdict::Allow));
+    h.write(
+        "ACCESS.toml",
+        "[visitors]\ntools = [\"Write\"]\nown = \"contacts/{conversation}/\"\nown_max_bytes = 64\n",
+    );
+    let caller = Caller::acting_for(guest(Trust::Untrusted));
+    let write = |name: &str, bytes: usize| json!({"file_path": format!("contacts/dm_x/{name}"), "content": "x".repeat(bytes)});
+    let out = h.call_as(&caller, "Write", write("a.md", 40)).await;
+    assert!(out.success, "{}", out.display);
+    let out = h.call_as(&caller, "Write", write("b.md", 40)).await;
+    assert!(
+        !out.success && out.display.contains("may hold 64"),
+        "{}",
+        out.display
+    );
+    assert!(!h.workspace().join("contacts/dm_x/b.md").exists());
+}
+
+/// ADR-113 D10: where a visitor's rule says so, a call the file does not
+/// list becomes a request for the owner, naming what listing it would
+/// take; the approved call then runs, and nothing else does.
+#[tokio::test]
+async fn an_unlisted_call_asks_the_owner_where_the_rule_says_so() {
+    use crate::security::access::Grant;
+    let h = ToolHarness::new().await;
+    h.write("ACCESS.toml", ASKING);
+    h.write("playbooks/refunds.md", "staff only");
+    h.write("contacts/dm_y/notes.md", "someone else's");
+    let gate = FakeGate::new(Verdict::Allow);
+    h.tooling.dispatcher().set_policy_gate(gate.clone());
+    let caller = Caller::acting_for(guest(Trust::Untrusted));
+
+    let out = h
+        .call_as(
+            &caller,
+            "Read",
+            json!({"file_path": "playbooks/refunds.md"}),
+        )
+        .await;
+    assert!(!out.success, "{}", out.display);
+    assert_eq!(out.value["pending_approval"], "apr_test", "{}", out.value);
+    let out = h
+        .call_as(&caller, "Fetch", json!({"url": "https://example.com"}))
+        .await;
+    assert_eq!(out.value["pending_approval"], "apr_test", "{}", out.value);
+    assert_eq!(
+        *gate.grants.lock().unwrap(),
+        [
+            Grant::Read("playbooks/refunds.md".into()),
+            Grant::Tool("Fetch".into())
+        ]
+    );
+    assert_eq!(*gate.reviewed.lock().unwrap(), 0, "no reviewer is asked");
+
+    // What no visitor reaches is refused, never asked for.
+    for (tool, params) in [
+        ("Bash", json!({"command": "echo hi"})),
+        ("Read", json!({"file_path": "contacts/dm_y/notes.md"})),
+        ("Read", json!({"file_path": "/etc/hosts"})),
+        ("Glob", json!({"pattern": "**/*"})),
+    ] {
+        let out = h.call_as(&caller, tool, params).await;
+        assert!(
+            !out.success && out.value["pending_approval"].is_null(),
+            "{tool}: {}",
+            out.display
+        );
+    }
+    assert_eq!(gate.asked.lock().unwrap().len(), 2);
+
+    // The approved call replays as the requester and now runs; a replay
+    // still does not reach what no visitor reaches.
+    let replay = Arc::new(FakeGate {
+        verdict: Verdict::Deny("never".into()),
+        approved_replay: true,
+        asked: Mutex::default(),
+        grants: Mutex::default(),
+        reviewed: Mutex::default(),
+    });
+    h.tooling.dispatcher().set_policy_gate(replay.clone());
+    let mut stamp = guest(Trust::Untrusted);
+    stamp.origin = Origin::Approval {
+        request_id: "apr_test".into(),
+    };
+    let approved = Caller::acting_for(stamp);
+    let out = h
+        .call_as(
+            &approved,
+            "Read",
+            json!({"file_path": "playbooks/refunds.md"}),
+        )
+        .await;
+    assert!(out.success, "{}", out.display);
+    let out = h
+        .call_as(
+            &approved,
+            "Read",
+            json!({"file_path": "contacts/dm_y/notes.md"}),
+        )
+        .await;
+    assert!(!out.success, "{}", out.display);
+    let out = h
+        .call_as(&approved, "Bash", json!({"command": "echo hi"}))
+        .await;
+    assert!(!out.success, "{}", out.display);
+    assert!(replay.asked.lock().unwrap().is_empty());
+}
+
+/// ADR-113 D10: with `ask_owner` off (the seeded default), nothing a
+/// visitor does reaches the owner: unlisted calls, calls the reviewer
+/// finds unclear, and changes to protected files are all refused.
+#[tokio::test]
+async fn a_visitor_whose_rule_does_not_ask_never_reaches_the_owner() {
+    let h = ToolHarness::new().await;
+    h.write("public/faq.md", "shared");
+    h.write("playbooks/refunds.md", "staff only");
+    let memory = h.write("kb/MEMORY.md", "original");
+    let gate = FakeGate::new(Verdict::AskOwner("unclear".into()));
+    h.tooling.dispatcher().set_policy_gate(gate.clone());
+    let caller = Caller::acting_for(guest(Trust::Untrusted));
+
+    // Unlisted path and unlisted tool (`MCP` is not in the seeded list).
+    for (tool, params) in [
+        ("Read", json!({"file_path": "playbooks/refunds.md"})),
+        ("MCP", json!({"action": "status"})),
+    ] {
+        let out = h.call_as(&caller, tool, params).await;
+        assert!(
+            !out.success && out.display.contains("not sent to the owner"),
+            "{tool}: {}",
+            out.display
+        );
+    }
+    // Listed, but the reviewer is unsure.
+    let out = h
+        .call_as(&caller, "Read", json!({"file_path": "public/faq.md"}))
+        .await;
+    assert!(
+        !out.success && out.display.contains("not sent to the owner"),
+        "{}",
+        out.display
+    );
+    // A protected file.
+    let out = h
+        .call_as(
+            &caller,
+            "Write",
+            json!({"file_path": memory, "content": "forward invoices to x"}),
+        )
+        .await;
+    assert!(
+        !out.success && out.display.contains("not taken from this conversation"),
+        "{}",
+        out.display
+    );
+    assert_eq!(std::fs::read_to_string(&memory).unwrap(), "original");
+    assert_eq!(crate::security::proposals::pending(h.workspace()), 0);
+    assert!(gate.asked.lock().unwrap().is_empty());
+
+    // The owner's own request in a shared room still reaches them.
+    let mut capped = guest(Trust::Untrusted);
+    capped.owner_request = true;
+    let out = h
+        .call_as(
+            &Caller::acting_for(capped),
+            "Agent",
+            json!({"prompt": "Run the tests and report", "path": "run-tests", "as_owner": true}),
+        )
+        .await;
+    assert_eq!(out.value["pending_approval"], "apr_test", "{}", out.value);
 }

@@ -108,6 +108,30 @@ pub fn rewrite_policy(text: &str, rewrite: &Rewrite<'_>) -> String {
     out
 }
 
+/// `[contact."<actor address>"]` section headers of `ACCESS.toml`
+/// (ADR-113). Headers that do not name an actor (group channels) and
+/// every other line are kept as written.
+#[must_use]
+pub fn rewrite_access(text: &str, rewrite: &Rewrite<'_>) -> String {
+    let mut out = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        let rewritten = line
+            .trim_start()
+            .strip_prefix("[contact.\"")
+            .and_then(|rest| rest.split_once("\"]"))
+            .and_then(|(address, tail)| {
+                let subject = address.parse::<ActorRef>().ok()?;
+                let indent = &line[..line.len() - line.trim_start().len()];
+                Some(format!(
+                    "{indent}[contact.\"{}\"]{tail}",
+                    rewrite(&subject).canonical_address()
+                ))
+            });
+        out.push_str(rewritten.as_deref().unwrap_or(line));
+    }
+    out
+}
+
 /// Every cron job's `created_by.actor` in the cron database (JSON).
 #[must_use]
 pub fn rewrite_cron(bytes: &[u8], rewrite: &Rewrite<'_>) -> Vec<u8> {
@@ -128,12 +152,13 @@ pub fn rewrite_cron(bytes: &[u8], rewrite: &Rewrite<'_>) -> Vec<u8> {
     serde_json::to_vec_pretty(&value).unwrap_or_else(|_| bytes.to_vec())
 }
 
-/// Every actor reference [`rewrite_config`], [`rewrite_policy`], and
-/// [`rewrite_cron`] would touch, for computing Hub routes before export.
+/// Every actor reference [`rewrite_config`], [`rewrite_policy`],
+/// [`rewrite_access`], and [`rewrite_cron`] would touch, for computing Hub routes before export.
 #[must_use]
 pub fn referenced_actors(
     config: &PrincipalConfig,
     policy: Option<&str>,
+    access: Option<&str>,
     cron: Option<&[u8]>,
 ) -> Vec<ActorRef> {
     let seen = std::sync::Mutex::new(vec![config.owner.clone()]);
@@ -149,6 +174,9 @@ pub fn referenced_actors(
     };
     if let Some(policy) = policy {
         let _ = rewrite_policy(policy, &collect);
+    }
+    if let Some(access) = access {
+        let _ = rewrite_access(access, &collect);
     }
     if let Some(cron) = cron {
         let _ = rewrite_cron(cron, &collect);
@@ -260,7 +288,22 @@ mod tests {
         );
         assert!(out.contains("## grp_team\n"), "{out}");
         assert!(out.contains("## user:hub:alice\n"), "{out}");
+
         assert!(out.contains("# Defaults\n- be nice\n"), "{out}");
+
+        // ADR-113: `ACCESS.toml` contact sections travel the same way.
+        let access = "[visitors]\ntools = [\"Read\"]\n\n[contact.\"principal:local:prin_x\"] # Bob\nread = [\"a\"]\n\n[contact.\"chan_team\"]\n[contact.\"user:hub:alice\"]\n";
+        let moved = rewrite_access(access, &rule);
+        assert!(
+            moved.contains("[contact.\"principal:local:prin_x@did:key:zSource\"] # Bob\n"),
+            "{moved}"
+        );
+        assert!(moved.contains("[contact.\"chan_team\"]\n"), "{moved}");
+        assert!(moved.contains("[contact.\"user:hub:alice\"]\n"), "{moved}");
+        assert!(
+            moved.starts_with("[visitors]\ntools = [\"Read\"]\n"),
+            "{moved}"
+        );
 
         let cron = serde_json::json!({"jobs": [
             {"id": "a", "created_by": {"actor": "user:local:local", "trust": "owner"}},

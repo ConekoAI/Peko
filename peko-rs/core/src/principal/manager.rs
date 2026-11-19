@@ -3050,6 +3050,93 @@ mod tests {
         );
     }
 
+    /// ADR-113 D10: a request for something `ACCESS.toml` does not list
+    /// carries what listing it would take; *always* adds that to the
+    /// actor's section there (not to POLICY.md), and one conversation can
+    /// leave only so many requests waiting.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn an_access_request_is_capped_and_always_lands_in_the_access_file() {
+        use crate::principal::policy_gate::{
+            decide_request, pending_requests, Decision, PrincipalPolicyGate,
+            MAX_PENDING_PER_CONVERSATION,
+        };
+        use crate::security::access::{Access, Grant, ACCESS_FILE};
+        use crate::security::judge::{GatedCall, PolicyGate};
+        use peko_tools_core::{ActingFor, Compartment, Origin, Trust};
+        let (_temp, manager, _adapter, id) = setup().await;
+        let principal = manager.get(id.clone()).await.unwrap();
+        let gate = PrincipalPolicyGate::new(Arc::downgrade(&manager));
+        let call = |channel: &str, file: &str| GatedCall {
+            call_id: None,
+            principal_id: id.0.clone(),
+            principal_name: None,
+            session_id: Some("guest-session".into()),
+            agent_id: None,
+            workspace: None,
+            stamp: ActingFor {
+                actor: "user:hub:x".into(),
+                name: None,
+                trust: Trust::Untrusted,
+                compartment: Compartment::Conversation {
+                    channel: channel.into(),
+                },
+                origin: Origin::Ingress { channel: None },
+                owner_request: false,
+            },
+            tool_name: "Read".into(),
+            params: serde_json::json!({"file_path": file}),
+        };
+        let grant = Grant::Read("playbooks".into());
+
+        let first = gate
+            .ask_owner_for(&call("dm_x", "playbooks/a.md"), "not listed", &grant)
+            .await
+            .unwrap();
+        assert_eq!(pending_requests(&principal)[0].grant, Some(grant.clone()));
+
+        // The cap is per conversation.
+        for n in 1..MAX_PENDING_PER_CONVERSATION {
+            gate.ask_owner(&call("dm_x", &format!("playbooks/{n}.md")), "unclear")
+                .await
+                .unwrap();
+        }
+        let over = gate
+            .ask_owner_for(&call("dm_x", "playbooks/z.md"), "not listed", &grant)
+            .await
+            .expect_err("the conversation's requests are full");
+        assert!(over.to_string().contains("already wait"), "{over}");
+        gate.ask_owner(&call("dm_y", "playbooks/a.md"), "unclear")
+            .await
+            .expect("another conversation is not affected");
+
+        let approved = decide_request(
+            &manager,
+            &principal,
+            &first,
+            Decision::Approve { always: true },
+        )
+        .await
+        .unwrap();
+        assert!(approved.contains("ACCESS.toml"), "{approved}");
+        let access = Access::load(&principal.workspace_path);
+        assert!(access.error.is_none(), "{:?}", access.error);
+        let rule = access.rule_for("user:hub:x", &|a: &str, b: &str| a == b);
+        assert!(rule.read.iter().any(|p| p == "playbooks"), "{rule:?}");
+        assert!(
+            !access.visitors.read.iter().any(|p| p == "playbooks"),
+            "only that actor's section changes"
+        );
+        assert!(principal.workspace_path.join(ACCESS_FILE).is_file());
+        let policy =
+            std::fs::read_to_string(principal.workspace_path.join("POLICY.md")).unwrap_or_default();
+        assert!(!policy.contains("Always allowed"), "{policy}");
+        // A decided request frees a place.
+        gate.ask_owner(&call("dm_x", "playbooks/z.md"), "unclear")
+            .await
+            .unwrap();
+    }
+
     /// ADR-078 D7: the reviewer reads the policy model's verdict, and the
     /// owner lists, denies, and approves requests (IPC `approval_*`) —
     /// each decided once, with *always* recorded in POLICY.md.

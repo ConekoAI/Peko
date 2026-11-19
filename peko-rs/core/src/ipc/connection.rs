@@ -559,6 +559,7 @@ mod tests {
             message: message.clone(),
             override_model: None,
             attachments: Vec::new(),
+            send_as: None,
         };
         let bytes = packet.to_bytes().unwrap();
         assert!(bytes.len() > 2048 && bytes.len() <= peko_protocol::ipc::MAX_PACKET_SIZE);

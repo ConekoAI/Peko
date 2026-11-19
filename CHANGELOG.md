@@ -4,6 +4,46 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Security
+
+- **You decide what visitors reach, in one file (ADR-113).** Each peko now
+  has an `ACCESS.toml`. It lists the tools, MCP servers and files that anyone
+  you have not marked `trusted` can use through the peko, with a section per
+  person or group that should get something different. Nothing is reachable
+  unless it is listed, and the check runs on every call with no model
+  involved. Whatever the file says, a visitor never gets `Bash` or `Plan`.
+  - **Breaking:** a visitor's conversation used to read any file in the
+    peko's workspace. It now reads only `public/`, `kb/CONVENTIONS.md` and
+    its own folder until you list more. `kb/MEMORY.md` and `kb/index.md` are
+    also left out of a visitor's prompt unless you list them.
+  - `untrusted_ok` in an MCP server's `server.json` is no longer read.
+    Servers that had it are listed in `ACCESS.toml` when it is first written.
+  - A file that does not parse, or that lists `Bash` or `Plan`, is refused
+    whole. Visitors then get only their conversation and its folder, and the
+    peko tells you why.
+- **You choose whose requests reach you (`ask_owner`).** Each section of
+  `ACCESS.toml` says whether that visitor's requests come to you or are
+  refused. Turned on, a call the section does not list becomes an approval
+  request, and **Always** adds the tool, server or path to that person's
+  section. At most 5 requests per conversation wait at once.
+  - **Breaking:** it is off by default. A visitor's unclear call and a
+    visitor's change to a protected file used to come to you as an approval
+    request or a proposal; they are now refused unless that visitor's section
+    sets `ask_owner = true`. Tasks you hand yourself from a shared
+    conversation are not affected.
+- **Each conversation has a folder of its own** (`contacts/<conversation>/`).
+  Only that conversation can read and write it, so a peko can keep notes on
+  one person without another person's conversation reading them. Its
+  `notes.md` is shown to the peko on every turn there.
+
+### Added
+
+- **`peko send <peko> --as visitor:<id> [--name <name>]`** sends a message as
+  a visitor, for a script that relays messages from a chat service, email or
+  a web form. The peko answers in that visitor's own conversation, with a
+  visitor's limits. Only the peko's owner can use it.
+- Snapshots carry `ACCESS.toml`.
+
 ## [0.2.0] - 2026-11-18
 
 ### Security

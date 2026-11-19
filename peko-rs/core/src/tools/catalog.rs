@@ -345,13 +345,15 @@ impl ToolCatalog {
         }
     }
 
-    /// `snapshot` without the tools the ADR-078 floor refuses `stamp`.
+    /// `snapshot` without the tools the ADR-078 floor refuses `stamp`, or
+    /// the owner's `ACCESS.toml` does not list for it (`reach`, ADR-113).
     /// The binding keeps every entry; only the wire definitions narrow.
     #[must_use]
     pub(crate) fn narrow_for(
         &self,
         mut snapshot: peko_engine::tooling::ToolCatalogSnapshot,
         stamp: &peko_tools_core::ActingFor,
+        reach: Option<&crate::security::access::Reach>,
     ) -> peko_engine::tooling::ToolCatalogSnapshot {
         if stamp.is_owner() {
             return snapshot;
@@ -368,12 +370,10 @@ impl ToolCatalog {
             .iter()
             .filter(|(name, entry)| {
                 let mcp = match &entry.metadata.source {
-                    crate::tools::metadata::ToolSource::Mcp { untrusted_ok, .. } => {
-                        Some(*untrusted_ok)
-                    }
+                    crate::tools::metadata::ToolSource::Mcp { server, .. } => Some(server.as_str()),
                     crate::tools::metadata::ToolSource::BuiltIn => None,
                 };
-                crate::security::floor::tool_refusal(stamp, name, mcp).is_some()
+                crate::security::floor::tool_refusal(stamp, name, mcp, reach).is_some()
             })
             .map(|(name, _)| name.clone())
             .collect();

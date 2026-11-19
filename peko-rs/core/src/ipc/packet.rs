@@ -32,6 +32,18 @@ pub struct AuthenticatedRequest {
     pub packet: RequestPacket,
 }
 
+/// A visitor a local caller sends for (ADR-113 D7): a bridge relaying a
+/// customer's message from a chat service, email, or a web form.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SendAs {
+    /// `visitor:<id>` (or `visitor:local:<id>`): who the message is
+    /// from, as the bridge knows them.
+    pub actor: String,
+    /// Their display name, when the bridge has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
 /// Request sent from CLI → Daemon
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -529,6 +541,11 @@ pub enum RequestPacket {
         /// them itself, so only the local operator may attach.
         #[serde(default)]
         attachments: Vec<String>,
+        /// ADR-113 D7: the visitor this message is from, vouched for by
+        /// a caller with the owner's authority. Absent for the caller's
+        /// own message.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        send_as: Option<SendAs>,
     },
 
     /// Streaming principal send. The daemon emits a sequence of
@@ -550,6 +567,11 @@ pub enum RequestPacket {
         /// them itself, so only the local operator may attach.
         #[serde(default)]
         attachments: Vec<String>,
+        /// ADR-113 D7: the visitor this message is from, vouched for by
+        /// a caller with the owner's authority. Absent for the caller's
+        /// own message.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        send_as: Option<SendAs>,
     },
 
     /// Soft-stop the run bound to a (principal, peer) thread.
@@ -3614,6 +3636,7 @@ mod tests {
             message: "Hello".to_string(),
             override_model: Some("gpt-4o".to_string()),
             attachments: Vec::new(),
+            send_as: None,
         };
 
         let bytes = req.to_bytes().unwrap();
@@ -5442,6 +5465,7 @@ mod tests {
             message: "hello".to_string(),
             override_model: Some("gpt-4o".to_string()),
             attachments: Vec::new(),
+            send_as: None,
         };
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
@@ -5473,6 +5497,7 @@ mod tests {
             message: "stream please".to_string(),
             override_model: Some("claude-haiku-4-5".to_string()),
             attachments: Vec::new(),
+            send_as: None,
         };
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
@@ -5979,6 +6004,7 @@ mod tests {
             message: "m".to_string(),
             override_model: None,
             attachments: Vec::new(),
+            send_as: None,
         };
         assert_eq!(req_send.request_id(), 1);
 

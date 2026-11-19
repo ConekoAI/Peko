@@ -403,6 +403,12 @@ Options:
       --model <MODEL_ID>
           Override the configured model for this message only
 
+      --as <VISITOR>
+          Send the message as a visitor instead of yourself, for a script that relays someone's message from a chat service, email, or a web form: `--as visitor:<id>`, where the id is what you know them by (a phone number, an email address). The peko answers them as a visitor, in their own conversation. Only the peko's owner may
+
+      --name <NAME>
+          The visitor's display name (with --as)
+
       --attach <PATH>
           Attach a file (repeatable, up to 8, 20 MB each). The peko keeps a copy in its workspace; a vision model also sees images
 ```

@@ -144,13 +144,19 @@ Up to 8 files per call, each up to 20 MB — or, when someone in the conversatio
             })?;
         let remote = attachments::crosses_runtimes(self.port.as_ref(), &channel).await?;
 
-        // ADR-078: the same reach as `Read` — untrusted runs stay inside
-        // the workspace, and no non-owner run reads another principal's.
+        // ADR-078, ADR-113: the same reach as `Read` — an untrusted run
+        // sends only what the owner's `ACCESS.toml` lets it read, and no
+        // non-owner run reads another principal's workspace.
+        let keys = crate::security::actor_keys(Some(self.port.as_ref()));
+        let reach = crate::security::access::reach_by_keys(&workspace, &stamp, &*keys);
         let mut paths = Vec::with_capacity(raw_paths.len());
         for raw in &raw_paths {
             let path = resolve(raw, &workspace);
-            if let PathDecision::Deny(reason) = check_path(&stamp, Some(&workspace), &path, false) {
-                anyhow::bail!("Attach: {reason}");
+            match check_path(&stamp, Some(&workspace), &path, false, reach.as_ref()) {
+                PathDecision::Deny(reason) | PathDecision::Unlisted { reason, .. } => {
+                    anyhow::bail!("Attach: {reason}")
+                }
+                PathDecision::Allow | PathDecision::Propose { .. } => {}
             }
             paths.push(path.display().to_string());
         }
@@ -292,15 +298,17 @@ mod tests {
         assert!(!h.workspace().join("attachments").exists());
     }
 
-    /// Past review, an untrusted run still sends only workspace files.
+    /// Past review, an untrusted run still sends only files the owner's
+    /// `ACCESS.toml` lets it read (ADR-113 D4).
     #[tokio::test]
-    async fn untrusted_runs_send_only_workspace_files() {
+    async fn untrusted_runs_send_only_files_they_may_read() {
         let h = ToolHarness::new().await;
         let channel = h.channel(PRINCIPAL, "chat").await;
         let outside = tempfile::tempdir().unwrap();
         let secret = outside.path().join("secret.txt");
         std::fs::write(&secret, "s").unwrap();
-        h.write("inside.txt", "fine");
+        h.write("inside.txt", "the owner's");
+        h.write("public/price-list.txt", "fine");
 
         let tool = super::AttachTool::new(h.channels.clone());
         let ctx = peko_tools_core::ToolContext::default_for_tool("Attach")
@@ -322,9 +330,23 @@ mod tests {
         );
         assert!(!h.workspace().join("attachments").exists());
 
-        peko_tools_core::Tool::execute_with_context(&tool, json!({"paths": ["inside.txt"]}), &ctx)
-            .await
-            .unwrap();
+        let unshared = peko_tools_core::Tool::execute_with_context(
+            &tool,
+            json!({"paths": ["inside.txt"]}),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+        assert!(unshared.to_string().contains("not shared"), "{unshared}");
+        assert!(!h.workspace().join("attachments").exists());
+
+        peko_tools_core::Tool::execute_with_context(
+            &tool,
+            json!({"paths": ["public/price-list.txt"]}),
+            &ctx,
+        )
+        .await
+        .unwrap();
         assert!(h.workspace().join("attachments").exists());
     }
 

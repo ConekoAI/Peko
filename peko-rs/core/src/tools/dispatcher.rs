@@ -150,6 +150,82 @@ impl ToolDispatcher {
         }
     }
 
+    /// What the owner's `ACCESS.toml` gives `stamp` (ADR-113). `None`
+    /// for a run the file does not bind (owner and trusted runs); an
+    /// untrusted run without a workspace reaches nothing shared.
+    pub(crate) fn visitor_reach(
+        &self,
+        workspace: Option<&std::path::Path>,
+        stamp: &peko_tools_core::ActingFor,
+    ) -> Option<crate::security::access::Reach> {
+        if !stamp.is_untrusted() {
+            return None;
+        }
+        let Some(workspace) = workspace else {
+            return Some(crate::security::access::Reach::none());
+        };
+        let gate = self.policy_gate();
+        let same_actor = |a: &str, b: &str| match &gate {
+            Some(gate) => gate.same_actor(a, b),
+            None => crate::security::judge::same_canonical_actor(a, b),
+        };
+        Some(crate::security::access::Access::load(workspace).for_stamp(stamp, &same_actor))
+    }
+
+    /// [`Self::visitor_reach`] for `principal`'s bound workspace.
+    pub(crate) fn visitor_reach_for(
+        &self,
+        principal: &peko_subject::PrincipalId,
+        stamp: &peko_tools_core::ActingFor,
+    ) -> Option<crate::security::access::Reach> {
+        self.visitor_reach(self.workspace_for(principal).as_deref(), stamp)
+    }
+
+    /// What to do with a call the owner's `ACCESS.toml` does not list for
+    /// this visitor (ADR-113 D10). `None`: the owner approved this very
+    /// call, and it goes on. Otherwise the refusal, or — when the
+    /// visitor's rule says so — the request filed for the owner.
+    async fn unlisted(
+        &self,
+        call: &ToolCallSpec,
+        stamp: &peko_tools_core::ActingFor,
+        gated: &crate::security::judge::GatedCall,
+        reach: Option<&crate::security::access::Reach>,
+        reason: &str,
+        grant: &crate::security::access::Grant,
+    ) -> Option<Dispatched> {
+        let gate = self.policy_gate();
+        if let Some(gate) = &gate {
+            if gate.is_approved_replay(gated).await {
+                return None;
+            }
+        }
+        let reason = reason.trim_end_matches('.');
+        match gate.filter(|_| reach.is_some_and(|reach| reach.rule.ask_owner)) {
+            Some(gate) => {
+                let why = format!(
+                    "their rule in ACCESS.toml does not include {}",
+                    grant.describe()
+                );
+                Some(awaiting_owner(
+                    gate.ask_owner_for(gated, &why, grant).await,
+                    &why,
+                ))
+            }
+            None => {
+                let reason = format!(
+                    "{reason}. This conversation's requests are not sent to the owner: say \
+                     you cannot do this here."
+                );
+                self.emit_floor_denial(call, stamp, &reason).await;
+                Some(Dispatched::refused(
+                    format!("Error: {reason}"),
+                    Outcome::FloorDenied,
+                ))
+            }
+        }
+    }
+
     /// Bind the ADR-078 D7 policy gate.
     pub fn set_policy_gate(&self, gate: Arc<dyn crate::security::judge::PolicyGate>) {
         *self.policy_gate.write().expect("policy gate lock poisoned") = Some(gate);
@@ -618,20 +694,19 @@ impl ToolDispatcher {
             .acting_for
             .clone()
             .unwrap_or_else(peko_tools_core::ActingFor::unattributed);
-        let mcp_untrusted_ok = match &metadata.source {
-            crate::tools::metadata::ToolSource::Mcp { untrusted_ok, .. } => Some(*untrusted_ok),
+        let mcp_server = match &metadata.source {
+            crate::tools::metadata::ToolSource::Mcp { server, .. } => Some(server.as_str()),
             crate::tools::metadata::ToolSource::BuiltIn => None,
         };
-        if let Some(reason) = crate::security::floor::tool_refusal(
-            &stamp,
-            &tool_name,
-            mcp_untrusted_ok,
-        )
-        .or_else(|| {
-            crate::security::floor::action_refusal(&stamp, &tool_name, &call.params).or_else(|| {
+        // ADR-113: what the owner's `ACCESS.toml` gives this visitor.
+        let principal_workspace = caller_principal.and_then(|_| self.workspace_for(&principal_id));
+        let reach = self.visitor_reach(principal_workspace.as_deref(), &stamp);
+        if let Some(reason) = crate::security::floor::floor_tool_refusal(&stamp, &tool_name)
+            .or_else(|| crate::security::floor::action_refusal(&stamp, &tool_name, &call.params))
+            .or_else(|| {
                 crate::security::floor::owner_task_refusal(&stamp, &tool_name, &call.params)
             })
-        }) {
+        {
             self.emit_floor_denial(call, &stamp, &reason).await;
             let text = format!("Error: {reason}");
             return Ok(Dispatched::refused(text, Outcome::FloorDenied));
@@ -641,7 +716,6 @@ impl ToolDispatcher {
         // workspace on the call, relative paths and the default directory
         // of the file tools and Bash are the principal workspace, not the
         // runtime-wide `<data>/workspaces` every principal used to share.
-        let principal_workspace = caller_principal.and_then(|_| self.workspace_for(&principal_id));
         let call_workspace: Option<String> = call
             .workspace
             .clone()
@@ -651,6 +725,42 @@ impl ToolDispatcher {
                     .as_ref()
                     .map(|w| w.to_string_lossy().into_owned())
             });
+
+        let mut params = call.params.clone();
+        apply_workspace_injection(&mut params, &tool_name, call_workspace.as_deref());
+        let workspace = principal_workspace;
+        if !stamp.is_owner() {
+            // The file tools default to a runtime-wide directory; a
+            // non-owner run's relative paths are its workspace's instead.
+            confine_relative_paths(&mut params, &tool_name, workspace.as_deref());
+        }
+        // The call as the reviewer and the owner see it: an approval is
+        // bound to exactly these arguments.
+        let gated = crate::security::judge::GatedCall {
+            principal_id: principal_id.0.clone(),
+            principal_name: call.principal_name.clone(),
+            session_id: call.session_id.clone(),
+            agent_id: call.agent_id.clone(),
+            workspace: call.workspace.clone(),
+            stamp: stamp.clone(),
+            tool_name: tool_name.clone(),
+            params: params.clone(),
+            call_id: Some(call_id.to_string()),
+        };
+
+        // ADR-113 D2: a visitor's run gets only the tools and MCP servers
+        // the owner's `ACCESS.toml` lists, unless the owner approved this
+        // very call.
+        if let Some((reason, grant)) =
+            crate::security::floor::unlisted_tool(&stamp, &tool_name, mcp_server, reach.as_ref())
+        {
+            if let Some(refused) = self
+                .unlisted(call, &stamp, &gated, reach.as_ref(), &reason, &grant)
+                .await
+            {
+                return Ok(refused);
+            }
+        }
 
         // 4. Build the ToolContext once so the cancel watcher and the
         //    exec closure share the same abort receiver / identity
@@ -738,17 +848,8 @@ impl ToolDispatcher {
         .with_principal_id(caller_principal.map(str::to_string))
         .with_executor(principal_async.map(|bound| bound.executor));
 
-        let mut params = call.params.clone();
-        apply_workspace_injection(&mut params, &tool_name, call_workspace.as_deref());
-
         // ADR-078 path floor: confinement, the cross-principal boundary,
         // and protected files (a non-owner's write becomes a proposal).
-        let workspace = principal_workspace;
-        if !stamp.is_owner() {
-            // The file tools default to a runtime-wide directory; a
-            // non-owner run's relative paths are its workspace's instead.
-            confine_relative_paths(&mut params, &tool_name, workspace.as_deref());
-        }
         if let Some((target, write)) = crate::security::floor::file_tool_target(&tool_name, &params)
         {
             if !stamp.is_owner()
@@ -778,8 +879,66 @@ impl ToolDispatcher {
                     return Ok(Dispatched::refused(text, Outcome::FloorDenied));
                 }
             }
-            match crate::security::floor::check_path(&stamp, workspace.as_deref(), &target, write) {
-                crate::security::floor::PathDecision::Allow => {}
+            let mut decision = crate::security::floor::check_path(
+                &stamp,
+                workspace.as_deref(),
+                &target,
+                write,
+                reach.as_ref(),
+            );
+            // ADR-113 D4, D10: a path the owner's file does not list is
+            // refused or put to the owner; one they approved is checked
+            // again as if it were listed.
+            if let crate::security::floor::PathDecision::Unlisted { reason, grant } = &decision {
+                if let Some(refused) = self
+                    .unlisted(call, &stamp, &gated, reach.as_ref(), reason, grant)
+                    .await
+                {
+                    return Ok(refused);
+                }
+                let granted = reach.as_ref().map(|reach| reach.with_grant(grant));
+                decision = crate::security::floor::check_path(
+                    &stamp,
+                    workspace.as_deref(),
+                    &target,
+                    write,
+                    granted.as_ref(),
+                );
+            }
+            let asks_owner = reach.as_ref().is_none_or(|reach| reach.rule.ask_owner);
+            match decision {
+                crate::security::floor::PathDecision::Unlisted { reason, .. } => {
+                    self.emit_floor_denial(call, &stamp, &reason).await;
+                    let text = format!("Error: {reason}");
+                    return Ok(Dispatched::refused(text, Outcome::FloorDenied));
+                }
+                crate::security::floor::PathDecision::Propose { relative } if !asks_owner => {
+                    let reason = format!(
+                        "`{relative}` is protected: only the owner writes it, and changes to \
+                         it are not taken from this conversation. Say you cannot change it here."
+                    );
+                    self.emit_floor_denial(call, &stamp, &reason).await;
+                    let text = format!("Error: {reason}");
+                    return Ok(Dispatched::refused(text, Outcome::FloorDenied));
+                }
+                crate::security::floor::PathDecision::Allow => {
+                    // ADR-113 D5: a conversation's own folder is capped.
+                    if let Some(reason) = write
+                        .then(|| {
+                            own_folder_overflow(
+                                reach.as_ref(),
+                                workspace.as_deref(),
+                                &target,
+                                &params,
+                            )
+                        })
+                        .flatten()
+                    {
+                        self.emit_floor_denial(call, &stamp, &reason).await;
+                        let text = format!("Error: {reason}");
+                        return Ok(Dispatched::refused(text, Outcome::FloorDenied));
+                    }
+                }
                 crate::security::floor::PathDecision::Deny(reason) => {
                     self.emit_floor_denial(call, &stamp, &reason).await;
                     let text = format!("Error: {reason}");
@@ -847,18 +1006,7 @@ impl ToolDispatcher {
         if owner_decides.is_some()
             || crate::security::judge::needs_review(&stamp, &tool_name, &params)
         {
-            use crate::security::judge::{GatedCall, Verdict};
-            let gated = GatedCall {
-                principal_id: principal_id.0.clone(),
-                principal_name: call.principal_name.clone(),
-                session_id: call.session_id.clone(),
-                agent_id: call.agent_id.clone(),
-                workspace: call.workspace.clone(),
-                stamp: stamp.clone(),
-                tool_name: tool_name.clone(),
-                params: params.clone(),
-                call_id: Some(call_id.to_string()),
-            };
+            use crate::security::judge::Verdict;
             let verdict = match owner_decides {
                 Some(reason) => match self.policy_gate() {
                     Some(gate) if gate.is_approved_replay(&gated).await => Verdict::Allow,
@@ -874,46 +1022,27 @@ impl ToolDispatcher {
                     let text = format!("Error: {reason}");
                     return Ok(Dispatched::refused(text, Outcome::PolicyDenied));
                 }
+                // ADR-113 D10: a visitor whose rule sends nothing to the
+                // owner is refused what the reviewer finds unclear.
+                Verdict::AskOwner(reason)
+                    if owner_decides.is_none()
+                        && reach.as_ref().is_some_and(|reach| !reach.rule.ask_owner) =>
+                {
+                    let reason = format!(
+                        "the owner's policy does not clearly allow it ({reason}), and this \
+                         conversation's requests are not sent to the owner. Say you cannot do \
+                         this here."
+                    );
+                    self.emit_floor_denial(call, &stamp, &reason).await;
+                    let text = format!("Error: {reason}");
+                    return Ok(Dispatched::refused(text, Outcome::PolicyDenied));
+                }
                 Verdict::AskOwner(reason) => {
                     let filed = match self.policy_gate() {
                         Some(gate) => gate.ask_owner(&gated, &reason).await,
                         None => Err(anyhow::anyhow!("no policy reviewer is configured")),
                     };
-                    let (text, json, outcome) = match filed {
-                        Ok(id) => {
-                            // The owner sees the request on their computer;
-                            // a group already sees a board item's state. A
-                            // post that only repeats either is noise
-                            // (2026-11-09 field test).
-                            let text = format!(
-                                "Waiting for the owner's approval ({id}): {reason}. Nothing was \
-                                 done yet. The owner is shown this request on their computer, so \
-                                 don't announce it to them. If a board item covers this work, \
-                                 mark it blocked on this approval and post nothing about it: \
-                                 reply NO_REPLY unless something else needs saying. Otherwise say \
-                                 in one line that it waits for the owner. If the owner approves, \
-                                 the result arrives in this conversation as a completed task."
-                            );
-                            let json = serde_json::json!({
-                                "pending_approval": id,
-                                "reason": reason,
-                                "message": text,
-                            });
-                            (text, json, Outcome::AwaitingOwner)
-                        }
-                        Err(e) => {
-                            let text = format!(
-                                "Error: the owner must approve this, but asking failed: {e:#}"
-                            );
-                            (text.clone(), Value::String(text), Outcome::Error)
-                        }
-                    };
-                    return Ok(Dispatched {
-                        text,
-                        json,
-                        success: false,
-                        outcome,
-                    });
+                    return Ok(awaiting_owner(filed, &reason));
                 }
             }
         }
@@ -1447,6 +1576,72 @@ fn confine_relative_paths(
         key.to_string(),
         Value::String(anchored.to_string_lossy().into_owned()),
     );
+}
+
+/// What a run is told when its call waits for the owner (`filed` is the
+/// request's id), or when asking failed.
+fn awaiting_owner(filed: anyhow::Result<String>, reason: &str) -> Dispatched {
+    let (text, json, outcome) = match filed {
+        Ok(id) => {
+            // The owner sees the request on their computer; a group
+            // already sees a board item's state. A post that only repeats
+            // either is noise (2026-11-09 field test).
+            let text = format!(
+                "Waiting for the owner's approval ({id}): {reason}. Nothing was done yet. The \
+                 owner is shown this request on their computer, so don't announce it to them. \
+                 If a board item covers this work, mark it blocked on this approval and post \
+                 nothing about it: reply NO_REPLY unless something else needs saying. \
+                 Otherwise say in one line that it waits for the owner. If the owner approves, \
+                 the result arrives in this conversation as a completed task."
+            );
+            let json = serde_json::json!({
+                "pending_approval": id,
+                "reason": reason,
+                "message": text,
+            });
+            (text, json, Outcome::AwaitingOwner)
+        }
+        Err(e) => {
+            let text = format!("Error: the owner must approve this, but asking failed: {e:#}");
+            (text.clone(), Value::String(text), Outcome::Error)
+        }
+    };
+    Dispatched {
+        text,
+        json,
+        success: false,
+        outcome,
+    }
+}
+
+/// Why a write to `target` would overfill the conversation's own folder
+/// (ADR-113 D5), if it would. Counts what the call adds: a `Write`'s
+/// content or an `Edit`'s replacement.
+fn own_folder_overflow(
+    reach: Option<&crate::security::access::Reach>,
+    workspace: Option<&std::path::Path>,
+    target: &std::path::Path,
+    params: &Value,
+) -> Option<String> {
+    let (reach, workspace) = (reach?, workspace?);
+    let workspace = crate::security::floor::resolve(workspace);
+    let own = crate::security::access::own_path(&workspace, reach)?;
+    if !crate::security::floor::resolve(target).starts_with(&own) {
+        return None;
+    }
+    let adding = ["content", "new_string"]
+        .iter()
+        .filter_map(|key| params.get(*key).and_then(Value::as_str))
+        .map(|text| text.len() as u64)
+        .sum::<u64>();
+    let held = crate::security::access::dir_size(&own);
+    let cap = reach.rule.own_max_bytes;
+    (held.saturating_add(adding) > cap).then(|| {
+        format!(
+            "this conversation's folder holds {held} bytes and may hold {cap}; this write \
+             adds {adding}. Shorten or remove something there first, or tell the owner."
+        )
+    })
 }
 
 /// Inject the caller's workspace into filesystem-tool params.

@@ -69,6 +69,10 @@ pub const HOT_KB_MEMORY_FLOOR_BYTES: usize = HOT_KB_BUDGET_BYTES - 4 * HOT_KB_SE
 /// applies to its whole instruction hierarchy.
 pub const PROJECT_INSTRUCTIONS_MAX_BYTES: usize = 32 * 1024;
 
+/// First line of a `kb_scope` prompt section that restricts the hot set
+/// ([`HotKb::restricted_to`]).
+pub const KB_SCOPE_RESTRICTED: &str = "restricted";
+
 /// The principal's hot kb set for one run, loaded under
 /// [`HOT_KB_BUDGET_BYTES`]. Each member is `None` when its file is
 /// missing, blank, or unreadable (absence renders absent).
@@ -134,6 +138,38 @@ impl HotKb {
             binding_note,
             role_note,
         }
+    }
+
+    /// The hot set a run may see under `scope`, the `kb_scope` prompt
+    /// section (ADR-113 D6). Empty scope: all of it. Otherwise the first
+    /// line is [`KB_SCOPE_RESTRICTED`] and each further line is a
+    /// workspace-relative path the run may read; `MEMORY.md`,
+    /// `CONVENTIONS.md` and `index.md` stay only when such a path names
+    /// or contains them. The binding and role notes are the run's own
+    /// conversation's and role's, and always stay.
+    #[must_use]
+    pub fn restricted_to(mut self, scope: &str) -> Self {
+        let mut lines = scope.lines().map(str::trim).filter(|l| !l.is_empty());
+        if lines.next().is_none() {
+            return self;
+        }
+        let paths: Vec<&str> = lines.collect();
+        let may_read = |file: &str| {
+            let relative = format!("{KB_DIR}/{file}");
+            paths
+                .iter()
+                .any(|path| relative == *path || relative.starts_with(&format!("{path}/")))
+        };
+        if !may_read(PRINCIPAL_MEMORY_FILE) {
+            self.memory = None;
+        }
+        if !may_read(PRINCIPAL_CONVENTIONS_FILE) {
+            self.conventions = None;
+        }
+        if !may_read(KB_INDEX_FILE) {
+            self.index = None;
+        }
+        self
     }
 
     /// Total bytes of the loaded hot set (never above
@@ -287,6 +323,35 @@ mod tests {
             std::fs::write(path, body).unwrap();
         }
         tmp
+    }
+
+    /// ADR-113 D6: a restricted run sees only the hot files it may read.
+    #[test]
+    fn a_scope_drops_the_hot_files_it_does_not_name() {
+        let full = || HotKb {
+            memory: Some("m".into()),
+            conventions: Some("c".into()),
+            index: Some("i".into()),
+            binding_note: Some("b".into()),
+            role_note: Some("r".into()),
+        };
+        assert_eq!(full().restricted_to(""), full());
+        assert_eq!(full().restricted_to("  \n"), full());
+        let seeded = full().restricted_to("restricted\npublic\nkb/CONVENTIONS.md\n");
+        assert_eq!(seeded.memory, None);
+        assert_eq!(seeded.index, None);
+        assert_eq!(seeded.conventions.as_deref(), Some("c"));
+        assert_eq!(seeded.binding_note.as_deref(), Some("b"));
+        assert_eq!(seeded.role_note.as_deref(), Some("r"));
+        let nothing = full().restricted_to("restricted");
+        assert_eq!(
+            (nothing.memory, nothing.conventions, nothing.index),
+            (None, None, None)
+        );
+        let whole_kb = full().restricted_to("restricted\nkb");
+        assert_eq!(whole_kb.memory.as_deref(), Some("m"));
+        // A prefix of a name is no match.
+        assert_eq!(full().restricted_to("restricted\nkb/MEM").memory, None);
     }
 
     #[test]

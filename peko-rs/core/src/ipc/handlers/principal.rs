@@ -488,6 +488,7 @@ impl RequestHandler for PrincipalHandler {
                 message,
                 override_model,
                 attachments,
+                send_as,
             } => {
                 run_principal_send(
                     request_id,
@@ -496,6 +497,7 @@ impl RequestHandler for PrincipalHandler {
                     message,
                     attachments,
                     override_model,
+                    send_as,
                     host,
                     sink,
                     PrincipalSendResponseKind::OneShot,
@@ -509,6 +511,7 @@ impl RequestHandler for PrincipalHandler {
                 message,
                 override_model,
                 attachments,
+                send_as,
             } => {
                 run_principal_send(
                     request_id,
@@ -517,6 +520,7 @@ impl RequestHandler for PrincipalHandler {
                     message,
                     attachments,
                     override_model,
+                    send_as,
                     host,
                     sink,
                     PrincipalSendResponseKind::Streaming,
@@ -2216,6 +2220,88 @@ mod after_stop_tests {
 
 /// Refuse a send before anything is posted: an `Error` packet, then a
 /// failed `Done`.
+/// Longest visitor id a local caller may vouch for.
+const VISITOR_ID_MAX: usize = 128;
+
+/// The visitor `send_as` names, as a local actor (ADR-113 D7).
+///
+/// `actor` is `visitor:<id>` or `visitor:local:<id>`; the id is what the
+/// bridge knows the person by (a phone number, an email address, a
+/// ticket). A Hub visitor is not accepted: PekoHub mints those.
+fn parse_vouched_visitor(actor: &str) -> Result<peko_auth::ActorRef, String> {
+    let id = actor
+        .strip_prefix("visitor:")
+        .map(|rest| rest.strip_prefix("local:").unwrap_or(rest))
+        .ok_or_else(|| {
+            format!("`{actor}` is not a visitor: send as `visitor:<id>`, for example `visitor:+15550100`")
+        })?;
+    let allowed = |c: char| c.is_ascii_alphanumeric() || "._+@-".contains(c);
+    if id.is_empty() || id.len() > VISITOR_ID_MAX || !id.chars().all(allowed) {
+        return Err(format!(
+            "`{id}` is not a usable visitor id: use 1 to {VISITOR_ID_MAX} letters, digits, or `. _ + @ -`"
+        ));
+    }
+    Ok(peko_auth::ActorRef::Visitor(peko_subject::Route::local(id)))
+}
+
+/// Admit `send_as` (ADR-113 D7): only a caller with the owner's settings
+/// authority, on this host, may say a message is from a visitor. The
+/// runtime records who vouched; it does not verify the visitor.
+async fn vouch_for_visitor(
+    caller: &CallerContext,
+    principal: &Principal,
+    host: &dyn PrincipalHost,
+    send_as: &crate::ipc::packet::SendAs,
+) -> Result<peko_auth::ActorRef, String> {
+    let refusal = "only this peko's owner, from this computer, may send a message as a visitor";
+    if !caller.is_operator() {
+        return Err(refusal.into());
+    }
+    {
+        let config = principal.config.read().await;
+        let resource = principal_resource(&*config);
+        check_permission(
+            &resource,
+            Permission::ManageSettings,
+            &caller.permission_subject(resource.owner()),
+            &*host_keys(host),
+        )
+        .map_err(|_| refusal.to_string())?;
+    }
+    let visitor = parse_vouched_visitor(&send_as.actor)?;
+    let name = send_as
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty());
+    if let (Some(name), Some(port)) = (name, host.principal_manager().channel_port()) {
+        let _ = port
+            .register_actor(
+                &visitor,
+                None,
+                None,
+                None,
+                Some(name),
+                peko_channel::Registration::LocalOnly,
+            )
+            .await;
+    }
+    if let Some(audit) = host.observability() {
+        let _ = audit
+            .audit_security_with_caller(
+                Some(&caller.subject()),
+                "principal.visitor_vouched",
+                Some(&principal.id.0),
+                serde_json::json!({
+                    "visitor": visitor.canonical_address(),
+                    "name": name,
+                }),
+            )
+            .await;
+    }
+    Ok(visitor)
+}
+
 async fn refuse_send(
     sink: &dyn ResponseSink,
     request_id: u64,
@@ -2265,6 +2351,7 @@ async fn run_principal_send(
     message: String,
     attachment_paths: Vec<String>,
     override_model: Option<String>,
+    send_as: Option<crate::ipc::packet::SendAs>,
     host: &dyn PrincipalHost,
     sink: &dyn ResponseSink,
     response_kind: PrincipalSendResponseKind,
@@ -2302,7 +2389,15 @@ async fn run_principal_send(
         .await;
     }
 
-    let peer = caller.attribution_subject();
+    // ADR-113 D7: a caller with the owner's authority may send for a
+    // visitor it vouches for; the run is then that visitor's.
+    let peer = match &send_as {
+        Some(send_as) => match vouch_for_visitor(caller, &principal, host, send_as).await {
+            Ok(visitor) => visitor,
+            Err(reason) => return refuse_send(sink, request_id, reason).await,
+        },
+        None => caller.attribution_subject(),
+    };
     let channel = ChannelContext {
         kind: ChannelKind::Cli,
         // The channel flag is informational — both variants are
@@ -3667,11 +3762,24 @@ async fn portable_export(
     )
     .await
     .ok();
+    let access = tokio::fs::read_to_string(
+        layout
+            .shared
+            .root
+            .join(crate::security::access::ACCESS_FILE),
+    )
+    .await
+    .ok();
     let cron = tokio::fs::read(layout.local.cron_dir.join("schedule.toml"))
         .await
         .ok();
     let mut hub_routes = std::collections::HashMap::new();
-    for subject in referenced_actors(&config, policy.as_deref(), cron.as_deref()) {
+    for subject in referenced_actors(
+        &config,
+        policy.as_deref(),
+        access.as_deref(),
+        cron.as_deref(),
+    ) {
         let actor = port.actor_info(&subject).await;
         if let Some(hub) = &actor.hub_id {
             if let Ok(route) = format!("{}:hub:{hub}", actor.kind).parse() {
@@ -5801,6 +5909,62 @@ mod tests {
                     assert!(message.starts_with("[forbidden]"), "got {message}")
                 }
                 other => panic!("expected Error, got {other:?}"),
+            }
+        }
+
+        /// ADR-113 D7: only a caller with the owner's authority may
+        /// send a message as a visitor, and only as a local visitor.
+        #[tokio::test(flavor = "multi_thread")]
+        #[serial_test::serial]
+        async fn only_the_owners_command_line_vouches_for_a_visitor() {
+            let fx = fixture(true).await;
+            let send_as = |actor: &str, name: Option<&str>| crate::ipc::packet::SendAs {
+                actor: actor.into(),
+                name: name.map(str::to_string),
+            };
+            let local = CallerContext::local();
+
+            let visitor = vouch_for_visitor(
+                &local,
+                &fx.principal,
+                &fx.host,
+                &send_as("visitor:+15550100", Some("Ada")),
+            )
+            .await
+            .expect("the local operator vouches");
+            assert_eq!(visitor.canonical_address(), "visitor:local:+15550100");
+            let port: Arc<dyn ChannelPort> = fx.store.clone();
+            assert_eq!(port.actor_info(&visitor).await.name.as_deref(), Some("Ada"));
+
+            // A visitor is never the owner, whoever vouched.
+            let stamps = crate::principal::trust::stamps_for(&fx.principal, Some(port.clone()));
+            assert_eq!(
+                stamps.driver(&visitor, &visitor).await.trust,
+                peko_tools_core::Trust::Untrusted
+            );
+
+            let stranger = vouch_for_visitor(
+                &CallerContext::from_jwt("stranger".into()),
+                &fx.principal,
+                &fx.host,
+                &send_as("visitor:+15550100", None),
+            )
+            .await
+            .unwrap_err();
+            assert!(stranger.contains("only this peko's owner"), "{stranger}");
+
+            for bad in [
+                "user:local:test-owner",
+                "user:hub:someone",
+                "visitor:hub:vis_1",
+                "visitor:",
+                "visitor:a b",
+                "visitor:../x",
+                "principal:local:loggable",
+            ] {
+                let refused =
+                    vouch_for_visitor(&local, &fx.principal, &fx.host, &send_as(bad, None)).await;
+                assert!(refused.is_err(), "{bad} should be refused");
             }
         }
 

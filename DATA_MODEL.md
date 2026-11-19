@@ -181,6 +181,24 @@ base64url of the encapsulated key followed by the ciphertext. Types:
   | `always` | `off`, ADR-085 D4), default rules, and
   `## <actor address>` sections. *Always allow* approvals append to the
   actor's section.
+- `<workspace>/ACCESS.toml` (ADR-113; protected, seeded create-once at
+  creation and at boot): what an untrusted run reaches. `[visitors]` and any
+  number of `[contact."<actor address or channel id>"]` sections, each with
+  `tools` (built-in names), `mcp` (server ids), `read` and `write`
+  (workspace-relative paths), `own` (`<folder>/{conversation}/`),
+  `own_max_bytes` (default 10485760) and `ask_owner` (default `false`: whether
+  an unlisted call, a call the reviewer finds unclear, and a protected write
+  go to the owner or are refused). Unknown keys, `Bash` or `Plan` in
+  `tools`, a path that leaves the workspace, and a shared path that contains
+  an `own` folder each refuse the whole file; a refused file leaves visitors
+  `Read`/`Write`/`Edit`/`Glob`/`Grep`/`Task`/`ChannelRead`/`ChannelSend` and
+  `contacts/{conversation}/`. A contact section replaces `[visitors]`. No
+  file is the seeded default. At first seeding, MCP servers whose definition
+  carried `untrusted_ok: true` are listed under `[visitors].mcp`.
+- `<workspace>/<own>/<channel id>/` (ADR-113 D5; default
+  `contacts/<channel id>/`): one conversation's own folder, created on first
+  write and reachable only by runs in that conversation (and owner runs). Its
+  `notes.md` rides that conversation's `<acting-for>` block, first 4096 bytes.
 - `<workspace>/kb/inbox/<compartment>/<ts>-<path>.proposal.md`: a non-owner
   run's write to a protected file, with the proposer's stamp and the change.
   The same directory holds the `kb/MEMORY.md` and `kb/CONVENTIONS.md` lines a
@@ -196,7 +214,11 @@ base64url of the encapsulated key followed by the ciphertext. Types:
   owner runs write it). The scaffold seeds `kb/dreams/README.md`.
 - `<local>/approvals/apr_<12 hex>.json`: an owner-approval request
   (`call`, `reason`, `created_at`, `expires_at` (24 h), `status`:
-  `pending`|`approved`|`denied`, `digest` of tool + arguments). The owner
+  `pending`|`approved`|`denied`, `digest` of tool + arguments, and optional
+  `grant: {kind: "tool"|"mcp"|"read"|"write", value}` when the call was not
+  listed in `ACCESS.toml` (ADR-113 D10): *always* adds it to the actor's
+  `[contact]` section there). At most 5 pending per conversation, tasks handed
+  to the owner (ADR-100) not counted. The owner
   lists and decides them over IPC: `approval_list {name}` →
   `approval_list {name, approvals: [{id, actor, actor_name?, trust, summary,
   reason, created_at, expires_at, kind?}]}` (pending only, oldest first), and
@@ -208,7 +230,14 @@ base64url of the encapsulated key followed by the ciphertext. Types:
   tunnel's `PekoApproval` carries the same optional `kind` (ADR-099 D1).
 - `Permission::Trusted` (`"trusted"`) in `peko.toml` grants: the owner's
   consent to give one named actor full tools. Never `public`, never in invites.
-- MCP definitions gain `untrusted_ok` (default `false`) and the reserved
+- IPC `principal_send` / `principal_send_stream` take an optional
+  `send_as: {actor: "visitor:<id>", name?}` (ADR-113 D7): the message is
+  from that visitor (`visitor:local:<id>`; ids are 1–128 of letters, digits
+  and `. _ + @ -`), in the visitor's own DM and at untrusted trust. Accepted
+  only from an operator caller holding the owner's `ManageSettings`;
+  each use writes a `principal.visitor_vouched` Security audit event.
+- MCP definitions carry `untrusted_ok` (retired by ADR-113: read only when
+  `ACCESS.toml` is first seeded, then ignored) and the reserved
   runtime fields `acting_for` / `acting_for_trust`; the retired reserved field
   `peer_id` is replaced by `acting_for`. Workspace hooks receive
   `PEKO_ACTING_FOR` and `PEKO_ACTING_FOR_TRUST`.
@@ -3842,6 +3871,8 @@ source runtime stays behind), its remote rows are recorded, its posts merge by
 `msg_id`, and the folder is removed. A rotated import carries none.
 
 Snapshots (`peko-snapshot-v1`) add `manifest.source_runtime`, `POLICY.md`,
+`ACCESS.toml` (its `[contact."<actor>"]` headers rewritten like `POLICY.md`
+headings),
 `workflows/`, `plugins/`, `local/contacts.json`, `local/channels.json`, and
 `local/dms/`. The
 owner, grant subjects and granters, `POLICY.md` `## <actor>` headings, and cron

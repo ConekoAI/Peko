@@ -676,6 +676,14 @@ impl PrincipalUnpackager {
             tokio::fs::create_dir_all(&workspace_root).await?;
             tokio::fs::write(&dest, text).await?;
         }
+        // ADR-113: what the owner lets visitors reach travels too.
+        if let Some(access) = files.get(crate::security::access::ACCESS_FILE) {
+            let text = super::portable::rewrite_access(&String::from_utf8_lossy(access), rule);
+            let dest = workspace_root.join(crate::security::access::ACCESS_FILE);
+            reject_destination_links(&workspace_root, &dest)?;
+            tokio::fs::create_dir_all(&workspace_root).await?;
+            tokio::fs::write(&dest, text).await?;
+        }
         for (path, content) in files {
             let Some((prefix, rest)) =
                 split_snapshot_path(path, &super::principal_manifest::WORKSPACE_DIRS)
