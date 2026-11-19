@@ -705,6 +705,19 @@ pub fn legacy_visitor_servers(workspace: &Path) -> Vec<String> {
     servers
 }
 
+/// `text` as a seed carries it (ADR-113 D11): without its `[contact]`
+/// sections, which name actors that mean nothing to whoever grows the
+/// seed. `None` when the file is what every peko starts with, or is not
+/// valid (a seed with a broken file would be refused).
+#[must_use]
+pub fn for_seed(text: &str) -> Option<String> {
+    let mut doc: toml_edit::DocumentMut = text.parse().ok()?;
+    doc.remove("contact");
+    let exported = doc.to_string();
+    let parsed = Access::parse(&exported).ok()?;
+    (parsed != Access::seeded()).then_some(exported)
+}
+
 /// The seeded file's text, with `servers` listed for visitors.
 fn seed_text(servers: &[String]) -> String {
     if servers.is_empty() {

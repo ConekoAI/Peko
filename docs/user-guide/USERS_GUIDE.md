@@ -236,8 +236,9 @@ setup = [
 ]
 ```
 
-A seed can also carry the files themselves, under `[files]`: roles,
-skills, workflows and MCP server files, as text. They are written into the
+A seed can also carry the files themselves, under `[files]`, as text: roles,
+skills, workflows, MCP server files, or anything else that belongs in the
+peko's folder, such as a `public/` FAQ or reference notes under `kb/`. They are written into the
 new peko's folder when it is created, with no model involved, so what you
 read in the seed is exactly what the peko gets:
 
@@ -252,18 +253,30 @@ You read carefully and cite every source you use.
 """
 ```
 
-Paths must be under `roles/`, `skills/`, `workflows/` or `mcp/`, and a seed
-holds at most 64 KB of files. Use files for what is a file, and setup steps
+A path can be anywhere in the peko's folder, and a seed holds at most 64
+files and 64 KB together. Three things a seed cannot write: `peko.toml`
+(the seed is that file), anything under `local/` (the peko's sessions,
+approvals and schedules), and `kb/inbox/`.
+
+That includes `ACCESS.toml` and `POLICY.md`, the two files that say what
+people other than the owner reach through the peko, so a peko made to serve
+customers arrives with its rules. In a seed they hold rules for everyone
+only: a `[contact]` section or a section for one person is refused, because
+your contacts mean nothing on the computer that creates the peko. Use files for what is a file, and setup steps
 for what needs your computer, such as installing a tool.
 
 `peko create my-peko -s my.seed.toml` shows the steps and the files and
 asks before it creates anything, because the peko will run commands and
-download code on your computer, as you. An MCP server or workflow file is
-shown in full, since it names something your computer will run. In a
+download code on your computer, as you. An MCP server, workflow or hook file is
+shown in full, since it names something your computer will run, and so are
+`ACCESS.toml` and `POLICY.md`, since they say what other people can reach. In a
 script, `--yes` accepts them.
 
 `peko seed my-peko` exports a peko's roles, skills and workflows into
-`[files]`. Its MCP server files are left out unless you pass `--with-mcp`,
+`[files]`, along with `ACCESS.toml` and `POLICY.md` if you changed them
+(without the sections for particular people). It does not export the rest
+of the folder: memory and notes about the people it talks to stay behind.
+Add other files to the seed by hand. Its MCP server files are left out unless you pass `--with-mcp`,
 because they may hold tokens.
 
 The peko first sets itself up (its first turn), then goes through the setup

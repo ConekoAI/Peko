@@ -121,10 +121,24 @@ pub fn setup_listing(steps: &[String]) -> String {
         .join("\n")
 }
 
-/// The workspace folders a seed's files may go in (ADR-107): the plain
-/// files a peko's capabilities are made of (ADR-050). Hooks are left
-/// out: they run on every tool call.
-pub const SEED_FILE_DIRS: &[&str] = &["roles", "skills", "workflows", "mcp"];
+/// The workspace folders `peko seed` exports into a seed (ADR-107): the
+/// plain files a peko's capabilities are made of (ADR-050). A seed may
+/// carry more (ADR-113 D11); an export stays with what the peko *is*,
+/// not what it has learned or been told about people.
+pub const SEED_EXPORT_DIRS: &[&str] = &["roles", "skills", "workflows", "mcp"];
+
+/// The two files at the workspace root that say what the grown peko's
+/// visitors reach (`ACCESS.toml`) and the owner's rules for acting for
+/// them (`POLICY.md`). A seed carrying them is checked ([`SeedFile`]),
+/// and whoever accepts it is shown them in full.
+pub const SEED_RULE_FILES: &[&str] = &[
+    crate::security::access::ACCESS_FILE,
+    crate::security::policy::POLICY_FILE,
+];
+
+/// Folders whose files name something the computer will run: an MCP
+/// server's command, a workflow script, a hook on tool calls.
+const RUNS_COMMANDS_DIRS: &[&str] = &["mcp", "workflows", "hooks"];
 
 /// Most bytes of file content one seed may carry. A seed stays one
 /// small text file.
@@ -143,17 +157,65 @@ pub struct SeedFile {
 
 impl SeedFile {
     /// Whether the file names something this computer will run: an MCP
-    /// server's command, or a workflow script. The person accepting the
+    /// server's command, a workflow script, or a hook. The person accepting the
     /// seed is shown such a file in full.
     #[must_use]
     pub fn runs_commands(&self) -> bool {
-        self.path.starts_with("mcp/") || self.path.starts_with("workflows/")
+        self.path
+            .split('/')
+            .next()
+            .is_some_and(|top| RUNS_COMMANDS_DIRS.contains(&top))
+    }
+
+    /// Whether the file is one of [`SEED_RULE_FILES`]: it decides what
+    /// people other than the owner reach through the peko, so the person
+    /// accepting the seed is shown it in full.
+    #[must_use]
+    pub fn sets_visitor_rules(&self) -> bool {
+        SEED_RULE_FILES.contains(&self.path.as_str())
+    }
+
+    /// Why this rule file may not come in a seed, if it may not: it must
+    /// be valid, and it may not name particular actors. A seed is grown
+    /// by someone else on another computer, where the seed author's
+    /// contacts mean nothing — or mean someone else.
+    fn rule_refusal(&self) -> Option<String> {
+        use crate::security::{access, policy};
+        if self.path == access::ACCESS_FILE {
+            return match access::Access::parse(&self.content) {
+                Err(e) => Some(format!("`{}` is not valid: {e}", self.path)),
+                Ok(parsed) if !parsed.contacts.is_empty() => Some(format!(
+                    "`{}` may only have a [visitors] section in a seed; it has a section \
+                     for `{}`",
+                    self.path, parsed.contacts[0].0
+                )),
+                Ok(_) => None,
+            };
+        }
+        if self.path == policy::POLICY_FILE {
+            let parsed = policy::Policy::parse(&self.content);
+            return parsed.sections.first().map(|(actor, _)| {
+                format!(
+                    "`{}` may only have rules for everyone in a seed; it has a section for \
+                     `{actor}`",
+                    self.path
+                )
+            });
+        }
+        None
     }
 }
 
-/// Why `path` may not be a seed file's path, if it may not: it must be
-/// a relative path of plain names, at least two deep, under one of
-/// [`SEED_FILE_DIRS`].
+/// Why `path` may not be a seed file's path, if it may not (ADR-113
+/// D11). A seed may fill any file in the new peko's workspace: a relative
+/// path of plain names. Three things stay out:
+///
+/// - `peko.toml`: the seed is the definition, and the grown peko's
+///   identity is its own;
+/// - `local/`: the runtime's own state for the peko (sessions, approvals,
+///   schedules, ledger), which sits inside the folder on some layouts. A
+///   seed that wrote there could plant an approved request;
+/// - `kb/inbox/`: proposals, which only the runtime files.
 fn path_refusal(path: &str) -> Option<String> {
     let parts: Vec<&str> = path.split('/').collect();
     let plain = |part: &str| {
@@ -163,23 +225,34 @@ fn path_refusal(path: &str) -> Option<String> {
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
     };
-    if path.len() > 200 || parts.len() < 2 || !parts.iter().all(|part| plain(part)) {
+    if path.len() > 200 || !parts.iter().all(|part| plain(part)) {
         return Some(format!(
             "`{path}` is not a plain relative path (letters, digits, `.`, `_`, `-`; no \
              leading dots)"
         ));
     }
-    if !SEED_FILE_DIRS.contains(&parts[0]) {
+    let lower = path.to_ascii_lowercase();
+    if matches!(lower.as_str(), "peko.toml" | "principal.toml") {
         return Some(format!(
-            "`{path}` is outside the folders a seed may fill: {}",
-            SEED_FILE_DIRS.join(", ")
+            "`{path}` is the peko's own definition: the seed is that file"
+        ));
+    }
+    if lower == "local" || lower.starts_with("local/") {
+        return Some(format!(
+            "`{path}` is the runtime's own state for the peko, which a seed cannot fill"
+        ));
+    }
+    let inbox = crate::security::floor::INBOX_DIR;
+    if lower == inbox || lower.starts_with(&format!("{inbox}/")) {
+        return Some(format!(
+            "`{path}` is where the runtime files proposals; a seed cannot fill it"
         ));
     }
     None
 }
 
-/// The files of a seed's `[files]` table, checked: every key a path
-/// under [`SEED_FILE_DIRS`], every value text, within the count and
+/// The files of a seed's `[files]` table, checked: every key a path a
+/// seed may fill ([`path_refusal`]), every value text, within the count and
 /// size limits. In path order.
 fn checked_files(table: Option<toml::Table>) -> Result<Vec<SeedFile>> {
     let mut files = Vec::new();
@@ -190,7 +263,11 @@ fn checked_files(table: Option<toml::Table>) -> Result<Vec<SeedFile>> {
         let toml::Value::String(content) = value else {
             anyhow::bail!("seed file `{path}` must be text (a TOML string)");
         };
-        files.push(SeedFile { path, content });
+        let file = SeedFile { path, content };
+        if let Some(refusal) = file.rule_refusal() {
+            anyhow::bail!("seed file {refusal}");
+        }
+        files.push(file);
     }
     anyhow::ensure!(
         files.len() <= SEED_FILES_MAX_COUNT,
@@ -210,13 +287,13 @@ fn checked_files(table: Option<toml::Table>) -> Result<Vec<SeedFile>> {
 
 /// The files a seed carries, for the person who must accept them: each
 /// path and size, and the full text of the ones that name something
-/// this computer will run.
+/// this computer will run or that say what other people reach.
 #[must_use]
 pub fn files_listing(files: &[SeedFile]) -> String {
     let mut lines = Vec::new();
     for file in files {
         lines.push(format!("  {} ({} bytes)", file.path, file.content.len()));
-        if file.runs_commands() {
+        if file.runs_commands() || file.sets_visitor_rules() {
             lines.extend(
                 file.content
                     .trim_end()
@@ -236,7 +313,7 @@ pub fn files_listing(files: &[SeedFile]) -> String {
 /// When a path is refused or a file cannot be written.
 pub fn write_files(workspace: &std::path::Path, files: &[SeedFile]) -> Result<()> {
     for file in files {
-        if let Some(refusal) = path_refusal(&file.path) {
+        if let Some(refusal) = path_refusal(&file.path).or_else(|| file.rule_refusal()) {
             anyhow::bail!("seed file {refusal}");
         }
         let target = workspace.join(&file.path);
@@ -252,7 +329,9 @@ pub fn write_files(workspace: &std::path::Path, files: &[SeedFile]) -> Result<()
 
 /// The capability files of a peko's workspace, for its exported seed
 /// (ADR-107): everything under `roles/`, `skills/` and `workflows/`,
-/// and `mcp/` too when `with_mcp`. An MCP server's file may hold
+/// and `mcp/` too when `with_mcp`; plus `ACCESS.toml` and `POLICY.md`
+/// when they differ from what every peko starts with (ADR-113 D11),
+/// without their per-actor sections. An MCP server's file may hold
 /// tokens, so it is carried only when asked for. Roles still identical
 /// to the runtime's defaults are left out, as every peko gets them.
 /// Files that are not UTF-8 text are skipped and named in the second
@@ -284,7 +363,7 @@ pub fn collect_files(
     }
     let defaults = crate::principal::genesis::default_role_files();
     let mut paths = Vec::new();
-    for dir in SEED_FILE_DIRS {
+    for dir in SEED_EXPORT_DIRS {
         if *dir == "mcp" && !with_mcp {
             continue;
         }
@@ -292,6 +371,31 @@ pub fn collect_files(
     }
     paths.sort();
     let (mut files, mut skipped) = (Vec::new(), Vec::new());
+    // ADR-113 D11: the rules for visitors, when the owner changed them,
+    // without the parts that name particular actors.
+    for (name, exported) in [
+        (
+            crate::security::access::ACCESS_FILE,
+            crate::security::access::for_seed as fn(&str) -> Option<String>,
+        ),
+        (
+            crate::security::policy::POLICY_FILE,
+            crate::security::policy::for_seed,
+        ),
+    ] {
+        match std::fs::read_to_string(workspace.join(name)) {
+            Ok(text) => {
+                if let Some(content) = exported(&text) {
+                    files.push(SeedFile {
+                        path: name.to_string(),
+                        content,
+                    });
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => skipped.push(name.to_string()),
+        }
+    }
     for path in paths {
         if path_refusal(&path).is_some() {
             skipped.push(path);
@@ -404,9 +508,15 @@ impl Seed {
             ));
         }
         if !self.files.is_empty() {
+            let rules = if self.files.iter().any(SeedFile::sets_visitor_rules) {
+                "; ACCESS.toml and POLICY.md say what people other than you can reach \
+                 through this peko"
+            } else {
+                ""
+            };
             parts.push(format!(
-                "Files written into its folder (an MCP server or workflow file names \
-                 something this computer will run):\n{}",
+                "Files written into its folder (an MCP server, workflow or hook file names \
+                 something this computer will run{rules}):\n{}",
                 files_listing(&self.files)
             ));
         }
@@ -520,19 +630,167 @@ name = "ada"
         assert!(!plain.needs_acceptance() && plain.acceptance_listing().is_empty());
     }
 
-    /// ADR-107: a seed's files stay inside the capability folders.
+    /// ADR-113 D11: a seed carries the rules for visitors, shown in full
+    /// to whoever accepts it; a broken file, or one naming particular
+    /// actors, refuses the seed.
     #[test]
-    fn seed_files_outside_the_capability_folders_are_refused() {
+    fn a_seed_carries_the_rules_for_visitors() {
+        use crate::security::access::{Access, ACCESS_FILE};
+        use crate::security::policy::{Policy, POLICY_FILE};
+        let text = r#"name = "desk"
+
+[files]
+"ACCESS.toml" = '''
+[visitors]
+tools = ["Read", "Task", "ChannelSend", "ChannelRead"]
+mcp = ["orders"]
+read = ["public/"]
+own = "contacts/{conversation}/"
+'''
+"POLICY.md" = '''
+# Policy
+- Answer questions about orders and opening hours.
+- Never discuss other customers.
+'''
+"roles/conversation.md" = "You answer customers.\n"
+"#;
+        let seed = parse_seed(text).unwrap();
+        assert_eq!(
+            seed.files
+                .iter()
+                .map(|f| f.path.as_str())
+                .collect::<Vec<_>>(),
+            ["ACCESS.toml", "POLICY.md", "roles/conversation.md"]
+        );
+        assert!(seed.needs_acceptance());
+        let listing = seed.acceptance_listing();
+        assert!(
+            listing.contains("what people other than you can reach"),
+            "{listing}"
+        );
+        assert!(listing.contains("mcp = [\"orders\"]"), "{listing}");
+        assert!(
+            listing.contains("Never discuss other customers."),
+            "{listing}"
+        );
+        assert!(!listing.contains("You answer customers."), "{listing}");
+
+        // Written before the runtime seeds its own, so the seed's win.
+        let ws = tempfile::tempdir().unwrap();
+        write_files(ws.path(), &seed.files).unwrap();
+        assert!(!crate::security::access::seed(ws.path()).unwrap());
+        assert!(!crate::security::policy::seed(ws.path()).unwrap());
+        let access = Access::load(ws.path());
+        assert!(access.error.is_none(), "{:?}", access.error);
+        assert_eq!(access.visitors.mcp, ["orders"]);
+        assert!(!access.visitors.allows_tool("Fetch"));
+        let policy = Policy::parse(&std::fs::read_to_string(ws.path().join(POLICY_FILE)).unwrap());
+        assert!(policy.defaults.contains("Never discuss other customers."));
+
+        for (file, content, needle) in [
+            (ACCESS_FILE, "[visitors]\ntools = [\"Bash\"]\n", "not valid"),
+            (ACCESS_FILE, "[visitors]\ntool = []\n", "not valid"),
+            (
+                ACCESS_FILE,
+                "[contact.\"user:hub:alice\"]\nask_owner = true\n",
+                "only have a [visitors] section",
+            ),
+            (
+                POLICY_FILE,
+                "# Policy\n- ok\n\n## user:hub:alice\n- anything\n",
+                "only have rules for everyone",
+            ),
+        ] {
+            let text = format!("name = \"desk\"\n[files]\n\"{file}\" = '''\n{content}'''\n");
+            let error = format!("{:#}", parse_seed(&text).unwrap_err());
+            assert!(error.contains(needle), "{file}: {error}");
+            let file = SeedFile {
+                path: file.to_string(),
+                content: content.to_string(),
+            };
+            let ws = tempfile::tempdir().unwrap();
+            assert!(write_files(ws.path(), &[file]).is_err());
+        }
+    }
+
+    /// ADR-113 D11: an exported seed carries the rules the owner changed,
+    /// without the parts that name particular actors.
+    #[test]
+    fn an_exported_seed_carries_changed_rules_without_actor_sections() {
+        let ws = tempfile::tempdir().unwrap();
+        // What every peko starts with is not carried.
+        crate::security::access::seed(ws.path()).unwrap();
+        crate::security::policy::seed(ws.path()).unwrap();
+        let (files, skipped) = collect_files(ws.path(), false).unwrap();
+        assert!(
+            files.is_empty() && skipped.is_empty(),
+            "{files:?} {skipped:?}"
+        );
+
+        std::fs::write(
+            ws.path().join("ACCESS.toml"),
+            "# shop rules\n[visitors]\ntools = [\"Read\"]\nread = [\"public/\"]\n\n\
+             [contact.\"user:hub:alice\"]\ntools = [\"Read\", \"Fetch\"]\n",
+        )
+        .unwrap();
+        let policy = std::fs::read_to_string(ws.path().join("POLICY.md")).unwrap();
+        std::fs::write(
+            ws.path().join("POLICY.md"),
+            format!(
+                "{policy}\n- Only talk about the shop.\n\n## user:hub:alice (Alice)\n\
+                 - Always allowed (owner approval 2026-11-19): `Read` (file_path=x)\n\n\
+                 ## Returns\n- Returns are fine within 21 days.\n"
+            ),
+        )
+        .unwrap();
+        let (files, _) = collect_files(ws.path(), false).unwrap();
+        let get = |path: &str| {
+            files
+                .iter()
+                .find(|f| f.path == path)
+                .unwrap_or_else(|| panic!("{path} not exported: {files:?}"))
+                .content
+                .clone()
+        };
+        let access = get("ACCESS.toml");
+        assert!(access.contains("# shop rules") && access.contains("read = [\"public/\"]"));
+        assert!(!access.contains("alice"), "{access}");
+        let policy = get("POLICY.md");
+        assert!(policy.contains("Only talk about the shop."), "{policy}");
+        assert!(
+            policy.contains("## Returns") && policy.contains("21 days"),
+            "{policy}"
+        );
+        assert!(
+            !policy.contains("alice") && !policy.contains("Always allowed"),
+            "{policy}"
+        );
+
+        // And the exported seed grows again.
+        let exported = seed_from_workspace("name = \"shop\"\n", None, &files).unwrap();
+        assert_eq!(parse_seed(&exported).unwrap().files, files);
+    }
+
+    /// ADR-113 D11: a seed fills any plain path in the workspace, except
+    /// the peko's definition, the runtime's own state, and the inbox.
+    #[test]
+    fn seed_files_that_are_not_the_seeds_to_fill_are_refused() {
         for (path, needle) in [
-            ("peko.toml", "not a plain relative path"),
-            ("POLICY.md", "not a plain relative path"),
-            ("kb/MEMORY.md", "outside the folders"),
-            ("hooks/x/hook.toml", "outside the folders"),
+            ("peko.toml", "the peko's own definition"),
+            ("principal.toml", "the peko's own definition"),
+            (
+                "local/approvals/apr_0123456789ab.json",
+                "the runtime's own state",
+            ),
+            ("local/cron/schedule.toml", "the runtime's own state"),
+            ("Local/x", "the runtime's own state"),
+            ("kb/inbox/dm_x/a.proposal.md", "files proposals"),
             ("roles/../peko.toml", "not a plain relative path"),
             ("/etc/passwd", "not a plain relative path"),
             ("roles/.hidden", "not a plain relative path"),
+            (".env", "not a plain relative path"),
             ("roles/a b.md", "not a plain relative path"),
-            ("roles", "not a plain relative path"),
+            ("roles//a.md", "not a plain relative path"),
         ] {
             let text = format!("name = \"ada\"\n[files]\n\"{path}\" = \"x\"\n");
             let error = format!("{:#}", parse_seed(&text).unwrap_err());
@@ -544,6 +802,25 @@ name = "ada"
             let ws = tempfile::tempdir().unwrap();
             assert!(write_files(ws.path(), &[file]).is_err(), "{path}");
         }
+        // Everything else in the workspace is the seed's to fill.
+        let ws = tempfile::tempdir().unwrap();
+        let anywhere = parse_seed(
+            "name = \"ada\"\n[files]\n\"public/faq.md\" = \"Open 10 to 6.\"\n\
+             \"kb/refs/products.md\" = \"Kettles.\"\n\"README.md\" = \"hi\"\n\
+             \"hooks/audit/hook.toml\" = \"command = 'true'\"\n",
+        )
+        .unwrap();
+        write_files(ws.path(), &anywhere.files).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(ws.path().join("public/faq.md")).unwrap(),
+            "Open 10 to 6."
+        );
+        assert!(ws.path().join("kb/refs/products.md").is_file());
+        // A hook runs on tool calls: shown in full to whoever accepts.
+        let listing = anywhere.acceptance_listing();
+        assert!(listing.contains("command = 'true'"), "{listing}");
+        assert!(!listing.contains("Kettles."), "{listing}");
+
         let not_text = "name = \"ada\"\n[files]\n\"roles/a.md\" = 3\n";
         assert!(format!("{:#}", parse_seed(not_text).unwrap_err()).contains("must be text"));
         let big = format!(

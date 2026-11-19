@@ -2,7 +2,7 @@
 
 **Status:** Accepted. D2–D8 and D10 are implemented for untrusted runs; D1 (retiring `trusted`) and the `trusted` half of D9 are not yet (§5).
 **Date:** 2026-11-19
-**Amends:** [ADR-066](ADR-066-pure-workspace-tooling.md) D1, [ADR-078](ADR-078-acting-for-stamps-and-trust-floor.md) §2, D6 and D7, [ADR-075](ADR-075-principal-owned-mcp-runtime.md) (`untrusted_ok`), [ADR-080](ADR-080-daily-memory-maintenance.md) (who gets the hot files).
+**Amends:** [ADR-107](ADR-107-a-seed-carries-capability-files.md) D2 (D11), [ADR-066](ADR-066-pure-workspace-tooling.md) D1, [ADR-078](ADR-078-acting-for-stamps-and-trust-floor.md) §2, D6 and D7, [ADR-075](ADR-075-principal-owned-mcp-runtime.md) (`untrusted_ok`), [ADR-080](ADR-080-daily-memory-maintenance.md) (who gets the hot files).
 **Touches:** `peko-rs/core/src/security/access.rs` (new), `security/floor.rs`, `tools/dispatcher.rs`, `tools/catalog.rs`, `principal/acting_for_prompt.rs`, `peko-rs/engine/src/prompt/{memory,renderer}.rs`, `ipc/packet.rs` and `ipc/handlers/principal.rs` (`send_as`), `peko-rs/cli/src/commands/send.rs`, `registry/packaging/` (snapshots carry the file).
 
 ---
@@ -113,6 +113,20 @@ A personal owner wants a friend's request for one more file to reach them. A bus
 
 The seeded `[visitors]` has `ask_owner = false`: an anonymous caller should not be able to put requests on the owner's screen. The owner turns it on for the contacts they want to hear from. With it off everywhere, nothing a visitor does waits on the owner, which is also what makes one owner workable for a business.
 
+### D11. A seed fills any file in the workspace, the rules for visitors included
+
+A peko made to serve people other than its owner needs more than capability files: its rules for visitors, and usually content (a `public/` FAQ, reference notes). A seed's files were limited to `roles/`, `skills/`, `workflows/` and `mcp/` (ADR-107 D2). That limit bought little: whoever creates the peko accepts everything the seed carries, and a seed's setup steps already run arbitrary commands. A seed's `[files]` may now name any plain relative path in the workspace.
+
+- **Three things a seed cannot write.** `peko.toml` (the seed is the definition, and the grown peko's identity is its own); `local/` (the runtime's own state for the peko: sessions, approvals, schedules, ledger, which sits inside the folder on some layouts, and where a seed could plant an approved request); and `kb/inbox/` (proposals, which only the runtime files). Hidden names and paths that leave the workspace are refused as before.
+- **`ACCESS.toml` and `POLICY.md` are checked** when the seed is read and again where the files are written. An `ACCESS.toml` that would be refused (D2) refuses the seed: a peko should not be born with visitors on the built-in minimum.
+- **Rules for everyone only.** A `[contact]` section in `ACCESS.toml`, or a `## <actor address>` section in `POLICY.md`, refuses the seed. A seed is grown by someone else on another computer, where the author's contacts mean nothing, or name someone else.
+- **Shown in full** to whoever accepts the seed: files that name something the computer will run (`mcp/`, `workflows/`, and now `hooks/`), and the two rule files, since they decide what strangers reach. Every other file is listed by path and size.
+- **The seed's files win.** They are written before the runtime seeds its own (create-once), and a persona joins whichever `kb/CONVENTIONS.md` is then there. MCP servers marked `untrusted_ok` in the seed are not added to a seed's `ACCESS.toml`; the file says what it says.
+- **`peko seed` stays selective.** It exports the capability folders as before, plus the two rule files when they differ from what every peko starts with, without their per-actor sections (and the *Always* lines those hold). It does not export the rest of the workspace: memory and notes about contacts are what a peko has learned, not what it is.
+- The limits of 64 files and 64 KB together are unchanged.
+
+A seed's `kb/MEMORY.md` or `kb/CONVENTIONS.md` reaches every owner turn's prompt, as a persona already did. Accepting a seed is trusting its author with that.
+
 ### D9. Migration
 
 `ask_owner = false` is also a change for existing pekos: a visitor's unclear call and protected write used to reach the owner and are now refused until a section turns requests on.
@@ -133,7 +147,6 @@ Snapshots carry `ACCESS.toml`; its `[contact."<actor>"]` headers are rewritten a
 
 ## 4. Open questions
 
-0. **Seeds cannot carry `ACCESS.toml`.** A seed's files stay inside `roles/`, `skills/`, `workflows/` and `mcp/` (ADR-107). A business seed needs to ship its visitor rules, which means the creator accepts them like the seed's other files.
 0. **Files a visitor sends are not reachable from their conversation.** Inbound attachments are copied to `attachments/<date>/`, which is shared by every conversation and so is not listed for visitors. Images still reach the model as media; a visitor's document cannot be opened with `Read`. They should land in the conversation's own folder.
 
 1. **Folder names.** The compartment's channel id is stable but unreadable to an owner browsing the workspace. A slug is readable but can change.
@@ -153,4 +166,4 @@ Not built:
 
 - **D1.** `Trust::Trusted` and `peko permit … trusted` still exist, and a trusted run is not bound by `ACCESS.toml`: it keeps what ADR-078 gives it. Retiring it changes the permission model in the CLI, the desktop and the tunnel, and is its own change.
 - **D9, `trusted` grants.** Follows D1.
-- Open questions 0–6.
+- Open questions 0–6 (seeds carrying the rules, the first of them, is done: D11).
