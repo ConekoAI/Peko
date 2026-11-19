@@ -1647,7 +1647,7 @@ async fn list_approvals(name: &str, json: bool) -> Result<()> {
                         |n| format!("{n} ({})", super::shown_address(&a.actor)),
                     );
                     println!("{}  {who} [{}] wants {}", a.id, a.trust, a.summary);
-                    println!("    reviewer: {}", a.reason);
+                    println!("    why: {}", a.reason);
                     println!("    expires {}", a.expires_at);
                 }
                 println!();

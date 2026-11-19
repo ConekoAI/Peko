@@ -355,7 +355,9 @@ ask_owner = true                       # this person's requests do
 
 - **`tools` and `mcp`** are checked on every call, before any reviewer. A
   tool that is not listed is not shown to the peko in that conversation.
-- **`read` and `write`** are files or folders in the workspace. A visitor's
+- **`read` and `write`** are files or folders in the workspace. Reading or
+  writing them is not checked against `POLICY.md` again: listing a path is
+  your decision. A visitor's
   conversation cannot read anything else, and `kb/MEMORY.md` and
   `kb/index.md` are left out of its prompt unless `read` names them.
 - **`own`** gives each conversation a folder only it can read and write

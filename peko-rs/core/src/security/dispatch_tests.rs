@@ -292,8 +292,10 @@ async fn a_call_without_a_stamp_reaches_nothing() {
 
 #[tokio::test]
 async fn the_gate_allows_denies_or_asks_the_owner() {
+    // A trusted run: its file calls are reviewed (a visitor's calls on
+    // paths `ACCESS.toml` shares are not, ADR-113 D8).
     let h = ToolHarness::new().await;
-    let caller = Caller::acting_for(guest(Trust::Untrusted));
+    let caller = Caller::acting_for(guest(Trust::Trusted));
     h.write("ACCESS.toml", ASKING);
     h.write("public/a.md", "a");
     h.write("public/b.md", "b");
@@ -328,7 +330,7 @@ async fn the_gate_allows_denies_or_asks_the_owner() {
     assert_eq!(out.value["pending_approval"], "apr_test");
     let asked = gate.asked.lock().unwrap();
     assert_eq!(asked.len(), 1);
-    assert_eq!(asked[0].0.stamp, guest(Trust::Untrusted));
+    assert_eq!(asked[0].0.stamp, guest(Trust::Trusted));
     assert_eq!(asked[0].0.tool_name, "Read");
     assert_eq!(asked[0].1, "unclear");
 
@@ -1214,15 +1216,40 @@ async fn a_visitor_whose_rule_does_not_ask_never_reaches_the_owner() {
             out.display
         );
     }
-    // Listed, but the reviewer is unsure.
+    // What the file shares, and the conversation's own folder, are the
+    // owner's standing decision: no reviewer is asked (ADR-113 D8).
     let out = h
         .call_as(&caller, "Read", json!({"file_path": "public/faq.md"}))
+        .await;
+    assert!(out.success, "{}", out.display);
+    let out = h
+        .call_as(
+            &caller,
+            "Grep",
+            json!({"pattern": "shared", "path": "public"}),
+        )
+        .await;
+    assert!(out.success, "{}", out.display);
+    let out = h
+        .call_as(
+            &caller,
+            "Write",
+            json!({"file_path": "contacts/dm_x/notes.md", "content": "likes tea"}),
+        )
+        .await;
+    assert!(out.success, "{}", out.display);
+    assert_eq!(*gate.reviewed.lock().unwrap(), 0);
+    // A listed tool that is not a file call is still reviewed, and the
+    // reviewer being unsure is a refusal here.
+    let out = h
+        .call_as(&caller, "Fetch", json!({"url": "https://example.com"}))
         .await;
     assert!(
         !out.success && out.display.contains("not sent to the owner"),
         "{}",
         out.display
     );
+    assert_eq!(*gate.reviewed.lock().unwrap(), 1);
     // A protected file.
     let out = h
         .call_as(

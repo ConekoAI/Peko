@@ -850,6 +850,13 @@ impl ToolDispatcher {
 
         // ADR-078 path floor: confinement, the cross-principal boundary,
         // and protected files (a non-owner's write becomes a proposal).
+        //
+        // ADR-113 D8: a visitor's file call on a path the owner's
+        // `ACCESS.toml` gives it (its own folder, `read`, `write`) is the
+        // owner's standing decision, so it is not reviewed again. The
+        // reviewer never sees the conversation and cannot tell why a
+        // shared file is being read.
+        let mut listed_file_call = false;
         if let Some((target, write)) = crate::security::floor::file_tool_target(&tool_name, &params)
         {
             if !stamp.is_owner()
@@ -886,6 +893,8 @@ impl ToolDispatcher {
                 write,
                 reach.as_ref(),
             );
+            listed_file_call =
+                reach.is_some() && decision == crate::security::floor::PathDecision::Allow;
             // ADR-113 D4, D10: a path the owner's file does not list is
             // refused or put to the owner; one they approved is checked
             // again as if it were listed.
@@ -1004,7 +1013,8 @@ impl ToolDispatcher {
         // policy reviewer, which never sees the conversation behind it.
         let owner_decides = crate::security::judge::owner_decides(&stamp, &tool_name, &params);
         if owner_decides.is_some()
-            || crate::security::judge::needs_review(&stamp, &tool_name, &params)
+            || (!listed_file_call
+                && crate::security::judge::needs_review(&stamp, &tool_name, &params))
         {
             use crate::security::judge::Verdict;
             let verdict = match owner_decides {

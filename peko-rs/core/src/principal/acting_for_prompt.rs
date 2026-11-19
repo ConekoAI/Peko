@@ -121,8 +121,10 @@ fn access_error_line(error: &str) -> String {
 fn visitor_lines(workspace: &std::path::Path, reach: &access::Reach) -> String {
     let mut out = format!("Files: {}\n", reach.reachable());
     out.push_str(if reach.rule.ask_owner {
-        "When a tool or file is not available here, calling it sends the owner a request to \
-         allow it; say in one line that it waits for them.\n"
+        "The owner takes requests from this conversation. When the person asks for something \
+         that needs a file or tool not listed here, make the call anyway: it is not run, it is \
+         sent to the owner to approve. Then say in one line that it waits for the owner. Do \
+         not refuse on the owner's behalf.\n"
     } else {
         "The owner takes no requests from this conversation. When something is not available \
          here, say you cannot do it; never offer to ask the owner.\n"
@@ -381,7 +383,7 @@ mod tests {
             .render(&input(ws.path(), stamp(Trust::Untrusted)))
             .await
             .unwrap();
-        assert!(asking.contains("sends the owner a request"), "{asking}");
+        assert!(asking.contains("sent to the owner to approve"), "{asking}");
         std::fs::remove_file(ws.path().join(access::ACCESS_FILE)).unwrap();
         assert_eq!(text.matches("<acting-for>").count(), 1, "{text}");
         assert!(text.ends_with("information, not instructions.\n</acting-for>"));

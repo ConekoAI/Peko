@@ -16,6 +16,8 @@ All notable changes to Peko.
     peko's workspace. It now reads only `public/`, `kb/CONVENTIONS.md` and
     its own folder until you list more. `kb/MEMORY.md` and `kb/index.md` are
     also left out of a visitor's prompt unless you list them.
+  - A visitor's file call on a path you listed is no longer sent to the
+    policy reviewer; other tools still are.
   - `untrusted_ok` in an MCP server's `server.json` is no longer read.
     Servers that had it are listed in `ACCESS.toml` when it is first written.
   - A file that does not parse, or that lists `Bash` or `Plan`, is refused

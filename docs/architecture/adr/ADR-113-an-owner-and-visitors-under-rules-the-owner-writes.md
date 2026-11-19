@@ -93,6 +93,8 @@ This is the whole of the bridge surface: an adapter for a chat service, email or
 
 `ACCESS.toml` decides what a visitor can reach. `POLICY.md` still decides what the peko should do with it, and the reviewer and owner approvals work as in ADR-078 D7.
 
+One exception: a visitor's file call (`Read`/`Write`/`Edit`/`Glob`/`Grep`) on a path the file gives it (its own folder, `read`, `write`) is not reviewed. Listing the path is the owner's standing decision. The reviewer never sees the conversation, so it cannot tell why a shared file is being read: in the first live run it found a read of `public/` unclear, and with `ask_owner` off that refused the one thing the file was written to allow. Every other listed tool is still reviewed.
+
 ### D10. Each section says whether its visitors' requests reach the owner
 
 A personal owner wants a friend's request for one more file to reach them. A business wants nothing from a customer to queue for a person. `ask_owner` (default `false`) is one switch per section for the three ways a visitor's run can put something in front of the owner:
@@ -136,7 +138,7 @@ Snapshots carry `ACCESS.toml`; its `[contact."<actor>"]` headers are rewritten a
 
 1. **Folder names.** The compartment's channel id is stable but unreadable to an owner browsing the workspace. A slug is readable but can change.
 2. **The word "visitor".** It is also an actor kind (`visitor:<id>`). "Guest" for the trust word would avoid the clash.
-3. **Reviewer cost.** Every reviewed call of a visitor run is a model call. At customer-service volume the owner may want listed tools to skip review. `ask_owner = false` removes the waiting, not the review.
+3. **Reviewer cost.** Every reviewed call of a visitor run is a model call. At customer-service volume the owner may want listed tools to skip review. `ask_owner = false` removes the waiting, not the review; file calls on listed paths are no longer reviewed (D8). An owner with requests off has to write `POLICY.md` rules clear enough for the reviewer to allow the other tools, or visitors lose them.
 4. **Skills, roles and workflows.** The catalogs in a visitor turn could follow `read`, or have a list of their own.
 5. **Scoping MCP answers to the customer.** The reserved `acting_for` parameter already tells a server whom a call is for. What is missing is a documented pattern (and a reference server) for using it to return only that customer's records.
 6. **Group creation.** `Channel` `create`/`invite`/`role` went to owner approval for trusted runs. With trusted gone, a listed `Channel` tool could keep that behaviour for any visitor.
@@ -144,6 +146,8 @@ Snapshots carry `ACCESS.toml`; its `[contact."<actor>"]` headers are rewritten a
 ## 5. Implementation status
 
 Built (runtime, branch `feat/adr-113-visitor-access`): D2–D8, D10, the `untrusted_ok` half of D9, and snapshots carrying the file. `ACCESS.toml` binds **untrusted** runs.
+
+Checked live on 2026-11-19 (Claude Haiku, isolated home, `~/peko-e2e/e113`): a visitor sent with `--as` read a shared file and was kept from the owner's memory; its notes were written to its own folder and shown on its next turn; with `ask_owner` on, an unlisted read became a request, *Always* added the path to that visitor's section, and the answer was posted to its conversation.
 
 Not built:
 
