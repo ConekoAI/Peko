@@ -4,6 +4,8 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-19
+
 ### Security
 
 - **You decide what visitors reach, in one file (ADR-113).** Each peko now
@@ -47,7 +49,6 @@ All notable changes to Peko.
   named by `PEKO_MASTER_PASSPHRASE_FILE`. You manage it with
   `docker exec`. The container is the sandbox: a peko's shell commands run
   inside it. The image is built from a checkout; it is not published yet.
-
 - **A seed can carry any file in the peko's folder (ADR-113).** It was
   limited to roles, skills, workflows and MCP servers. Now a seed can bring
   a `public/` FAQ, reference notes, hooks, and `ACCESS.toml` and
@@ -57,7 +58,6 @@ All notable changes to Peko.
   anything that runs a command in full before accepting. In a seed the rule
   files hold rules for everyone only. `peko seed` exports the rule files
   when you have changed them; it does not export the rest of the folder.
-
 - **`peko send <peko> --as visitor:<id> [--name <name>]`** sends a message as
   a visitor, for a script that relays messages from a chat service, email or
   a web form. The peko answers in that visitor's own conversation, with a
