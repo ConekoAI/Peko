@@ -43,7 +43,7 @@ jobs:
         # Git Bash on Windows; the script drives install.ps1 there.
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install the release
         run: scripts/ci/release_smoke.sh install "${{ inputs.version }}" "$HOME/peko-bin"
