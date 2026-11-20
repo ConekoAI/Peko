@@ -4,6 +4,16 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Added
+
+- **What visitors reach can be changed without editing `ACCESS.toml`.** New
+  IPC requests `principal_access_get` and `principal_access_set` (owner
+  only, from this computer) read and replace a peko's rules: what everyone
+  reaches, and each person's own section. They also return the peko's MCP
+  servers and the people it has talked with. The file keeps its comments
+  and `own` settings, and nothing is written unless the result is valid.
+  Peko Desktop's sharing screen uses them.
+
 ## [0.3.0] - 2026-11-19
 
 ### Security

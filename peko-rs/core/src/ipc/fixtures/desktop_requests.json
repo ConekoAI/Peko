@@ -87,5 +87,7 @@
   {"type": "device_remove", "protocol_version": 1, "request_id": 1, "device_id": "dev_5f0c1c1e9a7b4f52"},
   {"type": "security_decide", "protocol_version": 1, "request_id": 1, "id": "apr_keychange0123456789", "approve": true},
   {"type": "channel_mark_read", "protocol_version": 1, "request_id": 1, "channel": "dm_0000000000000000000000000000000000000000000000000000000000000000", "at": "2026-11-15T00:30:16Z"},
-  {"type": "channel_read_state", "protocol_version": 1, "request_id": 1}
+  {"type": "channel_read_state", "protocol_version": 1, "request_id": 1},
+  {"type": "principal_access_get", "protocol_version": 1, "request_id": 1, "name": "helper"},
+  {"type": "principal_access_set", "protocol_version": 1, "request_id": 1, "name": "helper", "visitors": {"tools": ["Read", "Fetch"], "mcp": [], "read": ["public/"], "write": [], "ask_owner": false}, "people": [{"address": "visitor:local:+15550100", "rule": {"tools": ["Read"], "mcp": ["orders"], "read": ["public/", "orders/"], "write": [], "ask_owner": true}}]}
 ]

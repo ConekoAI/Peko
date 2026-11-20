@@ -671,6 +671,27 @@ pub enum RequestPacket {
         author: Option<String>,
     },
 
+    /// What a peko's visitors reach (ADR-113), for a sharing screen:
+    /// `[visitors]` and each person's own section of its `ACCESS.toml`,
+    /// the MCP servers it has, and the people it has talked with. Owner
+    /// only. Answered with `PrincipalAccess`.
+    #[serde(rename = "principal_access_get")]
+    PrincipalAccessGet { request_id: u64, name: String },
+
+    /// Replace what visitors reach: `visitors` for everyone, and
+    /// `people` as the whole set of per-person sections (one left out is
+    /// removed). The file keeps its comments and `own` settings; nothing
+    /// is written unless the result is valid. Owner only. Answered with
+    /// `PrincipalAccess` as the file now is.
+    #[serde(rename = "principal_access_set")]
+    PrincipalAccessSet {
+        request_id: u64,
+        name: String,
+        visitors: crate::security::access::Shared,
+        #[serde(default)]
+        people: Vec<AccessPerson>,
+    },
+
     /// Watch a peer's conversation thread with a Principal: replay
     /// `Posted` events newer than `since_cursor`, then stream new
     /// messages live.
@@ -1295,6 +1316,8 @@ impl RequestPacket {
             | Self::PrincipalSendStream { request_id, .. }
             | Self::PrincipalLog { request_id, .. }
             | Self::PrincipalLogWatch { request_id, .. }
+            | Self::PrincipalAccessGet { request_id, .. }
+            | Self::PrincipalAccessSet { request_id, .. }
             | Self::PrincipalExport { request_id, .. }
             | Self::PrincipalImport { request_id, .. }
             | Self::PrincipalImportPreview { request_id, .. }
@@ -1515,6 +1538,26 @@ pub struct RunFailureInfo {
     /// ADR-089 D2). Absent for a failure that waiting won't fix.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_attempt_at: Option<String>,
+}
+
+/// One person's own section of a peko's `ACCESS.toml`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccessPerson {
+    /// The section's key: an actor address (`visitor:local:+15550100`,
+    /// `user:hub:<id>`) or a group channel id.
+    pub address: String,
+    /// Their display name, when the runtime knows one (ignored on set).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    pub rule: crate::security::access::Shared,
+}
+
+/// Someone a peko has talked with, who could be given a section.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccessKnown {
+    pub address: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
 }
 
 /// One immutable, consumer-visible text message in a `PrincipalLog`
@@ -2709,6 +2752,24 @@ pub enum ResponsePacket {
         message: PrincipalLogMessage,
     },
 
+    /// A peko's visitor rules (`principal_access_get` / `_set`).
+    /// `problem` says why its `ACCESS.toml` is refused; the lists are
+    /// then empty and the file must be fixed by hand.
+    #[serde(rename = "principal_access")]
+    PrincipalAccess {
+        request_id: u64,
+        name: String,
+        visitors: crate::security::access::Shared,
+        people: Vec<AccessPerson>,
+        /// The people and pekos it has had one-to-one conversations
+        /// with, other than its owner: who could be given a section.
+        known: Vec<AccessKnown>,
+        /// The MCP servers in its workspace, by id.
+        servers: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        problem: Option<String>,
+    },
+
     #[serde(rename = "principal_exported")]
     PrincipalExported {
         request_id: u64,
@@ -3432,6 +3493,7 @@ impl ResponsePacket {
             | Self::RunSummary { request_id, .. }
             | Self::PrincipalLog { request_id, .. }
             | Self::PrincipalLogAppended { request_id, .. }
+            | Self::PrincipalAccess { request_id, .. }
             | Self::ApprovalList { request_id, .. }
             | Self::PrincipalSetupStatus { request_id, .. }
             | Self::ApprovalDecided { request_id, .. }
@@ -3541,6 +3603,7 @@ impl ResponsePacket {
             Self::RunSummary { .. } => "RunSummary",
             Self::PrincipalLog { .. } => "PrincipalLog",
             Self::PrincipalLogAppended { .. } => "PrincipalLogAppended",
+            Self::PrincipalAccess { .. } => "PrincipalAccess",
             Self::ApprovalList { .. } => "ApprovalList",
             Self::PrincipalSetupStatus { .. } => "PrincipalSetupStatus",
             Self::ApprovalDecided { .. } => "ApprovalDecided",
@@ -5932,6 +5995,42 @@ mod tests {
             }
             _ => panic!("Wrong variant"),
         }
+    }
+
+    #[test]
+    fn principal_access_roundtrips() {
+        let set = r#"{"type":"principal_access_set","request_id":4,"name":"desk",
+            "visitors":{"tools":["Read"],"read":["public/"],"ask_owner":true},
+            "people":[{"address":"visitor:local:+15550100","rule":{"read":["orders/"]}}]}"#;
+        match RequestPacket::from_bytes(set.as_bytes()).unwrap() {
+            RequestPacket::PrincipalAccessSet {
+                visitors, people, ..
+            } => {
+                assert!(visitors.ask_owner);
+                assert_eq!(visitors.mcp, Vec::<String>::new());
+                assert_eq!(people[0].rule.read, vec!["orders/"]);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        let resp = ResponsePacket::PrincipalAccess {
+            request_id: 4,
+            name: "desk".into(),
+            visitors: Default::default(),
+            people: Vec::new(),
+            known: vec![AccessKnown {
+                address: "visitor:local:+15550100".into(),
+                display_name: Some("Ada".into()),
+            }],
+            servers: vec!["orders".into()],
+            problem: None,
+        };
+        let raw = String::from_utf8(resp.to_bytes().unwrap()).unwrap();
+        assert!(raw.contains(r#""type":"principal_access""#), "{raw}");
+        assert!(!raw.contains("problem"), "{raw}");
+        assert!(matches!(
+            ResponsePacket::from_bytes(raw.as_bytes()).unwrap(),
+            ResponsePacket::PrincipalAccess { .. }
+        ));
     }
 
     #[test]
