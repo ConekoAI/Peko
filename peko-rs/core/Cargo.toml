@@ -189,7 +189,7 @@ sha2 = "0.10"
 hmac = "0.12"
 hpke = { version = "0.12", default-features = false, features = ["alloc", "x25519"] }
 # ADR-111 D3: CPace over ristretto255 for joining a device by a short code.
-curve25519-dalek = "4.1"
+curve25519-dalek = "5.0"
 
 # Filesystem walking for the principal-config drift detector
 # (ADR-046): walks `{config_dir}/pekos/*/peko.toml` at
