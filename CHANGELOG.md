@@ -14,6 +14,13 @@ All notable changes to Peko.
   to change on your side: `[tls]` settings (custom CA, client certificate,
   `pinned_cert_sha256`) work as before.
 
+### Fixed
+
+- **Storing a key no longer fails when its folder is missing.** A key kept
+  in an encrypted file (the fallback on a computer with no keychain) was
+  written without creating the folder first, so a first identity could
+  fail with "cannot find the path".
+
 ## [0.4.0] - 2026-11-20
 
 ### Security
