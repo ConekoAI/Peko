@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
 use peko_tools_core::{ActingFor, Compartment};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::floor;
 
@@ -631,6 +631,260 @@ pub fn grant_always(
     std::fs::write(&path, updated).map_err(|e| e.to_string())
 }
 
+/// What a sharing screen edits of one section of `ACCESS.toml`: the
+/// lists and the `ask_owner` switch. `own` and `own_max_bytes` are kept
+/// as the file has them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Shared {
+    #[serde(default)]
+    pub tools: Vec<String>,
+    #[serde(default)]
+    pub mcp: Vec<String>,
+    #[serde(default)]
+    pub read: Vec<String>,
+    #[serde(default)]
+    pub write: Vec<String>,
+    #[serde(default)]
+    pub ask_owner: bool,
+}
+
+impl From<&Rule> for Shared {
+    fn from(rule: &Rule) -> Self {
+        Self {
+            tools: rule.tools.clone(),
+            mcp: rule.mcp.clone(),
+            read: rule.read.clone(),
+            write: rule.write.clone(),
+            ask_owner: rule.ask_owner,
+        }
+    }
+}
+
+/// `[visitors]` and the contact sections of the file in `workspace`, as
+/// the file writes them (`public/` stays `public/`), for a sharing
+/// screen to edit. The seeded default when there is no file; an error
+/// when it is refused.
+pub fn shared_as_written(workspace: &Path) -> Result<(Shared, Vec<(String, Shared)>), String> {
+    let text = match std::fs::read_to_string(workspace.join(ACCESS_FILE)) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            seed_text(&legacy_visitor_servers(workspace))
+        }
+        Err(e) => return Err(e.to_string()),
+    };
+    Access::parse(&text)?;
+    let raw: RawFile = toml::from_str(&text).map_err(|e| e.to_string())?;
+    let shared = |rule: RawRule| Shared {
+        tools: rule.tools,
+        mcp: rule.mcp,
+        read: rule.read,
+        write: rule.write,
+        ask_owner: rule.ask_owner,
+    };
+    Ok((
+        shared(raw.visitors),
+        raw.contact
+            .into_iter()
+            .map(|(address, rule)| (address, shared(rule)))
+            .collect(),
+    ))
+}
+
+/// The MCP servers defined in `workspace/mcp/`, by id: what a visitor
+/// could be given.
+#[must_use]
+pub fn mcp_servers(workspace: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(workspace.join("mcp")) else {
+        return Vec::new();
+    };
+    let mut servers: Vec<String> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                return None;
+            }
+            if path.is_dir() {
+                return ["server.json", "manifest.yaml"]
+                    .iter()
+                    .any(|file| path.join(file).is_file())
+                    .then_some(name);
+            }
+            matches!(
+                path.extension().and_then(|e| e.to_str()),
+                Some("json" | "yaml" | "yml")
+            )
+            .then(|| path.file_stem().map(|s| s.to_string_lossy().into_owned()))
+            .flatten()
+        })
+        .collect();
+    servers.sort();
+    servers.dedup();
+    servers
+}
+
+/// Write what a sharing screen chose: `visitors` for `[visitors]`, and
+/// `people` as the whole set of `[contact."<address>"]` sections (one
+/// missing from it is removed; a new one starts from `[visitors]`'s
+/// `own` settings). Only values that change are rewritten, so the
+/// file's comments and the owner's other settings stay. Nothing is
+/// written unless the result is valid; it replaces the file at once.
+pub fn set_shared(
+    workspace: &Path,
+    visitors: &Shared,
+    people: &[(String, Shared)],
+) -> Result<Access, String> {
+    use toml_edit::{DocumentMut, Item, Table};
+
+    let path = workspace.join(ACCESS_FILE);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            seed_text(&legacy_visitor_servers(workspace))
+        }
+        Err(e) => return Err(e.to_string()),
+    };
+    Access::parse(&text).map_err(|e| format!("ACCESS.toml is not valid ({e}); fix it first"))?;
+    let mut doc: DocumentMut = text
+        .parse()
+        .map_err(|e: toml_edit::TomlError| e.to_string())?;
+
+    if !doc.contains_key("visitors") {
+        doc.insert("visitors", Item::Table(Table::new()));
+    }
+    let visitors_table = doc["visitors"]
+        .as_table_mut()
+        .ok_or("`visitors` in ACCESS.toml is not a table")?;
+    apply_shared(visitors_table, visitors);
+    let own_settings: Vec<(String, toml_edit::Value)> = visitors_table
+        .iter()
+        .filter(|(key, _)| matches!(*key, "own" | "own_max_bytes"))
+        .filter_map(|(key, item)| {
+            let mut value = item.as_value()?.clone();
+            value.decor_mut().clear();
+            Some((key.to_string(), value))
+        })
+        .collect();
+
+    let mut seen: Vec<&str> = Vec::new();
+    for (address, _) in people {
+        let address = address.trim();
+        if address.is_empty() {
+            return Err("a person's section needs an address".into());
+        }
+        if seen.contains(&address) {
+            return Err(format!("`{address}` is listed twice"));
+        }
+        seen.push(address);
+    }
+    if people.is_empty() {
+        doc.remove("contact");
+    } else {
+        if !doc.contains_key("contact") {
+            let mut contacts = Table::new();
+            contacts.set_implicit(true);
+            doc.insert("contact", Item::Table(contacts));
+        }
+        let contacts = doc["contact"]
+            .as_table_mut()
+            .ok_or("`contact` in ACCESS.toml is not a table")?;
+        let gone: Vec<String> = contacts
+            .iter()
+            .map(|(key, _)| key.to_string())
+            .filter(|key| !seen.contains(&key.as_str()))
+            .collect();
+        for key in gone {
+            contacts.remove(&key);
+        }
+        for (address, shared) in people {
+            let address = address.trim();
+            if !contacts.contains_key(address) {
+                let mut section = Table::new();
+                for (key, value) in &own_settings {
+                    section.insert(key, Item::Value(value.clone()));
+                }
+                contacts.insert(address, Item::Table(section));
+            }
+            let section = contacts[address]
+                .as_table_mut()
+                .ok_or_else(|| format!("`{address}`'s section in ACCESS.toml is not a table"))?;
+            apply_shared(section, shared);
+        }
+    }
+
+    let updated = doc.to_string();
+    let access =
+        Access::parse(&updated).map_err(|e| format!("the change would not be valid: {e}"))?;
+    let tmp = path.with_extension("toml.tmp");
+    std::fs::write(&tmp, &updated).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+    Ok(access)
+}
+
+/// Set `table`'s lists and switch to `shared`, leaving a value alone
+/// when it is already what `shared` says.
+fn apply_shared(table: &mut toml_edit::Table, shared: &Shared) {
+    use toml_edit::{Array, Item, Value};
+
+    let lists = [
+        ("tools", &shared.tools),
+        ("mcp", &shared.mcp),
+        ("read", &shared.read),
+        ("write", &shared.write),
+    ];
+    for (key, wanted) in lists {
+        let current: Option<Vec<String>> = table.get(key).and_then(Item::as_array).map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        });
+        // `public/` and `public` name the same folder.
+        let same = |a: &[String], b: &[String]| {
+            let norm = |list: &[String]| -> Vec<String> {
+                list.iter()
+                    .map(|p| match key {
+                        "read" | "write" => clean("", key, p).unwrap_or_else(|_| p.clone()),
+                        _ => p.clone(),
+                    })
+                    .collect()
+            };
+            norm(a) == norm(b)
+        };
+        let unchanged = match &current {
+            Some(current) => same(current, wanted),
+            None => wanted.is_empty(),
+        };
+        if unchanged {
+            continue;
+        }
+        let array: Array = wanted.iter().map(String::as_str).collect();
+        match table.get_mut(key).and_then(Item::as_value_mut) {
+            Some(value) => {
+                let decor = value.decor().clone();
+                *value = Value::Array(array);
+                *value.decor_mut() = decor;
+            }
+            None => {
+                table.insert(key, Item::Value(Value::Array(array)));
+            }
+        }
+    }
+    let current = table.get("ask_owner").and_then(Item::as_bool);
+    if current != Some(shared.ask_owner) && !(current.is_none() && !shared.ask_owner) {
+        match table.get_mut("ask_owner").and_then(Item::as_value_mut) {
+            Some(value) => {
+                let decor = value.decor().clone();
+                *value = Value::from(shared.ask_owner);
+                *value.decor_mut() = decor;
+            }
+            None => {
+                table.insert("ask_owner", toml_edit::value(shared.ask_owner));
+            }
+        }
+    }
+}
+
 /// The bytes under `dir`, following no links. Missing is zero.
 #[must_use]
 pub fn dir_size(dir: &Path) -> u64 {
@@ -1108,5 +1362,98 @@ own_max_bytes = 1000
         std::fs::write(ws.join(ACCESS_FILE), "[visitors]\ntools = [\"Bash\"]\n").unwrap();
         let broken = grant_always(ws, "chan_team", &exact, &Grant::Tool("Fetch".into()));
         assert!(broken.unwrap_err().contains("not valid"));
+    }
+
+    #[test]
+    fn set_shared_changes_only_what_differs_and_keeps_comments() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(seed(dir.path()).unwrap());
+        let before = std::fs::read_to_string(dir.path().join(ACCESS_FILE)).unwrap();
+        let (mut visitors, people) = shared_as_written(dir.path()).unwrap();
+        assert!(people.is_empty());
+        assert_eq!(visitors.read, vec!["public/", "kb/CONVENTIONS.md"]);
+        visitors.read.push("menu/".into());
+        visitors.ask_owner = true;
+        let mut ada = visitors.clone();
+        ada.write.push("orders/".into());
+
+        let access = set_shared(
+            dir.path(),
+            &visitors,
+            &[("visitor:local:+15550100".into(), ada.clone())],
+        )
+        .unwrap();
+
+        let after = std::fs::read_to_string(dir.path().join(ACCESS_FILE)).unwrap();
+        assert!(
+            after.contains("# Files and folders a visitor may read."),
+            "{after}"
+        );
+        assert!(
+            after.contains("read = [\"public/\", \"kb/CONVENTIONS.md\", \"menu/\"]"),
+            "{after}"
+        );
+        assert!(after.contains("ask_owner = true"), "{after}");
+        // The long tools list is untouched, as written.
+        let tools = |text: &str| {
+            text[text.find("tools = [").unwrap()..]
+                .split(']')
+                .next()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(tools(&before), tools(&after));
+        assert_eq!(
+            access.visitors.read,
+            vec!["public", "kb/CONVENTIONS.md", "menu"]
+        );
+        let (address, rule) = &access.contacts[0];
+        assert_eq!(address, "visitor:local:+15550100");
+        assert_eq!(rule.write, vec!["orders"]);
+        // A new section keeps each conversation's own folder.
+        assert_eq!(rule.own_base.as_deref(), Some("contacts"));
+
+        // Removing the person removes the section.
+        let access = set_shared(dir.path(), &visitors, &[]).unwrap();
+        assert!(access.contacts.is_empty());
+        let after = std::fs::read_to_string(dir.path().join(ACCESS_FILE)).unwrap();
+        assert!(
+            !after.contains("[contact.\"visitor:local:+15550100\"]"),
+            "{after}"
+        );
+    }
+
+    #[test]
+    fn set_shared_refuses_what_the_file_would_refuse() {
+        let dir = tempfile::tempdir().unwrap();
+        seed(dir.path()).unwrap();
+        let before = std::fs::read_to_string(dir.path().join(ACCESS_FILE)).unwrap();
+        let mut visitors = Shared::from(&Access::seeded().visitors);
+        visitors.tools.push("Bash".into());
+        assert!(set_shared(dir.path(), &visitors, &[])
+            .unwrap_err()
+            .contains("Bash"));
+        let mut visitors = Shared::from(&Access::seeded().visitors);
+        visitors.read.push("../elsewhere".into());
+        assert!(set_shared(dir.path(), &visitors, &[]).is_err());
+        let mut visitors = Shared::from(&Access::seeded().visitors);
+        visitors.read.push("contacts/".into());
+        assert!(set_shared(dir.path(), &visitors, &[]).is_err());
+        assert_eq!(
+            before,
+            std::fs::read_to_string(dir.path().join(ACCESS_FILE)).unwrap()
+        );
+    }
+
+    #[test]
+    fn mcp_servers_lists_the_workspace_servers() {
+        let dir = tempfile::tempdir().unwrap();
+        let mcp = dir.path().join("mcp");
+        std::fs::create_dir_all(mcp.join("orders")).unwrap();
+        std::fs::write(mcp.join("orders").join("server.json"), "{}").unwrap();
+        std::fs::create_dir_all(mcp.join("empty")).unwrap();
+        std::fs::write(mcp.join("calendar.yaml"), "x: 1").unwrap();
+        std::fs::write(mcp.join(".hidden.json"), "{}").unwrap();
+        assert_eq!(mcp_servers(dir.path()), vec!["calendar", "orders"]);
     }
 }

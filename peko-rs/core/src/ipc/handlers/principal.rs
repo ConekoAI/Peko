@@ -62,6 +62,7 @@ use tracing::warn;
 
 use peko_session::SteeringMessage;
 
+mod access;
 mod sent_watch;
 
 // ─── Principal log / preview types (privately owned by this handler) ──
@@ -287,6 +288,8 @@ impl RequestHandler for PrincipalHandler {
                 | RequestPacket::ApprovalDecide { .. }
                 | RequestPacket::PrincipalLog { .. }
                 | RequestPacket::PrincipalLogWatch { .. }
+                | RequestPacket::PrincipalAccessGet { .. }
+                | RequestPacket::PrincipalAccessSet { .. }
                 | RequestPacket::PrincipalSentWatch { .. }
                 | RequestPacket::PrincipalExport { .. }
                 | RequestPacket::PrincipalImportPreview { .. }
@@ -585,6 +588,21 @@ impl RequestHandler for PrincipalHandler {
                 send_response(sink, response).await?;
             }
 
+            RequestPacket::PrincipalAccessGet { request_id, name } => {
+                let response = access::get(request_id, &name, caller, host).await;
+                send_response(sink, response).await?;
+            }
+
+            RequestPacket::PrincipalAccessSet {
+                request_id,
+                name,
+                visitors,
+                people,
+            } => {
+                let response =
+                    access::set(request_id, &name, &visitors, &people, caller, host).await;
+                send_response(sink, response).await?;
+            }
             RequestPacket::PrincipalSentWatch {
                 request_id,
                 name,
@@ -5981,6 +5999,73 @@ mod tests {
             }
         }
 
+        /// The sharing screen reads the rules, the servers and the people
+        /// the peko has talked with, gives one of them their own section,
+        /// and reads it back; a non-owner is refused both ways.
+        #[tokio::test(flavor = "multi_thread")]
+        #[serial_test::serial]
+        async fn access_get_and_set_for_the_owner() {
+            let fx = fixture(true).await;
+            let local = CallerContext::local();
+            let ResponsePacket::PrincipalAccess {
+                visitors,
+                people,
+                known,
+                problem,
+                ..
+            } = access::get(1, "loggable", &local, &fx.host).await
+            else {
+                panic!("expected PrincipalAccess");
+            };
+            assert_eq!(problem, None);
+            assert!(people.is_empty());
+            assert!(
+                visitors.read.contains(&"public/".to_string()),
+                "{visitors:?}"
+            );
+            let alice = fx.peer.canonical_address();
+            assert!(known.iter().any(|k| k.address == alice), "{known:?}");
+
+            let mut theirs = visitors.clone();
+            theirs.read.push("playbooks/".into());
+            let person = crate::ipc::packet::AccessPerson {
+                address: alice.clone(),
+                display_name: None,
+                rule: theirs,
+            };
+            let ResponsePacket::PrincipalAccess { people, .. } = access::set(
+                2,
+                "loggable",
+                &visitors,
+                std::slice::from_ref(&person),
+                &local,
+                &fx.host,
+            )
+            .await
+            else {
+                panic!("expected PrincipalAccess");
+            };
+            assert_eq!(people.len(), 1);
+            assert_eq!(people[0].address, alice);
+            assert!(people[0].rule.read.contains(&"playbooks/".to_string()));
+
+            let stranger = CallerContext::from_jwt("alice".into());
+            assert!(matches!(
+                access::get(3, "loggable", &stranger, &fx.host).await,
+                ResponsePacket::Error { .. }
+            ));
+            assert!(matches!(
+                access::set(4, "loggable", &visitors, &[], &stranger, &fx.host).await,
+                ResponsePacket::Error { .. }
+            ));
+            // The refused change was not written.
+            let ResponsePacket::PrincipalAccess { people, .. } =
+                access::get(5, "loggable", &local, &fx.host).await
+            else {
+                panic!("expected PrincipalAccess");
+            };
+            assert_eq!(people.len(), 1);
+        }
         /// ADR-113: a visitor's files go in their conversation's own
         /// folder, which their run reads; the owner's in `attachments/`.
         #[tokio::test(flavor = "multi_thread")]
