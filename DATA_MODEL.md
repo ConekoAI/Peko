@@ -228,8 +228,12 @@ base64url of the encapsulated key followed by the ciphertext. Types:
   `Agent` `as_owner` call: `summary` is its whole brief, `reason` says where it
   was asked ("in “repo-team” (4 members)"), and `always` is refused. The
   tunnel's `PekoApproval` carries the same optional `kind` (ADR-099 D1).
-- `Permission::Trusted` (`"trusted"`) in `peko.toml` grants: the owner's
-  consent to give one named actor full tools. Never `public`, never in invites.
+- `Permission::Trusted` (`"trusted"`) is retired (ADR-113 D1). It still
+  parses in an old `peko.toml`, confers nothing, and is refused when
+  granted. At boot each named actor's grant becomes a `[contact."<address>"]`
+  section in `ACCESS.toml` (`[visitors]` plus the `MCP` tool and every MCP
+  server) and the grant is dropped. `Trust::Trusted` stays in the stamp
+  enum so older records still read, but is never minted.
 - IPC `principal_send` / `principal_send_stream` take an optional
   `send_as: {actor: "visitor:<id>", name?}` (ADR-113 D7): the message is
   from that visitor (`visitor:local:<id>`; ids are 1–128 of letters, digits

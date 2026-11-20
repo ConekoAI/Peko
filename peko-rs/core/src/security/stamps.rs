@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use peko_auth::{ActorRef, Permission, PermissionGrant};
+use peko_auth::{ActorRef, PermissionGrant};
 use peko_channel::{ChannelId, ChannelPort};
 use peko_session::{SessionId, SessionMetadata};
 use peko_subject::{ActorKeys, CanonicalKeys, PrincipalId};
@@ -25,25 +25,19 @@ pub trait TrustSource: Send + Sync {
     async fn owner(&self) -> ActorRef;
 }
 
-/// Trust for `actor` under an owner and a grant list (ADR-078 §2,
-/// ADR-081 D4): `Owner` exactly when `actor` is the owner, `Trusted` when
-/// a grant names it with the owner's consent bit, else `Untrusted`.
+/// Trust for `actor` (ADR-078 §2, ADR-081 D4, ADR-113 D1): `Owner`
+/// exactly when `actor` is the owner, else `Untrusted`. `trusted` is
+/// retired: what a visitor reaches is their section of `ACCESS.toml`,
+/// and a `trusted` grant confers nothing (the boot pass moves it there).
 #[must_use]
 pub fn trust_for(
     owner: &ActorRef,
-    grants: &[PermissionGrant],
+    _grants: &[PermissionGrant],
     keys: &dyn ActorKeys,
     actor: &ActorRef,
 ) -> Trust {
     if keys.same_actor(owner, actor) {
-        return Trust::Owner;
-    }
-    // The consent bit must name the actor: a public grant never trusts.
-    let trusted = grants.iter().any(|grant| {
-        grant.permission == Permission::Trusted && keys.same_actor(&grant.subject, actor)
-    });
-    if trusted {
-        Trust::Trusted
+        Trust::Owner
     } else {
         Trust::Untrusted
     }
@@ -336,6 +330,7 @@ impl Stamps {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use peko_auth::Permission;
 
     fn grant(subject: ActorRef, permission: Permission) -> PermissionGrant {
         PermissionGrant {
@@ -385,10 +380,11 @@ mod tests {
             trust_for(&owner, &grants, &CanonicalKeys, &alice),
             Trust::Untrusted
         );
+        // ADR-113 D1: a `trusted` grant confers nothing.
         let grants = vec![grant(alice.clone(), Permission::Trusted)];
         assert_eq!(
             trust_for(&owner, &grants, &CanonicalKeys, &alice),
-            Trust::Trusted
+            Trust::Untrusted
         );
         let bob = ActorRef::Principal("prin_bob".into());
         assert_eq!(

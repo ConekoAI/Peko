@@ -805,27 +805,15 @@ impl RequestHandler for PrincipalHandler {
                     send_response(sink, response).await?;
                     return Ok(());
                 }
-                // ADR-078: `trusted` is the owner's own consent for one
-                // named actor; a settings delegate cannot extend it.
+                // ADR-113 D1: `trusted` is retired. What someone reaches
+                // is their section of ACCESS.toml.
                 if permission == Permission::Trusted {
-                    let refusal = if subject == peko_auth::ActorRef::Public {
-                        Some("`trusted` must name an actor; it cannot be granted to `public`")
-                    } else if !host_keys(host).same_actor(
-                        &caller.permission_subject(resource.owner()),
-                        resource.owner(),
-                    ) {
-                        Some("only the owner can grant `trusted`")
-                    } else {
-                        None
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: TRUSTED_RETIRED.to_string(),
                     };
-                    if let Some(message) = refusal {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: message.to_string(),
-                        };
-                        send_response(sink, response).await?;
-                        return Ok(());
-                    }
+                    send_response(sink, response).await?;
+                    return Ok(());
                 }
                 // ADR-066 D9: ownership gate — `update_config`
                 // rewrites `peko.toml`, so the actor must own
@@ -1311,8 +1299,7 @@ impl RequestHandler for PrincipalHandler {
                 if scope.contains(&peko_auth::Permission::Trusted) {
                     let response = ResponsePacket::Error {
                         request_id,
-                        message: "an invite cannot grant `trusted`; permit the actor by name                                   with `peko permit <peko> <actor> trusted`"
-                            .to_string(),
+                        message: TRUSTED_RETIRED.to_string(),
                     };
                     send_response(sink, response).await?;
                     return Ok(());
@@ -2322,6 +2309,10 @@ async fn read_seed_file(caller: &CallerContext, path: &str) -> Result<String, St
         .await
         .map_err(|e| format!("cannot read {}: {e}", path.display()))
 }
+
+/// Why `trusted` is refused (ADR-113 D1).
+const TRUSTED_RETIRED: &str = "`trusted` is retired: give them their own section in the peko's \
+     ACCESS.toml instead (Sharing, in the peko's profile in Peko Desktop), listing what they may reach";
 
 /// Admit `send_as` (ADR-113 D7): only a caller with the owner's settings
 /// authority, on this host, may say a message is from a visitor. The

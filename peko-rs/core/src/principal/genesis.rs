@@ -1010,6 +1010,72 @@ pub fn seed_memory_job(
     Ok(added)
 }
 
+/// Move a principal's `trusted` grants into `ACCESS.toml` sections and
+/// drop them (ADR-113 D1, D9). Warns and leaves the grants in place when
+/// the file cannot be written, so nothing is lost; they confer nothing
+/// either way.
+async fn retire_trusted(
+    manager: &PrincipalManager,
+    principal: &std::sync::Arc<crate::principal::Principal>,
+    name: &str,
+    workspace: &std::path::Path,
+) {
+    let trusted: Vec<String> = principal
+        .config
+        .read()
+        .await
+        .permissions
+        .iter()
+        .filter(|g| g.permission == peko_auth::Permission::Trusted)
+        .filter(|g| g.subject != peko_auth::ActorRef::Public)
+        .map(|g| g.subject.canonical_address())
+        .collect();
+    let has_any = principal
+        .config
+        .read()
+        .await
+        .permissions
+        .iter()
+        .any(|g| g.permission == peko_auth::Permission::Trusted);
+    if !has_any {
+        return;
+    }
+    let same_actor = |a: &str, b: &str| match (
+        a.parse::<peko_auth::ActorRef>(),
+        b.parse::<peko_auth::ActorRef>(),
+    ) {
+        (Ok(a), Ok(b)) => match manager.channel_port() {
+            Some(port) => {
+                peko_subject::ActorKeys::same_actor(&peko_channel::PortKeys(port.as_ref()), &a, &b)
+            }
+            None => a == b,
+        },
+        _ => a == b,
+    };
+    match crate::security::access::migrate_trusted(workspace, &trusted, &same_actor) {
+        Ok(added) => {
+            for actor in &added {
+                tracing::info!(
+                    "genesis: '{name}' trusted {actor}; ACCESS.toml now gives them their own section"
+                );
+            }
+            if let Err(e) = manager
+                .update_config(name, |config| {
+                    config
+                        .permissions
+                        .retain(|g| g.permission != peko_auth::Permission::Trusted);
+                })
+                .await
+            {
+                tracing::warn!("genesis: could not drop '{name}' trusted grants: {e}");
+            }
+        }
+        Err(e) => tracing::warn!(
+            "genesis: '{name}' trusted grants not moved into ACCESS.toml ({e}); fix the file"
+        ),
+    }
+}
+
 /// Daemon-boot seeding pass (ADR-054 P2 entry).
 ///
 /// For every loaded principal whose [`BootState`] is not yet
@@ -1073,6 +1139,12 @@ pub async fn seed_boot_defaults(
             Ok(false) => {}
             Err(e) => tracing::warn!("genesis: ACCESS.toml seed failed for '{name}': {e}"),
         }
+
+        // ADR-113 D1: `trusted` is retired. Each actor the owner had
+        // marked trusted gets its own section in ACCESS.toml (the MCP
+        // tool and every server, what trusted added), then the grant is
+        // dropped.
+        retire_trusted(manager, &principal, &name, &shared_root).await;
 
         // 2026-09-28 rename: move a pre-rename `kb/agents/` directory
         // to `kb/roles/` so the D8 note directory pairs with the
@@ -1846,6 +1918,69 @@ mod tests {
     }
 
     // ─── boot-pass integration (daemon boot shape) ──────────────────
+
+    /// ADR-113 D1/D9: at boot, an actor the owner had marked `trusted`
+    /// gets their own ACCESS.toml section with the MCP tool and the
+    /// peko's servers, and the grant is dropped.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn boot_moves_trusted_grants_into_access_sections() {
+        let temp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("PEKO_HOME", temp.path());
+        peko_identity::init_test_env();
+        let path_resolver = crate::common::paths::PathResolver::with_dirs(
+            temp.path().join("config"),
+            temp.path().join("data"),
+            temp.path().join("cache"),
+        );
+        let manager = PrincipalManager::with_path_resolver(
+            path_resolver.clone(),
+            std::sync::Arc::new(crate::principal::factory::DefaultPrincipalMemoryFactory),
+            std::sync::Arc::new(crate::principal::factory::DefaultPrincipalRouterFactory),
+            crate::async_exec::executor::standalone_inbox_registry(),
+        );
+        let mut config = bare_config();
+        let alice = peko_auth::ActorRef::User("hub:alice".into());
+        config.permissions.push(peko_auth::PermissionGrant {
+            subject: alice.clone(),
+            permission: peko_auth::Permission::Trusted,
+            granted_at: String::new(),
+            granted_by: peko_auth::ActorRef::User("local".into()),
+        });
+        config.permissions.push(peko_auth::PermissionGrant {
+            subject: alice.clone(),
+            permission: peko_auth::Permission::Chat,
+            granted_at: String::new(),
+            granted_by: peko_auth::ActorRef::User("local".into()),
+        });
+        manager.create(config).await.expect("create");
+        let workspace = path_resolver.principal_layout("seedling").shared.root;
+        let server = workspace.join("mcp").join("orders");
+        std::fs::create_dir_all(&server).unwrap();
+        std::fs::write(server.join("server.json"), "{}").unwrap();
+
+        let _ = seed_boot_defaults(&manager, &path_resolver).await;
+
+        let access = crate::security::access::Access::load(&workspace);
+        let (address, rule) = access
+            .contacts
+            .iter()
+            .find(|(address, _)| address.contains("alice"))
+            .expect("alice has a section");
+        assert_eq!(address, &alice.canonical_address());
+        assert!(
+            rule.allows_tool("MCP") && rule.allows_mcp("orders"),
+            "{rule:?}"
+        );
+        let principal = manager.get_by_name("seedling").await.unwrap();
+        let permissions = principal.config.read().await.permissions.clone();
+        assert!(!permissions
+            .iter()
+            .any(|g| g.permission == peko_auth::Permission::Trusted));
+        assert!(permissions
+            .iter()
+            .any(|g| g.permission == peko_auth::Permission::Chat));
+    }
 
     /// The full P2 seeding pass over a real manager: a fresh bare
     /// principal gets both jobs, its state is stamped and persisted,

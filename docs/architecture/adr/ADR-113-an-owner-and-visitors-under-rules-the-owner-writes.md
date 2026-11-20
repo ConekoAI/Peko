@@ -1,6 +1,6 @@
 # ADR-113: A peko has an owner and visitors; one file the owner writes says what visitors reach
 
-**Status:** Accepted. D2–D8 and D10 are implemented for untrusted runs; D1 (retiring `trusted`) and the `trusted` half of D9 are not yet (§5).
+**Status:** Accepted. D1–D11 are implemented (§5).
 **Date:** 2026-11-19
 **Amends:** [ADR-107](ADR-107-a-seed-carries-capability-files.md) D2 (D11), [ADR-066](ADR-066-pure-workspace-tooling.md) D1, [ADR-078](ADR-078-acting-for-stamps-and-trust-floor.md) §2, D6 and D7, [ADR-075](ADR-075-principal-owned-mcp-runtime.md) (`untrusted_ok`), [ADR-080](ADR-080-daily-memory-maintenance.md) (who gets the hot files).
 **Touches:** `peko-rs/core/src/security/access.rs` (new), `security/floor.rs`, `tools/dispatcher.rs`, `tools/catalog.rs`, `principal/acting_for_prompt.rs`, `peko-rs/engine/src/prompt/{memory,renderer}.rs`, `ipc/packet.rs` and `ipc/handlers/principal.rs` (`send_as`), `peko-rs/cli/src/commands/send.rs`, `registry/packaging/` (snapshots carry the file).
@@ -147,14 +147,14 @@ Snapshots carry `ACCESS.toml`; its `[contact."<actor>"]` headers are rewritten a
 
 ## 4. Open questions
 
-0. **Files a visitor sends are not reachable from their conversation.** Inbound attachments are copied to `attachments/<date>/`, which is shared by every conversation and so is not listed for visitors. Images still reach the model as media; a visitor's document cannot be opened with `Read`. They should land in the conversation's own folder.
+0. *(Resolved 2026-11-20: they land in the conversation's own folder.)* **Files a visitor sends are not reachable from their conversation.** Inbound attachments are copied to `attachments/<date>/`, which is shared by every conversation and so is not listed for visitors. Images still reach the model as media; a visitor's document cannot be opened with `Read`. They should land in the conversation's own folder.
 
 1. **Folder names.** The compartment's channel id is stable but unreadable to an owner browsing the workspace. A slug is readable but can change.
 2. **The word "visitor".** It is also an actor kind (`visitor:<id>`). "Guest" for the trust word would avoid the clash.
 3. **Reviewer cost.** Every reviewed call of a visitor run is a model call. At customer-service volume the owner may want listed tools to skip review. `ask_owner = false` removes the waiting, not the review; file calls on listed paths are no longer reviewed (D8). An owner with requests off has to write `POLICY.md` rules clear enough for the reviewer to allow the other tools, or visitors lose them.
 4. **Skills, roles and workflows.** The catalogs in a visitor turn could follow `read`, or have a list of their own.
 5. **Scoping MCP answers to the customer.** The reserved `acting_for` parameter already tells a server whom a call is for. What is missing is a documented pattern (and a reference server) for using it to return only that customer's records.
-6. **Group creation.** `Channel` `create`/`invite`/`role` went to owner approval for trusted runs. With trusted gone, a listed `Channel` tool could keep that behaviour for any visitor.
+6. *(Resolved with D1: a visitor whose section sets `ask_owner` has `Channel` `create`/`invite`/`role`/`admin`/`join` go to the owner; without it they are refused.)* **Group creation.** `Channel` `create`/`invite`/`role` went to owner approval for trusted runs. With trusted gone, a listed `Channel` tool could keep that behaviour for any visitor.
 
 ## 5. Implementation status
 
@@ -162,8 +162,11 @@ Built (runtime, branch `feat/adr-113-visitor-access`): D2–D8, D10, the `untrus
 
 Checked live on 2026-11-19 (Claude Haiku, isolated home, `~/peko-e2e/e113`): a visitor sent with `--as` read a shared file and was kept from the owner's memory; its notes were written to its own folder and shown on its next turn; with `ask_owner` on, an unlisted read became a request, *Always* added the path to that visitor's section, and the answer was posted to its conversation.
 
-Not built:
+Built 2026-11-20:
 
-- **D1.** `Trust::Trusted` and `peko permit … trusted` still exist, and a trusted run is not bound by `ACCESS.toml`: it keeps what ADR-078 gives it. Retiring it changes the permission model in the CLI, the desktop and the tunnel, and is its own change.
-- **D9, `trusted` grants.** Follows D1.
-- Open questions 0–6 (seeds carrying the rules, the first of them, is done: D11).
+- **D1.** `trust_for` returns only `Owner` or `Untrusted`, so every run that is not the owner's is bound by `ACCESS.toml`. Granting `trusted` (`peko permit`, IPC, an invite) is refused with a pointer to `ACCESS.toml`. `Trust::Trusted` and `Permission::Trusted` stay as types so older `peko.toml` files, stamps and ledger records still read; neither is minted. A visitor's `Channel` owner actions go to the owner when their section sets `ask_owner`, and are refused otherwise (open question 6).
+- **D9, `trusted` grants.** At boot, each actor with a `trusted` grant gets a `[contact."<address>"]` section: `[visitors]` plus the `MCP` tool and every MCP server in the workspace. A section the owner already wrote is kept. The grants are then dropped.
+- Visitors' files land in their conversation's own folder (open question 0).
+- Peko Desktop's Sharing section edits the file through `principal_access_get` / `principal_access_set`.
+
+Still open: questions 1–5.

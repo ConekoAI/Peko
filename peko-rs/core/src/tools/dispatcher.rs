@@ -702,7 +702,14 @@ impl ToolDispatcher {
         let principal_workspace = caller_principal.and_then(|_| self.workspace_for(&principal_id));
         let reach = self.visitor_reach(principal_workspace.as_deref(), &stamp);
         if let Some(reason) = crate::security::floor::floor_tool_refusal(&stamp, &tool_name)
-            .or_else(|| crate::security::floor::action_refusal(&stamp, &tool_name, &call.params))
+            .or_else(|| {
+                crate::security::floor::action_refusal(
+                    &stamp,
+                    &tool_name,
+                    &call.params,
+                    reach.as_ref().is_some_and(|reach| reach.rule.ask_owner),
+                )
+            })
             .or_else(|| {
                 crate::security::floor::owner_task_refusal(&stamp, &tool_name, &call.params)
             })

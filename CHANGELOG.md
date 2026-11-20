@@ -4,6 +4,23 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Security
+
+- **`trusted` is retired (ADR-113 D1).** Everyone who is not a peko's owner
+  is now a visitor, bound by its `ACCESS.toml`.
+  - **Breaking:** someone you had marked `trusted` reached all of a peko's
+    tools (except the shell) and its files outside `ACCESS.toml`. At the
+    first start after updating, each of them gets their own section in
+    `ACCESS.toml`: what everyone reaches, plus the `MCP` tool and every MCP
+    server the peko has. Their `trusted` grant is then removed. Check those
+    sections and list what else they should reach.
+  - `peko permit <peko> <who> trusted` and invites carrying `trusted` are
+    refused, with a pointer to `ACCESS.toml`.
+  - A visitor's request to create a group, invite someone, choose a role,
+    an admin or join a group now goes to you when their section sets
+    `ask_owner = true`, and is refused otherwise (it used to go to you only
+    for `trusted` people).
+
 ### Added
 
 - **The runtime is published as a Docker image.** Each release now

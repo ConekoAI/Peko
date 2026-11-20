@@ -3563,10 +3563,11 @@ mod tests {
     }
 
     /// ADR-081 D8: a cron job's trust is re-derived when it fires and only
-    /// lowered, so revoking a grant reaches jobs that already exist.
+    /// lowered. ADR-113 D1: a `trusted` grant confers nothing, so a job a
+    /// once-trusted actor made runs as a visitor, grant or no grant.
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
-    async fn cron_trust_drops_when_its_grant_is_revoked() {
+    async fn cron_trust_is_rederived_and_trusted_confers_nothing() {
         let (_temp, manager, _adapter, id) = setup().await;
         let principal = manager.get(id.clone()).await.unwrap();
         let alice = ActorRef::User("hub:alice".into());
@@ -3617,7 +3618,7 @@ mod tests {
         let stamp = crate::principal::trust::cron_job_stamp(&principal, None, &job, &session)
             .await
             .unwrap();
-        assert_eq!(stamp.trust, peko_tools_core::Trust::Trusted);
+        assert_eq!(stamp.trust, peko_tools_core::Trust::Untrusted);
 
         manager
             .update_config("stressy", |config| config.permissions.clear())
