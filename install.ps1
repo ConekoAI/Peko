@@ -116,7 +116,7 @@ function Install-Peko {
             # goes away on the next install once nothing runs it.
             if (Test-Path $old) { Remove-Item -Force $old -ErrorAction SilentlyContinue }
             if (Test-Path $dest) {
-                if (Test-Path $old) { throw "$old is still in use; stop Peko (peko engine stop) and run the installer again" }
+                if (Test-Path $old) { throw "$old is still in use; stop Peko (peko engine stop; before 0.4.0: peko daemon stop) and run the installer again" }
                 Rename-Item -Path $dest -NewName "$bin.old"
             }
             Copy-Item -Path (Join-Path $extracted $bin) -Destination $dest
