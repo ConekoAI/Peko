@@ -22,6 +22,15 @@ All notable changes to Peko.
   The repository gained a `LICENSE` file (MIT, as `Cargo.toml` already
   said), `CONTRIBUTING.md`, `SECURITY.md` and issue templates.
 
+### Security
+
+- **Dependencies with published advisories are updated:** `tar` 0.4.46
+  (three issues in unpacking archives, which `peko import` does),
+  `jsonwebtoken` 10 (a type confusion in claim checks), `rustls` 0.23.46,
+  `rustls-webpki` 0.103.17 and `rand` 0.8.8. The older `rustls` 0.21 and
+  0.22 lines, which the HTTP client and the PekoHub connection still use,
+  are not updated yet.
+
 ### Fixed
 
 - The User's Guide said PekoHub could read messages it relays. Since 0.2.0

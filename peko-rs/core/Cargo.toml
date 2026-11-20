@@ -280,7 +280,7 @@ windows-sys = { version = "0.52", features = [
 ] }
 
 # JWT validation
-jsonwebtoken = "9"
+jsonwebtoken = { version = "10.3", features = ["rust_crypto"] }
 # JSON Schema validation for tool arg validation (F32b). Lifted from
 # `peko-extension-host` Cargo.toml in Phase F2 foldback.
 jsonschema = { version = "0.48", default-features = false }

@@ -337,7 +337,8 @@ jobs:
     needs: changes
     # pekohub is a private repo; checking it out needs the
     # PEKOHUB_READ_TOKEN secret, which GitHub withholds from fork PRs.
-    # Those skip this tier instead of failing at the checkout.
+    # Those skip this tier instead of failing at the checkout. So do
+    # Dependabot's pull requests: they run without repository secrets.
     if: >-
       (needs.changes.outputs.mock_tests == 'true'
        || needs.changes.outputs.tools == 'true'
@@ -348,6 +349,7 @@ jobs:
        || github.event_name == 'workflow_dispatch')
       && (github.event_name != 'pull_request'
           || github.event.pull_request.head.repo.full_name == github.repository)
+      && github.actor != 'dependabot[bot]'
     steps:
       - name: Checkout peko-runtime
         uses: actions/checkout@v4
