@@ -2585,7 +2585,7 @@ dependencies = [
 
 [[package]]
 name = "peko"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2669,7 +2669,7 @@ dependencies = [
 
 [[package]]
 name = "peko-auth"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -2691,7 +2691,7 @@ dependencies = [
 
 [[package]]
 name = "peko-channel"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2712,7 +2712,7 @@ dependencies = [
 
 [[package]]
 name = "peko-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2754,7 +2754,7 @@ dependencies = [
 
 [[package]]
 name = "peko-cron"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2774,7 +2774,7 @@ dependencies = [
 
 [[package]]
 name = "peko-daemon"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "peko",
@@ -2786,7 +2786,7 @@ dependencies = [
 
 [[package]]
 name = "peko-engine"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2814,14 +2814,14 @@ dependencies = [
 
 [[package]]
 name = "peko-events"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "peko-fs-persistence"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2838,7 +2838,7 @@ dependencies = [
 
 [[package]]
 name = "peko-identity"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2865,7 +2865,7 @@ dependencies = [
 
 [[package]]
 name = "peko-message"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "serde",
@@ -2874,7 +2874,7 @@ dependencies = [
 
 [[package]]
 name = "peko-observability"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2888,7 +2888,7 @@ dependencies = [
 
 [[package]]
 name = "peko-plan"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2905,7 +2905,7 @@ dependencies = [
 
 [[package]]
 name = "peko-protocol"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2913,7 +2913,7 @@ dependencies = [
 
 [[package]]
 name = "peko-provider-api"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2928,7 +2928,7 @@ dependencies = [
 
 [[package]]
 name = "peko-providers"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2955,7 +2955,7 @@ dependencies = [
 
 [[package]]
 name = "peko-quota"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "peko-message",
@@ -2970,7 +2970,7 @@ dependencies = [
 
 [[package]]
 name = "peko-session"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2996,7 +2996,7 @@ dependencies = [
 
 [[package]]
 name = "peko-subject"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3006,7 +3006,7 @@ dependencies = [
 
 [[package]]
 name = "peko-tools-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3089,7 +3089,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3c80231409c20246a13fddb31776fb942c38553c51e871f8cbd687a4cfb5843d"
 dependencies = [
  "phf_shared 0.11.3",
- "rand 0.8.5",
+ "rand 0.8.8",
 ]
 
 [[package]]
