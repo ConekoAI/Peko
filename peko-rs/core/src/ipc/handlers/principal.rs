@@ -62,6 +62,8 @@ use tracing::warn;
 
 use peko_session::SteeringMessage;
 
+mod sent_watch;
+
 // ─── Principal log / preview types (privately owned by this handler) ──
 
 /// Preview summary for a `.peko` package, produced server-side
@@ -285,6 +287,7 @@ impl RequestHandler for PrincipalHandler {
                 | RequestPacket::ApprovalDecide { .. }
                 | RequestPacket::PrincipalLog { .. }
                 | RequestPacket::PrincipalLogWatch { .. }
+                | RequestPacket::PrincipalSentWatch { .. }
                 | RequestPacket::PrincipalExport { .. }
                 | RequestPacket::PrincipalImportPreview { .. }
                 | RequestPacket::PrincipalImport { .. }
@@ -580,6 +583,17 @@ impl RequestHandler for PrincipalHandler {
                     },
                 };
                 send_response(sink, response).await?;
+            }
+
+            RequestPacket::PrincipalSentWatch {
+                request_id,
+                name,
+                since,
+            } => {
+                sent_watch::handle_principal_sent_watch(
+                    request_id, &name, since, caller, host, sink,
+                )
+                .await?;
             }
 
             RequestPacket::PrincipalLogWatch {
@@ -4198,7 +4212,7 @@ async fn resolve_log_thread(
 
 /// The principal whose log is being read, in the forms its own channel
 /// rows can carry.
-struct LogSelf {
+pub(super) struct LogSelf {
     /// Legacy raw-id author (`prin_…`).
     raw_author: String,
     /// The principal's channel address (`principal:local:prin_…`, or its
@@ -4216,7 +4230,7 @@ struct LogSelf {
 }
 
 impl LogSelf {
-    async fn of(
+    pub(super) async fn of(
         principal: &Principal,
         port: &Arc<dyn ChannelPort>,
         channel: &peko_channel::ChannelId,
@@ -4245,7 +4259,7 @@ impl LogSelf {
 /// address. Attachment paths become absolute (ADR-088 D3); suggested
 /// replies pass through (ADR-093).
 /// Unparseable timestamps surface as "now".
-fn map_posted_to_log_message(
+pub(super) fn map_posted_to_log_message(
     id: String,
     author: &str,
     at: &str,
@@ -5909,6 +5923,108 @@ mod tests {
                     assert!(message.starts_with("[forbidden]"), "got {message}")
                 }
                 other => panic!("expected Error, got {other:?}"),
+            }
+        }
+
+        /// `peko log --sent`: the peko's own posts in every one-to-one
+        /// conversation, each naming whom it went to; what the other
+        /// side wrote is left out. `since` replays first.
+        #[tokio::test(flavor = "multi_thread")]
+        #[serial_test::serial]
+        async fn sent_watch_follows_only_what_the_peko_posts() {
+            let fx = fixture(true).await;
+            post_turns(&fx, 2).await;
+
+            let sink = Arc::new(CollectSink::default());
+            let host = TestPrincipalHost {
+                manager: fx.host.manager.clone(),
+            };
+            let sink_for_task = Arc::clone(&sink);
+            let since = (Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+            let handle = tokio::spawn(async move {
+                sent_watch::handle_principal_sent_watch(
+                    9,
+                    "loggable",
+                    Some(since),
+                    &CallerContext::local(),
+                    &host,
+                    sink_for_task.as_ref(),
+                )
+                .await
+            });
+            wait_for_packet(&sink, |p| {
+                matches!(p, ResponsePacket::PrincipalSentAppended { message, .. } if message.text == "answer 1")
+            }, "replayed posts")
+            .await;
+
+            let port: Arc<dyn ChannelPort> = fx.store.clone();
+            port.post_attributed(
+                &fx.channel,
+                &ActorRef::from(&fx.principal.id),
+                &fx.peer.to_string(),
+                PostMsg::root("a later question"),
+            )
+            .await
+            .expect("inbound post");
+            port.post(
+                &fx.channel,
+                &ActorRef::from(&fx.principal.id),
+                PostMsg::root("approved: here it is"),
+            )
+            .await
+            .expect("later post");
+            wait_for_packet(&sink, |p| {
+                matches!(p, ResponsePacket::PrincipalSentAppended { message, .. } if message.text == "approved: here it is")
+            }, "live post")
+            .await;
+            handle.abort();
+
+            let sent: Vec<(String, String, String)> = sink
+                .observed()
+                .into_iter()
+                .filter_map(|p| match p {
+                    ResponsePacket::PrincipalSentAppended {
+                        to,
+                        channel,
+                        message,
+                        ..
+                    } => Some((to.to_string(), channel, message.text)),
+                    _ => None,
+                })
+                .collect();
+            let alice = fx.peer.to_string();
+            let channel = fx.channel.to_string();
+            assert_eq!(
+                sent,
+                vec![
+                    (alice.clone(), channel.clone(), "answer 0".to_string()),
+                    (alice.clone(), channel.clone(), "answer 1".to_string()),
+                    (alice, channel, "approved: here it is".to_string()),
+                ]
+            );
+        }
+
+        /// Only the owner follows everything a peko posts.
+        #[tokio::test(flavor = "multi_thread")]
+        #[serial_test::serial]
+        async fn sent_watch_is_for_the_owner_only() {
+            let fx = fixture(true).await;
+            let sink = CollectSink::default();
+            sent_watch::handle_principal_sent_watch(
+                7,
+                "loggable",
+                None,
+                &CallerContext::from_jwt("alice".into()),
+                &fx.host,
+                &sink,
+            )
+            .await
+            .expect("handler ok");
+            match &sink.observed()[..] {
+                [ResponsePacket::Error { message, .. }] => {
+                    assert!(message.starts_with("[forbidden]"), "got {message}")
+                }
+                other => panic!("expected one Error, got {other:?}"),
             }
         }
 

@@ -2449,7 +2449,7 @@ An inbound DM post may carry the files its author attached:
 Absent when empty (serde `default` + `skip_serializing_if`), so older
 logs and older readers are unaffected. Only `principal_send` /
 `principal_send_stream` from the local operator write it today; the
-`principal_log` / `principal_log_watch` rows (`PrincipalLogMessage`)
+`principal_log` / `principal_log_watch` / `principal_sent_watch` rows (`PrincipalLogMessage`)
 carry the same objects with `path` made absolute.
 
 **Files that cross runtimes (2026-11-04, ADR-094).** An attachment may

@@ -279,6 +279,22 @@ impl DaemonClient {
         self.send_request(packet).await
     }
 
+    /// Open a `PrincipalSentWatch` stream: everything the peko posts in
+    /// its one-to-one conversations, from `since` (RFC 3339) or from now.
+    pub async fn principal_sent_watch(
+        &self,
+        name: impl Into<String>,
+        since: Option<String>,
+    ) -> anyhow::Result<PacketStream> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::PrincipalSentWatch {
+            request_id,
+            name: name.into(),
+            since,
+        };
+        self.send_request(packet).await
+    }
+
     // ── Tunnel (ADR-035) ──
 
     /// Stop the PekoHub tunnel
