@@ -255,7 +255,7 @@ tokio-tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 rustls = "0.22"
 rustls-pemfile = "1"
-tokio-rustls = "0.25"
+tokio-rustls = "0.26"
 webpki-roots = "0.26"
 
 # Windows system calls
