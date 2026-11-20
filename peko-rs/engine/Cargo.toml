@@ -37,7 +37,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 base64 = "0.22"
 anyhow = "1.0"
-thiserror = "1.0"
+thiserror = "2.0"
 # `chrono` is used by error.rs tests (window_end timestamp comparisons).
 chrono = { version = "0.4", features = ["serde"] }
 # `uuid` is used by execution.rs::TaskId::new().
