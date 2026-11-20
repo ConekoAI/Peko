@@ -84,6 +84,10 @@ mod test_support;
 async fn main() {
     let cli = Cli::parse();
 
+    // One rustls crypto provider for the whole process, before anything
+    // opens a TLS connection.
+    peko_core::tunnel::tls::install_default_crypto_provider();
+
     // Initialize logging
     init_logging(cli.verbose, cli.quiet);
 

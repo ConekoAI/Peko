@@ -11,7 +11,36 @@ use std::path::Path;
 use std::sync::Arc;
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use rustls::pki_types::pem::PemObject;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use sha2::Digest;
+
+/// The crypto provider every tunnel TLS config is built with.
+///
+/// Named explicitly rather than taken from the process default: both
+/// `ring` and `aws-lc-rs` are compiled into the dependency tree, so
+/// rustls cannot choose one on its own and `ClientConfig::builder()`
+/// would panic unless something had installed a default first.
+#[must_use]
+pub fn crypto_provider() -> Arc<rustls::crypto::CryptoProvider> {
+    Arc::new(rustls::crypto::ring::default_provider())
+}
+
+/// Make `ring` the process-wide rustls provider, once.
+///
+/// Called at engine and CLI start so that any library building a rustls
+/// config without naming a provider gets the same one the tunnel uses.
+/// Safe to call repeatedly; a provider installed earlier is left alone.
+pub fn install_default_crypto_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
+/// Read every certificate from a PEM buffer.
+fn parse_certs(pem: &[u8]) -> Result<Vec<CertificateDer<'static>>, TlsError> {
+    CertificateDer::pem_slice_iter(pem)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| TlsError::CertParse(e.to_string()))
+}
 
 /// Errors that can occur while building or verifying TLS configuration.
 #[derive(Debug, thiserror::Error)]
@@ -54,14 +83,13 @@ pub fn build_root_cert_store(ca_path: Option<&Path>) -> Result<rustls::RootCertS
             path: ca_path.display().to_string(),
             source: e,
         })?;
-        let certs = rustls_pemfile::certs(&mut ca_pem.as_slice())
-            .map_err(|e| TlsError::CertParse(e.to_string()))?;
+        let certs = parse_certs(&ca_pem)?;
         if certs.is_empty() {
             return Err(TlsError::EmptyCert(ca_path.display().to_string()));
         }
         for cert in certs {
             roots
-                .add(cert.into())
+                .add(cert)
                 .map_err(|e| TlsError::AddCa(e.to_string()))?;
         }
     } else {
@@ -84,11 +112,19 @@ pub fn build_client_config(
     let roots = build_root_cert_store(ca_path)?;
     let roots = Arc::new(roots);
 
-    let default_verifier = rustls::client::WebPkiServerVerifier::builder(roots.clone())
-        .build()
-        .map_err(|e| TlsError::VerifierBuild(e.to_string()))?;
+    let provider = crypto_provider();
 
-    let builder = rustls::ClientConfig::builder().with_root_certificates(roots);
+    let default_verifier = rustls::client::WebPkiServerVerifier::builder_with_provider(
+        roots.clone(),
+        provider.clone(),
+    )
+    .build()
+    .map_err(|e| TlsError::VerifierBuild(e.to_string()))?;
+
+    let builder = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|e| TlsError::VerifierBuild(e.to_string()))?
+        .with_root_certificates(roots);
 
     // ADR-057 transport audit: a half-configured mTLS (one of
     // cert/key set, the other missing) used to silently fall back to
@@ -135,51 +171,34 @@ pub fn build_client_config(
 }
 
 /// Load a PEM-encoded certificate chain from disk.
-pub fn load_cert_chain(
-    path: &Path,
-) -> Result<Vec<rustls::pki_types::CertificateDer<'static>>, TlsError> {
+pub fn load_cert_chain(path: &Path) -> Result<Vec<CertificateDer<'static>>, TlsError> {
     let pem = std::fs::read(path).map_err(|e| TlsError::Read {
         path: path.display().to_string(),
         source: e,
     })?;
-    let certs = rustls_pemfile::certs(&mut pem.as_slice())
-        .map_err(|e| TlsError::CertParse(e.to_string()))?;
+    let certs = parse_certs(&pem)?;
     if certs.is_empty() {
         return Err(TlsError::EmptyCert(path.display().to_string()));
     }
-    Ok(certs.into_iter().map(|c| c.into()).collect())
+    Ok(certs)
 }
 
 /// Load a PEM-encoded private key from disk.
 ///
-/// Supports PKCS#8 and RSA private keys.
-pub fn load_private_key(
-    path: &Path,
-) -> Result<rustls::pki_types::PrivateKeyDer<'static>, TlsError> {
+/// Supports PKCS#8, RSA (PKCS#1) and SEC1 EC private keys.
+pub fn load_private_key(path: &Path) -> Result<PrivateKeyDer<'static>, TlsError> {
     let pem = std::fs::read(path).map_err(|e| TlsError::Read {
         path: path.display().to_string(),
         source: e,
     })?;
 
-    if let Some(key) = rustls_pemfile::pkcs8_private_keys(&mut pem.as_slice())
-        .map_err(|e| TlsError::KeyParse(e.to_string()))?
-        .into_iter()
-        .next()
-    {
-        return Ok(rustls::pki_types::PrivateKeyDer::try_from(key)
-            .map_err(|e| TlsError::KeyParse(e.to_string()))?);
+    match PrivateKeyDer::from_pem_slice(&pem) {
+        Ok(key) => Ok(key),
+        Err(rustls::pki_types::pem::Error::NoItemsFound) => {
+            Err(TlsError::NoKeyFound(path.display().to_string()))
+        }
+        Err(e) => Err(TlsError::KeyParse(e.to_string())),
     }
-
-    if let Some(key) = rustls_pemfile::rsa_private_keys(&mut pem.as_slice())
-        .map_err(|e| TlsError::KeyParse(e.to_string()))?
-        .into_iter()
-        .next()
-    {
-        return Ok(rustls::pki_types::PrivateKeyDer::try_from(key)
-            .map_err(|e| TlsError::KeyParse(e.to_string()))?);
-    }
-
-    Err(TlsError::NoKeyFound(path.display().to_string()))
 }
 
 /// Verifier that delegates to the default WebPKI verifier and then checks
@@ -293,5 +312,118 @@ mod tests {
         std::fs::write(&path, b"").unwrap();
         let result = load_private_key(&path);
         assert!(matches!(result, Err(TlsError::NoKeyFound(_))));
+    }
+
+    /// A self-signed certificate for `localhost`, written to disk as PEM.
+    struct TestCert {
+        _dir: TempDir,
+        cert_path: std::path::PathBuf,
+        key_path: std::path::PathBuf,
+        cert_der: Vec<u8>,
+    }
+
+    fn test_cert() -> TestCert {
+        let generated = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        let dir = TempDir::new().unwrap();
+        let cert_path = dir.path().join("server.crt");
+        let key_path = dir.path().join("server.key");
+        std::fs::write(&cert_path, generated.cert.pem()).unwrap();
+        std::fs::write(&key_path, generated.signing_key.serialize_pem()).unwrap();
+        TestCert {
+            _dir: dir,
+            cert_path,
+            key_path,
+            cert_der: generated.cert.der().to_vec(),
+        }
+    }
+
+    /// Run one TLS handshake between a local server presenting `cert`
+    /// and a client built by `build_client_config` with `pin`.
+    async fn handshake(cert: &TestCert, pin: Option<&str>) -> std::io::Result<()> {
+        handshake_trusting(cert, &cert.cert_path, pin).await
+    }
+
+    /// As `handshake`, with the client trusting the CA file at `ca_path`.
+    async fn handshake_trusting(
+        cert: &TestCert,
+        ca_path: &Path,
+        pin: Option<&str>,
+    ) -> std::io::Result<()> {
+        let server_config = rustls::ServerConfig::builder_with_provider(crypto_provider())
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(
+                load_cert_chain(&cert.cert_path).unwrap(),
+                load_private_key(&cert.key_path).unwrap(),
+            )
+            .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            // The client may abort the handshake; that is the point of
+            // the mismatch test, so the server side's result is ignored.
+            if let Ok(mut tls) = acceptor.accept(tcp).await {
+                use tokio::io::AsyncWriteExt;
+                let _ = tls.shutdown().await;
+            }
+        });
+
+        let client_config = build_client_config(Some(ca_path), None, None, pin).unwrap();
+        let connector = tokio_rustls::TlsConnector::from(client_config);
+        let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
+        let result = connector.connect(name, tcp).await.map(|_| ());
+        let _ = server.await;
+        result
+    }
+
+    #[test]
+    fn test_load_private_key_reads_generated_key() {
+        let cert = test_cert();
+        assert!(load_private_key(&cert.key_path).is_ok());
+        assert_eq!(load_cert_chain(&cert.cert_path).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_handshake_succeeds_with_custom_ca() {
+        let cert = test_cert();
+        handshake(&cert, None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_handshake_succeeds_with_matching_pin() {
+        let cert = test_cert();
+        let pin = BASE64.encode(sha2::Sha256::digest(&cert.cert_der));
+        handshake(&cert, Some(&pin)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_handshake_fails_with_wrong_pin() {
+        let cert = test_cert();
+        let pin = BASE64.encode([0u8; 32]);
+        let err = handshake(&cert, Some(&pin)).await.unwrap_err();
+        assert!(
+            err.to_string().contains("does not match configured pin"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handshake_fails_for_untrusted_certificate() {
+        // A matching pin does not replace chain validation: a server whose
+        // certificate is not under the configured CA is still refused.
+        let trusted = test_cert();
+        let presented = test_cert();
+        let pin = BASE64.encode(sha2::Sha256::digest(&presented.cert_der));
+        let err = handshake_trusting(&presented, &trusted.cert_path, Some(&pin))
+            .await
+            .unwrap_err();
+        assert!(
+            !err.to_string().contains("does not match configured pin"),
+            "chain validation should fail before the pin check: {err}"
+        );
     }
 }

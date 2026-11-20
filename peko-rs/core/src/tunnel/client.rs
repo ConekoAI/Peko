@@ -14,8 +14,8 @@ use rand::RngCore;
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::{interval, timeout};
 use tokio_tungstenite::{
-    connect_async, connect_async_tls_with_config, tungstenite::client::IntoClientRequest,
-    tungstenite::Message, Connector,
+    connect_async_tls_with_config, tungstenite::client::IntoClientRequest, tungstenite::Message,
+    Connector,
 };
 use tracing::{debug, error, info, trace, warn};
 
@@ -399,12 +399,8 @@ impl TunnelClient {
             .clone()
             .into_client_request()
             .map_err(|e| TunnelError::AuthFailed(format!("Invalid hub URL: {e}")))?;
-        let (ws_stream, response) = match connector {
-            Some(connector) => {
-                connect_async_tls_with_config(req, None, false, Some(connector)).await?
-            }
-            None => connect_async(req).await?,
-        };
+        let (ws_stream, response) =
+            connect_async_tls_with_config(req, None, false, Some(connector)).await?;
         info!("WebSocket connected, status: {:?}", response.status());
 
         let (mut write, mut read) = ws_stream.split();
@@ -415,7 +411,7 @@ impl TunnelClient {
             .to_bytes()
             .map_err(|e| TunnelError::AuthFailed(format!("Failed to serialize hello: {e}")))?;
         write
-            .send(Message::Binary(hello_bytes))
+            .send(Message::Binary(hello_bytes.into()))
             .await
             .map_err(TunnelError::WebSocket)?;
         debug!("Sent RuntimeHello");
@@ -462,7 +458,7 @@ impl TunnelClient {
             .to_bytes()
             .map_err(|e| TunnelError::AuthFailed(format!("Failed to serialize ack: {e}")))?;
         write
-            .send(Message::Binary(ack_bytes))
+            .send(Message::Binary(ack_bytes.into()))
             .await
             .map_err(TunnelError::WebSocket)?;
         debug!("Sent TunnelChallengeAck");
@@ -564,7 +560,7 @@ impl TunnelClient {
         let read_handle = tokio::spawn(async move {
             loop {
                 let frame: Vec<u8> = match read.next().await {
-                    Some(Ok(Message::Binary(bytes))) => bytes,
+                    Some(Ok(Message::Binary(bytes))) => bytes.to_vec(),
                     Some(Ok(Message::Text(text))) => text.as_bytes().to_vec(),
                     Some(Ok(Message::Close(frame))) => {
                         info!("WebSocket closed: {:?}", frame);
@@ -845,26 +841,24 @@ impl TunnelClient {
 
     /// Build a rustls connector from the optional `[tls]` config.
     ///
-    /// When no TLS config is present, returns `None` so the default
-    /// WebPKI trust store is used. When present, loads custom CA,
-    /// client cert/key for mTLS, and optionally installs a certificate
-    /// pin verifier.
-    fn build_tls_connector(
-        tls: Option<&TunnelTlsConfig>,
-    ) -> Result<Option<Connector>, TunnelError> {
-        let Some(tls) = tls else {
-            return Ok(None);
-        };
-
+    /// When no TLS config is present, the config trusts the WebPKI
+    /// roots. When present, loads custom CA, client cert/key for mTLS,
+    /// and optionally installs a certificate pin verifier.
+    ///
+    /// A connector is always returned, so the tunnel's TLS config never
+    /// comes from tokio-tungstenite's built-in default (which needs a
+    /// process-level rustls crypto provider and panics without one).
+    /// A plain `ws://` hub ignores the connector.
+    fn build_tls_connector(tls: Option<&TunnelTlsConfig>) -> Result<Connector, TunnelError> {
         let config = crate::tunnel::tls::build_client_config(
-            tls.ca_path.as_deref(),
-            tls.cert_path.as_deref(),
-            tls.key_path.as_deref(),
-            tls.pinned_cert_sha256.as_deref(),
+            tls.and_then(|t| t.ca_path.as_deref()),
+            tls.and_then(|t| t.cert_path.as_deref()),
+            tls.and_then(|t| t.key_path.as_deref()),
+            tls.and_then(|t| t.pinned_cert_sha256.as_deref()),
         )
         .map_err(|e| TunnelError::AuthFailed(e.to_string()))?;
 
-        Ok(Some(Connector::Rustls(config)))
+        Ok(Connector::Rustls(config))
     }
 }
 
@@ -1135,8 +1129,11 @@ mod tests {
     }
 
     #[test]
-    fn test_build_tls_connector_none_uses_default() {
-        assert!(TunnelClient::build_tls_connector(None).unwrap().is_none());
+    fn test_build_tls_connector_none_uses_webpki_roots() {
+        // No `[tls]` section still yields our own rustls config (WebPKI
+        // roots, explicit crypto provider) rather than the library default.
+        let connector = TunnelClient::build_tls_connector(None).unwrap();
+        assert!(matches!(connector, Connector::Rustls(_)));
     }
 
     #[test]
@@ -1163,6 +1160,6 @@ mod tests {
             pinned_cert_sha256: Some(BASE64.encode([0u8; 32])),
         };
         let connector = TunnelClient::build_tls_connector(Some(&tls)).unwrap();
-        assert!(matches!(connector, Some(Connector::Rustls(_))));
+        assert!(matches!(connector, Connector::Rustls(_)));
     }
 }

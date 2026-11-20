@@ -22,6 +22,10 @@ use peko_core::daemon::{Daemon, DaemonConfig, LaunchMode};
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
+    // One rustls crypto provider for the whole process, before anything
+    // opens a TLS connection (tunnel, providers, MCP).
+    peko_core::tunnel::tls::install_default_crypto_provider();
+
     // `peko-daemon` is launched as a subprocess by the CLI's
     // `DaemonProcessService::spawn_daemon_with`. It accepts the
     // same flag set the CLI's `daemon start --foreground` accepts

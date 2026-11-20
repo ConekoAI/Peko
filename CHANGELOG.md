@@ -4,6 +4,16 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Security
+
+- **One patched TLS library.** Peko now ships a single rustls (0.23.46 or
+  later) and rustls-webpki (0.103.13 or later); the older rustls 0.21 and
+  0.22 lines, which had open advisories, are gone. The HTTP client for
+  model providers, the registry and the CLI moved to reqwest 0.12, and the
+  PekoHub tunnel to tokio-tungstenite 0.30 and tokio-rustls 0.26. Nothing
+  to change on your side: `[tls]` settings (custom CA, client certificate,
+  `pinned_cert_sha256`) work as before.
+
 ## [0.4.0] - 2026-11-20
 
 ### Security
