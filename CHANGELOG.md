@@ -4,38 +4,7 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
-### Changed
-
-- **The background process is called the engine.** `peko engine start`,
-  `stop`, `status` and `restart` replace `peko daemon …`, and messages and
-  guides say "engine". `peko daemon …` still works, so scripts and services
-  that call it keep running. The `peko-daemon` binary, the socket and the
-  log file (`daemon.log`) keep their names.
-- **The repository is `ConekoAI/Peko`.** The installers, `peko update` and
-  the Docker image label point at the new address. GitHub redirects the old
-  one, so releases before this keep installing and updating.
-- **Docs are reorganized.** New pages: [How Peko works](docs/HOW_IT_WORKS.md)
-  and the [security model](docs/SECURITY_MODEL.md). Reference pages moved to
-  `docs/reference/` (`BUILTIN_TOOLS.md`, `SKILLS.md`, `DATA_MODEL.md`,
-  `API_SURFACE.md`). Design records are no longer kept in this repository;
-  the ADR numbers cited in code and in this changelog stay as identifiers.
-  The repository gained a `LICENSE` file (MIT, as `Cargo.toml` already
-  said), `CONTRIBUTING.md`, `SECURITY.md` and issue templates.
-
-### Security
-
-- **Dependencies with published advisories are updated:** `tar` 0.4.46
-  (three issues in unpacking archives, which `peko import` does),
-  `jsonwebtoken` 10 (a type confusion in claim checks), `rustls` 0.23.46,
-  `rustls-webpki` 0.103.17 and `rand` 0.8.8. The older `rustls` 0.21 and
-  0.22 lines, which the HTTP client and the PekoHub connection still use,
-  are not updated yet.
-
-### Fixed
-
-- The User's Guide said PekoHub could read messages it relays. Since 0.2.0
-  they are sealed to the receiving computer; the guide now says what PekoHub
-  does see.
+## [0.4.0] - 2026-11-20
 
 ### Security
 
@@ -53,6 +22,12 @@ All notable changes to Peko.
     an admin or join a group now goes to you when their section sets
     `ask_owner = true`, and is refused otherwise (it used to go to you only
     for `trusted` people).
+- **Dependencies with published advisories are updated:** `tar` 0.4.46
+  (three issues in unpacking archives, which `peko import` does),
+  `jsonwebtoken` 10 (a type confusion in claim checks), `rustls` 0.23.46,
+  `rustls-webpki` 0.103.17 and `rand` 0.8.8. The older `rustls` 0.21 and
+  0.22 lines, which the HTTP client and the PekoHub connection still use,
+  are not updated yet.
 
 ### Added
 
@@ -83,6 +58,21 @@ All notable changes to Peko.
 
 ### Changed
 
+- **The background process is called the engine.** `peko engine start`,
+  `stop`, `status` and `restart` replace `peko daemon …`, and messages and
+  guides say "engine". `peko daemon …` still works, so scripts and services
+  that call it keep running. The `peko-daemon` binary, the socket and the
+  log file (`daemon.log`) keep their names.
+- **The repository is `ConekoAI/Peko`.** The installers, `peko update` and
+  the Docker image label point at the new address. GitHub redirects the old
+  one, so releases before this keep installing and updating.
+- **Docs are reorganized.** New pages: [How Peko works](docs/HOW_IT_WORKS.md)
+  and the [security model](docs/SECURITY_MODEL.md). Reference pages moved to
+  `docs/reference/` (`BUILTIN_TOOLS.md`, `SKILLS.md`, `DATA_MODEL.md`,
+  `API_SURFACE.md`). Design records are no longer kept in this repository;
+  the ADR numbers cited in code and in this changelog stay as identifiers.
+  The repository gained a `LICENSE` file (MIT, as `Cargo.toml` already
+  said), `CONTRIBUTING.md`, `SECURITY.md` and issue templates.
 - **A seed can carry a business's material: up to 256 files and 1 MB
   together** (was 64 files and 64 KB), enough for an FAQ, a price list and
   policies. `peko create --seed` sends a seed over 32 KB by its path, which
@@ -91,6 +81,9 @@ All notable changes to Peko.
 
 ### Fixed
 
+- The User's Guide said PekoHub could read messages it relays. Since 0.2.0
+  they are sealed to the receiving computer; the guide now says what PekoHub
+  does see.
 - **A visitor's search from the top of a peko's folder finds what they may
   reach, instead of being refused.** `Glob` and `Grep` for someone other
   than the owner, from a folder above what `ACCESS.toml` gives them (the
