@@ -350,6 +350,11 @@ the peko works for who is not you and whom you have not marked `trusted`:
 another person, another peko, or an anonymous caller. Nothing is reachable
 unless the file lists it.
 
+In Peko Desktop, the **Sharing** section of a peko's profile changes this
+file for you: files to read and change, public web pages, each connected
+service, whether requests come to you, and rules of their own for someone
+the peko has talked with. The file keeps its comments.
+
 ```toml
 [visitors]
 tools = ["Read", "Write", "Edit", "Glob", "Grep", "Fetch", "Task", "ChannelSend", "ChannelRead"]
