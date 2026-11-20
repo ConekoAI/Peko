@@ -123,7 +123,7 @@ A peko made to serve people other than its owner needs more than capability file
 - **Shown in full** to whoever accepts the seed: files that name something the computer will run (`mcp/`, `workflows/`, and now `hooks/`), and the two rule files, since they decide what strangers reach. Every other file is listed by path and size.
 - **The seed's files win.** They are written before the runtime seeds its own (create-once), and a persona joins whichever `kb/CONVENTIONS.md` is then there. MCP servers marked `untrusted_ok` in the seed are not added to a seed's `ACCESS.toml`; the file says what it says.
 - **`peko seed` stays selective.** It exports the capability folders as before, plus the two rule files when they differ from what every peko starts with, without their per-actor sections (and the *Always* lines those hold). It does not export the rest of the workspace: memory and notes about contacts are what a peko has learned, not what it is.
-- The limits of 64 files and 64 KB together are unchanged.
+- The limits of 64 files and 64 KB together are unchanged. *(Amended 2026-11-20: 256 files and 1 MB together, so a business seed carries its FAQ and price list. `peko create` sends a seed over 32 KB by path, read by the daemon: `principal_create` gains `seed_path`, operator only.)*
 
 A seed's `kb/MEMORY.md` or `kb/CONVENTIONS.md` reaches every owner turn's prompt, as a persona already did. Accepting a seed is trusting its author with that.
 

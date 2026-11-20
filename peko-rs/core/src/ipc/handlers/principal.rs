@@ -63,6 +63,7 @@ use tracing::warn;
 use peko_session::SteeringMessage;
 
 mod access;
+mod sent_watch;
 
 // ─── Principal log / preview types (privately owned by this handler) ──
 
@@ -289,6 +290,7 @@ impl RequestHandler for PrincipalHandler {
                 | RequestPacket::PrincipalLogWatch { .. }
                 | RequestPacket::PrincipalAccessGet { .. }
                 | RequestPacket::PrincipalAccessSet { .. }
+                | RequestPacket::PrincipalSentWatch { .. }
                 | RequestPacket::PrincipalExport { .. }
                 | RequestPacket::PrincipalImportPreview { .. }
                 | RequestPacket::PrincipalImport { .. }
@@ -600,6 +602,16 @@ impl RequestHandler for PrincipalHandler {
                 let response =
                     access::set(request_id, &name, &visitors, &people, caller, host).await;
                 send_response(sink, response).await?;
+            }
+            RequestPacket::PrincipalSentWatch {
+                request_id,
+                name,
+                since,
+            } => {
+                sent_watch::handle_principal_sent_watch(
+                    request_id, &name, since, caller, host, sink,
+                )
+                .await?;
             }
 
             RequestPacket::PrincipalLogWatch {
@@ -1422,6 +1434,7 @@ impl RequestHandler for PrincipalHandler {
                 description,
                 model_id,
                 seed,
+                seed_path,
                 accept_setup,
             } => {
                 use crate::common::identifiers::validate_agent_name;
@@ -1437,6 +1450,23 @@ impl RequestHandler for PrincipalHandler {
                     return Ok(());
                 }
 
+                // A seed too large for one request comes as a path on
+                // this computer, which only an operator may have read.
+                let seed = match (seed, seed_path) {
+                    (Some(seed), _) => Some(seed),
+                    (None, None) => None,
+                    (None, Some(path)) => match read_seed_file(caller, &path).await {
+                        Ok(text) => Some(text),
+                        Err(e) => {
+                            let response = ResponsePacket::Error {
+                                request_id,
+                                message: format!("[invalid_seed] {e}"),
+                            };
+                            send_response(sink, response).await?;
+                            return Ok(());
+                        }
+                    },
+                };
                 // A seed (ADR-060) is checked before anything is written.
                 let seed = match seed.as_deref().map(crate::principal::seed::parse_seed) {
                     Some(Ok(seed)) => Some(seed),
@@ -2264,6 +2294,35 @@ fn parse_vouched_visitor(actor: &str) -> Result<peko_auth::ActorRef, String> {
     Ok(peko_auth::ActorRef::Visitor(peko_subject::Route::local(id)))
 }
 
+/// The text of the seed file at `path`, for `peko create --seed` with a
+/// seed too large for one request. Only an operator caller (the owner's
+/// own command line on this computer) may have the daemon read a file.
+async fn read_seed_file(caller: &CallerContext, path: &str) -> Result<String, String> {
+    if !caller.is_operator() {
+        return Err("only a command on this computer may name a seed file".into());
+    }
+    let path = std::path::Path::new(path);
+    if !path.is_absolute() {
+        return Err(format!(
+            "the seed path must be absolute: {}",
+            path.display()
+        ));
+    }
+    let meta = tokio::fs::metadata(path)
+        .await
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    if meta.len() > crate::principal::seed::SEED_TEXT_MAX_BYTES as u64 {
+        return Err(format!(
+            "{} is larger than a seed may be ({} MB)",
+            path.display(),
+            crate::principal::seed::SEED_TEXT_MAX_BYTES / (1024 * 1024)
+        ));
+    }
+    tokio::fs::read_to_string(path)
+        .await
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))
+}
+
 /// Admit `send_as` (ADR-113 D7): only a caller with the owner's settings
 /// authority, on this host, may say a message is from a visitor. The
 /// runtime records who vouched; it does not verify the visitor.
@@ -2492,8 +2551,16 @@ async fn run_principal_send(
     let attachments = if attachment_paths.is_empty() {
         Vec::new()
     } else {
-        match crate::principal::attachments::ingest(&principal.workspace_path, &attachment_paths)
-            .await
+        let dir = host
+            .principal_manager()
+            .attachments_dir(&principal, &peer, None)
+            .await;
+        match crate::principal::attachments::ingest_into(
+            &principal.workspace_path,
+            &dir,
+            &attachment_paths,
+        )
+        .await
         {
             Ok(attachments) => attachments,
             Err(reason) => return refuse_send(sink, request_id, reason).await,
@@ -4218,7 +4285,7 @@ async fn resolve_log_thread(
 
 /// The principal whose log is being read, in the forms its own channel
 /// rows can carry.
-struct LogSelf {
+pub(super) struct LogSelf {
     /// Legacy raw-id author (`prin_…`).
     raw_author: String,
     /// The principal's channel address (`principal:local:prin_…`, or its
@@ -4236,7 +4303,7 @@ struct LogSelf {
 }
 
 impl LogSelf {
-    async fn of(
+    pub(super) async fn of(
         principal: &Principal,
         port: &Arc<dyn ChannelPort>,
         channel: &peko_channel::ChannelId,
@@ -4265,7 +4332,7 @@ impl LogSelf {
 /// address. Attachment paths become absolute (ADR-088 D3); suggested
 /// replies pass through (ADR-093).
 /// Unparseable timestamps surface as "now".
-fn map_posted_to_log_message(
+pub(super) fn map_posted_to_log_message(
     id: String,
     author: &str,
     at: &str,
@@ -5998,6 +6065,176 @@ mod tests {
                 panic!("expected PrincipalAccess");
             };
             assert_eq!(people.len(), 1);
+        }
+        /// ADR-113: a visitor's files go in their conversation's own
+        /// folder, which their run reads; the owner's in `attachments/`.
+        #[tokio::test(flavor = "multi_thread")]
+        #[serial_test::serial]
+        async fn a_visitors_files_land_in_their_conversation_folder() {
+            let fx = fixture(true).await;
+            let manager = &fx.host.manager;
+            let visitor = ActorRef::Visitor(peko_subject::Route::local("+15550100".to_string()));
+            let dir = manager.attachments_dir(&fx.principal, &visitor, None).await;
+            assert!(dir.starts_with("contacts/"), "{dir}");
+            assert!(dir.ends_with("/attachments"), "{dir}");
+
+            let src = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(src.path(), b"order 1234").unwrap();
+            let copies = crate::principal::attachments::ingest_into(
+                &fx.principal.workspace_path,
+                &dir,
+                &[src.path().display().to_string()],
+            )
+            .await
+            .unwrap();
+            assert!(
+                copies[0].path.starts_with(&format!("{dir}/")),
+                "{}",
+                copies[0].path
+            );
+            assert!(fx.principal.workspace_path.join(&copies[0].path).is_file());
+
+            // The visitor's run reaches its own copy; another visitor's
+            // does not.
+            let port: Arc<dyn ChannelPort> = fx.store.clone();
+            let me = port.actor_info(&ActorRef::from(&fx.principal.id)).await;
+            let them = port.actor_info(&visitor).await;
+            let channel = peko_channel::dm_channel_id(&me.dm_key(), &them.dm_key());
+            let stamp_in = |actor: &str, channel: &str| peko_tools_core::ActingFor {
+                actor: actor.into(),
+                name: None,
+                trust: peko_tools_core::Trust::Untrusted,
+                compartment: peko_tools_core::Compartment::Conversation {
+                    channel: channel.into(),
+                },
+                origin: peko_tools_core::Origin::Ingress { channel: None },
+                owner_request: false,
+            };
+            let keys = peko_channel::PortKeys(port.as_ref());
+            let workspace = &fx.principal.workspace_path;
+            let file = workspace.join(&copies[0].path);
+            let theirs = crate::security::access::reach_by_keys(
+                workspace,
+                &stamp_in(&visitor.canonical_address(), channel.as_str()),
+                &keys,
+            )
+            .unwrap();
+            assert!(theirs.path_refusal(workspace, &file, false).is_none());
+            let other = crate::security::access::reach_by_keys(
+                workspace,
+                &stamp_in("visitor:local:someone-else", "dm_other"),
+                &keys,
+            )
+            .unwrap();
+            assert!(other.path_refusal(workspace, &file, false).is_some());
+
+            let owner = fx.principal.config.read().await.owner.clone();
+            assert_eq!(
+                manager.attachments_dir(&fx.principal, &owner, None).await,
+                "attachments"
+            );
+        }
+
+        /// `peko log --sent`: the peko's own posts in every one-to-one
+        /// conversation, each naming whom it went to; what the other
+        /// side wrote is left out. `since` replays first.
+        #[tokio::test(flavor = "multi_thread")]
+        #[serial_test::serial]
+        async fn sent_watch_follows_only_what_the_peko_posts() {
+            let fx = fixture(true).await;
+            post_turns(&fx, 2).await;
+
+            let sink = Arc::new(CollectSink::default());
+            let host = TestPrincipalHost {
+                manager: fx.host.manager.clone(),
+            };
+            let sink_for_task = Arc::clone(&sink);
+            let since = (Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+            let handle = tokio::spawn(async move {
+                sent_watch::handle_principal_sent_watch(
+                    9,
+                    "loggable",
+                    Some(since),
+                    &CallerContext::local(),
+                    &host,
+                    sink_for_task.as_ref(),
+                )
+                .await
+            });
+            wait_for_packet(&sink, |p| {
+                matches!(p, ResponsePacket::PrincipalSentAppended { message, .. } if message.text == "answer 1")
+            }, "replayed posts")
+            .await;
+
+            let port: Arc<dyn ChannelPort> = fx.store.clone();
+            port.post_attributed(
+                &fx.channel,
+                &ActorRef::from(&fx.principal.id),
+                &fx.peer.to_string(),
+                PostMsg::root("a later question"),
+            )
+            .await
+            .expect("inbound post");
+            port.post(
+                &fx.channel,
+                &ActorRef::from(&fx.principal.id),
+                PostMsg::root("approved: here it is"),
+            )
+            .await
+            .expect("later post");
+            wait_for_packet(&sink, |p| {
+                matches!(p, ResponsePacket::PrincipalSentAppended { message, .. } if message.text == "approved: here it is")
+            }, "live post")
+            .await;
+            handle.abort();
+
+            let sent: Vec<(String, String, String)> = sink
+                .observed()
+                .into_iter()
+                .filter_map(|p| match p {
+                    ResponsePacket::PrincipalSentAppended {
+                        to,
+                        channel,
+                        message,
+                        ..
+                    } => Some((to.to_string(), channel, message.text)),
+                    _ => None,
+                })
+                .collect();
+            let alice = fx.peer.to_string();
+            let channel = fx.channel.to_string();
+            assert_eq!(
+                sent,
+                vec![
+                    (alice.clone(), channel.clone(), "answer 0".to_string()),
+                    (alice.clone(), channel.clone(), "answer 1".to_string()),
+                    (alice, channel, "approved: here it is".to_string()),
+                ]
+            );
+        }
+
+        /// Only the owner follows everything a peko posts.
+        #[tokio::test(flavor = "multi_thread")]
+        #[serial_test::serial]
+        async fn sent_watch_is_for_the_owner_only() {
+            let fx = fixture(true).await;
+            let sink = CollectSink::default();
+            sent_watch::handle_principal_sent_watch(
+                7,
+                "loggable",
+                None,
+                &CallerContext::from_jwt("alice".into()),
+                &fx.host,
+                &sink,
+            )
+            .await
+            .expect("handler ok");
+            match &sink.observed()[..] {
+                [ResponsePacket::Error { message, .. }] => {
+                    assert!(message.starts_with("[forbidden]"), "got {message}")
+                }
+                other => panic!("expected one Error, got {other:?}"),
+            }
         }
 
         /// ADR-113 D7: only a caller with the owner's authority may

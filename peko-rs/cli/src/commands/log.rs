@@ -97,6 +97,15 @@ pub struct LogCommand {
     #[arg(long)]
     pub watch: bool,
 
+    /// Follow everything the peko posts in every one-to-one
+    /// conversation, each line naming whom it went to. For a script
+    /// that relays a peko's conversations to another service. Only the
+    /// peko's owner can. With `--since`, the peko's posts newer than the
+    /// duration come first. With `--json`: NDJSON, one
+    /// `{"to", "channel", "message"}` object per line.
+    #[arg(long, conflicts_with_all = ["peer", "watch", "cursor", "all", "limit", "search", "author"])]
+    pub sent: bool,
+
     /// Emit the raw chat-message array (with `next_cursor` /
     /// `has_more`) as JSON. With `--watch`: NDJSON — one message
     /// object per line.
@@ -120,6 +129,7 @@ pub async fn handle_log(cmd: LogCommand, _paths: &GlobalPaths, json: bool) -> Re
         cursor,
         all,
         watch,
+        sent,
         json: cmd_json,
     } = cmd;
 
@@ -156,6 +166,14 @@ pub async fn handle_log(cmd: LogCommand, _paths: &GlobalPaths, json: bool) -> Re
     let client = DaemonClient::connect()
         .await
         .context("Daemon is not running. Start it with: peko daemon start")?;
+
+    if sent {
+        let since = since_secs.map(|secs| {
+            (chrono::Utc::now() - chrono::Duration::seconds(secs as i64))
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        });
+        return watch_sent(&client, &principal, since, use_json).await;
+    }
 
     if watch {
         if limit.is_some() || since_secs.is_some() || all {
@@ -339,6 +357,60 @@ async fn watch_principal_log(
             }
         }
     }
+}
+
+/// `peko log <peko> --sent`: everything the peko posts in its
+/// one-to-one conversations, as it posts it.
+async fn watch_sent(
+    client: &DaemonClient,
+    principal: &str,
+    since: Option<String>,
+    use_json: bool,
+) -> Result<()> {
+    let mut stream = client
+        .principal_sent_watch(principal.to_string(), since)
+        .await?;
+    loop {
+        match stream.next().await {
+            Some(ResponsePacket::PrincipalSentAppended {
+                to,
+                channel,
+                message,
+                ..
+            }) => {
+                if use_json {
+                    println!("{}", sent_row_json(&to, &channel, &message)?);
+                } else {
+                    println!("→ {}", to.canonical_address());
+                    render_chat_message(&message);
+                }
+                use std::io::Write as _;
+                std::io::stdout().flush()?;
+            }
+            Some(ResponsePacket::Heartbeat { .. }) => {}
+            Some(ResponsePacket::Error { message, .. }) => {
+                return Err(anyhow::anyhow!("peko log --sent failed: {message}"));
+            }
+            Some(_) => {}
+            None => {
+                eprintln!("[peko] stream closed (daemon shutdown)");
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// One `--sent --json` line.
+fn sent_row_json(
+    to: &peko_auth::ActorRef,
+    channel: &str,
+    message: &PrincipalLogMessage,
+) -> Result<String> {
+    Ok(serde_json::to_string(&serde_json::json!({
+        "to": to.canonical_address(),
+        "channel": channel,
+        "message": message,
+    }))?)
 }
 
 /// `peko log group:<slug>`: read the group channel's log directly via
@@ -702,6 +774,22 @@ fn timestamp_short(ts: &str) -> String {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn a_sent_row_names_whom_it_went_to() {
+        // The full address, whichever form the visitor was sent as.
+        let to = peko_auth::ActorRef::from_str("visitor:+15550100").unwrap();
+        let message = PrincipalLogMessage::new(
+            peko_auth::ActorRef::User("local".into()),
+            "We open at 9.",
+            None,
+        );
+        let row: serde_json::Value =
+            serde_json::from_str(&sent_row_json(&to, "dm_1", &message).unwrap()).unwrap();
+        assert_eq!(row["to"], "visitor:local:+15550100");
+        assert_eq!(row["channel"], "dm_1");
+        assert_eq!(row["message"]["text"], "We open at 9.");
+    }
 
     #[test]
     fn test_parse_duration_secs_variants() {

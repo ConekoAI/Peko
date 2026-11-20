@@ -11,16 +11,26 @@ and reach only what the container reaches.
 
 You need Docker and a model API key.
 
-## 1. Build the image
+## 1. Get the image
 
-From a checkout of this repository:
+Each release is published as `ghcr.io/conekoai/peko`, for amd64 and arm64:
 
 ```bash
-docker build -t peko .
+docker pull ghcr.io/conekoai/peko:0.3
+```
+
+Tags: the exact version (`0.3.1`), the version line (`0.3`, which follows
+its newest patch) and `latest`. `docker run --rm ghcr.io/conekoai/peko:0.3
+version` prints the version.
+
+To build it yourself instead, from a checkout of this repository:
+
+```bash
+docker build -t ghcr.io/conekoai/peko:0.3 .
 ```
 
 The first build compiles the runtime and takes a while (about 15 minutes on
-a laptop). `docker run --rm peko version` prints the version it built.
+a laptop).
 
 ## 2. Start the runtime
 
@@ -29,7 +39,7 @@ docker run -d --name peko \
   -v peko-data:/data \
   -e PEKO_MASTER_PASSPHRASE='choose-a-long-passphrase' \
   --restart unless-stopped \
-  peko
+  ghcr.io/conekoai/peko:0.3
 ```
 
 - **`/data`** holds everything: pekos, conversations, keys. Keep it on a
@@ -96,20 +106,52 @@ docker exec peko peko send desk --as 'visitor:+15550100' --name 'Ada' \
   "When are you open?"
 ```
 
-The reply is printed. The peko answers that person as a visitor, in their
-own conversation, with only what `ACCESS.toml` gives visitors. It keeps
-what it learns about them in that conversation's own folder.
+The reply is printed.
 
-Anything the peko posts later in that conversation (for example after you
-approve a request) can be followed with:
+The peko answers that person as a visitor, in their own conversation, with
+only what `ACCESS.toml` gives visitors. It keeps what it learns about them
+in that conversation's own folder.
+
+### Messages the peko sends later
+
+Sometimes the peko writes again after its reply: after you approve a
+request, or when a check-in comes due. Nothing is waiting for those. A
+bridge follows them with:
 
 ```bash
-docker exec peko peko log desk --peer 'visitor:local:+15550100' --watch
+docker exec peko peko log desk --sent --json
 ```
 
-Your script calls `docker exec` from the host, or runs inside the same
-container. The `peko` command in a second container cannot reach the
-runtime yet, even with the volume shared.
+It prints one line for each post the peko makes, in any one-to-one conversation:
+
+```json
+{"to":"visitor:local:+15550100","channel":"dm_…","message":{"id":"msg_…","text":"…", …}}
+```
+
+`to` is whom to deliver it to: `visitor:local:<id>` for the id you sent
+with `--as visitor:<id>`, and `user:local` for your own conversation. The replies
+`peko send` prints show up here too, so a bridge that follows `--sent`
+can deliver everything from it and skip the replies `peko send` prints;
+`message.id` stays the same for the same post. After a restart, `--since 10m`
+first repeats the posts of the last ten minutes. Only the peko's owner can
+follow everything it posts.
+
+### Run the bridge in its own container
+
+The bridge can run in a container of its own, sharing the runtime's
+volume. It needs nothing else: no passphrase, and no network between
+the two.
+
+```bash
+docker run --rm --volumes-from peko --entrypoint peko \
+  ghcr.io/conekoai/peko:0.3 send desk --as 'visitor:+15550100' "Hello"
+```
+
+Build your bridge on this image (or copy `/opt/peko/bin/peko` into yours)
+and mount the same `/data`, running as the same user (uid 10001). The
+command reaches the runtime through the socket in `/data/run`, and gets its
+answer back there. Run only `peko send`, `peko log` and other commands from it; the daemon itself
+runs in one container per volume.
 
 Only the peko's owner can send as a visitor, which here means anyone who
 can run `docker exec` on the container. The runtime records that you
@@ -130,11 +172,11 @@ With `ask_owner = false` (the default), they are refused and nothing waits.
 
 ## Updating
 
-Build the new image, then replace the container. The data stays in the
+Pull the new image, then replace the container. The data stays in the
 volume.
 
 ```bash
-docker build -t peko .
+docker pull ghcr.io/conekoai/peko:0.3
 docker stop peko && docker rm peko
 # run the same `docker run` as in step 2
 ```

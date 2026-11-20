@@ -162,6 +162,11 @@ pub enum RequestPacket {
         /// caller. `model_id` and `description` override the seed's.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seed: Option<String>,
+        /// A seed file on this computer, read by the daemon, for a seed
+        /// too large to travel in one request. Only an operator caller
+        /// may name one; ignored when `seed` is given.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seed_path: Option<String>,
         /// The caller showed the seed's setup steps to the person and
         /// they accepted them (ADR-104). A seed that carries setup steps
         /// is refused with `[setup_not_accepted]` and the steps unless
@@ -690,6 +695,21 @@ pub enum RequestPacket {
         visitors: crate::security::access::Shared,
         #[serde(default)]
         people: Vec<AccessPerson>,
+    },
+    /// Follow everything a peko posts in its one-to-one conversations
+    /// (owner only): one `PrincipalSentAppended` per post, naming whom it
+    /// went to, with `Heartbeat` ticks between. For a script that
+    /// relays a peko's conversations to another service, so a message
+    /// the peko sends later (after its owner approves a request, say)
+    /// reaches the person too. `since` (RFC 3339) first replays the
+    /// peko's posts newer than it, oldest first; without it the stream
+    /// starts now. No `Done`: it ends when the client goes away.
+    #[serde(rename = "principal_sent_watch")]
+    PrincipalSentWatch {
+        request_id: u64,
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<String>,
     },
 
     /// Watch a peer's conversation thread with a Principal: replay
@@ -1318,6 +1338,7 @@ impl RequestPacket {
             | Self::PrincipalLogWatch { request_id, .. }
             | Self::PrincipalAccessGet { request_id, .. }
             | Self::PrincipalAccessSet { request_id, .. }
+            | Self::PrincipalSentWatch { request_id, .. }
             | Self::PrincipalExport { request_id, .. }
             | Self::PrincipalImport { request_id, .. }
             | Self::PrincipalImportPreview { request_id, .. }
@@ -2772,6 +2793,17 @@ pub enum ResponsePacket {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         problem: Option<String>,
     },
+    /// One post on a `PrincipalSentWatch` stream: what the peko said,
+    /// to whom (`to`, the other member of the conversation), and in
+    /// which channel. `message.id` is the post's stable id when it has
+    /// one, so a relay can skip a post it already delivered.
+    #[serde(rename = "principal_sent_appended")]
+    PrincipalSentAppended {
+        request_id: u64,
+        to: peko_auth::ActorRef,
+        channel: String,
+        message: PrincipalLogMessage,
+    },
 
     #[serde(rename = "principal_exported")]
     PrincipalExported {
@@ -3497,6 +3529,7 @@ impl ResponsePacket {
             | Self::PrincipalLog { request_id, .. }
             | Self::PrincipalLogAppended { request_id, .. }
             | Self::PrincipalAccess { request_id, .. }
+            | Self::PrincipalSentAppended { request_id, .. }
             | Self::ApprovalList { request_id, .. }
             | Self::PrincipalSetupStatus { request_id, .. }
             | Self::ApprovalDecided { request_id, .. }
@@ -3607,6 +3640,7 @@ impl ResponsePacket {
             Self::PrincipalLog { .. } => "PrincipalLog",
             Self::PrincipalLogAppended { .. } => "PrincipalLogAppended",
             Self::PrincipalAccess { .. } => "PrincipalAccess",
+            Self::PrincipalSentAppended { .. } => "PrincipalSentAppended",
             Self::ApprovalList { .. } => "ApprovalList",
             Self::PrincipalSetupStatus { .. } => "PrincipalSetupStatus",
             Self::ApprovalDecided { .. } => "ApprovalDecided",
@@ -4424,6 +4458,7 @@ mod tests {
             description: Some("personal assistant".to_string()),
             model_id: "gpt-4o".to_string(),
             seed: Some("name = \"ada\"\n".to_string()),
+            seed_path: None,
             accept_setup: true,
         };
         let bytes = req.to_bytes().unwrap();
@@ -4436,6 +4471,7 @@ mod tests {
                 model_id,
                 seed,
                 accept_setup,
+                ..
             } => {
                 assert!(accept_setup);
                 assert_eq!(request_id, 302);
@@ -4456,6 +4492,7 @@ mod tests {
             description: None,
             model_id: "claude-sonnet-4-5".to_string(),
             seed: None,
+            seed_path: None,
             accept_setup: false,
         };
         let bytes = minimal.to_bytes().unwrap();
@@ -4471,6 +4508,7 @@ mod tests {
                 model_id,
                 seed,
                 accept_setup,
+                ..
             } => {
                 assert!(!accept_setup, "absent means not accepted");
                 assert_eq!(request_id, 303);
@@ -6035,6 +6073,45 @@ mod tests {
             ResponsePacket::from_bytes(raw.as_bytes()).unwrap(),
             ResponsePacket::PrincipalAccess { .. }
         ));
+    }
+
+    #[test]
+    fn principal_sent_watch_roundtrips() {
+        let bare = r#"{"type":"principal_sent_watch","request_id":3,"name":"desk"}"#;
+        match RequestPacket::from_bytes(bare.as_bytes()).unwrap() {
+            RequestPacket::PrincipalSentWatch { name, since, .. } => {
+                assert_eq!(name, "desk");
+                assert_eq!(since, None);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        let resp = ResponsePacket::PrincipalSentAppended {
+            request_id: 3,
+            to: <peko_auth::ActorRef as std::str::FromStr>::from_str("visitor:local:+15550100")
+                .unwrap(),
+            channel: "dm_x".into(),
+            message: PrincipalLogMessage::new(
+                peko_auth::ActorRef::User("local".into()),
+                "open 9-5",
+                None,
+            ),
+        };
+        let raw = String::from_utf8(resp.to_bytes().unwrap()).unwrap();
+        assert!(
+            raw.contains("\"type\":\"principal_sent_appended\""),
+            "{raw}"
+        );
+        assert!(
+            raw.contains(r#""to":{"kind":"visitor","id":"+15550100"}"#),
+            "{raw}"
+        );
+        match ResponsePacket::from_bytes(raw.as_bytes()).unwrap() {
+            ResponsePacket::PrincipalSentAppended { to, message, .. } => {
+                assert_eq!(to.to_string(), "visitor:+15550100");
+                assert_eq!(message.text, "open 9-5");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
     }
 
     #[test]

@@ -1277,6 +1277,53 @@ impl PrincipalManager {
         })
     }
 
+    /// Where the files `peer` sends in its conversation with `principal`
+    /// are kept, workspace-relative (ADR-113): a visitor's go in that
+    /// conversation's own folder, which its run reads and no other
+    /// conversation does; everyone else's in `attachments/`. `channel` is
+    /// the conversation when known; otherwise their DM with the peko.
+    pub(crate) async fn attachments_dir(
+        &self,
+        principal: &Arc<Principal>,
+        peer: &ActorRef,
+        channel: Option<&peko_channel::ChannelId>,
+    ) -> String {
+        let shared = crate::principal::attachments::DIR.to_string();
+        let Some(port) = self.channel_port.clone() else {
+            return shared;
+        };
+        let stamps = crate::principal::trust::stamps_for(principal, Some(port.clone()));
+        if stamps.trust_of(peer).await != peko_tools_core::Trust::Untrusted {
+            return shared;
+        }
+        // A DM's id follows from its two members, so it is known before
+        // the conversation exists.
+        let channel = match channel {
+            Some(channel) => channel.clone(),
+            None => {
+                let me = port.actor_info(&ActorRef::from(&principal.id)).await;
+                let other = port.actor_info(peer).await;
+                peko_channel::dm_channel_id(&me.dm_key(), &other.dm_key())
+            }
+        };
+        let access = crate::security::access::Access::load(&principal.workspace_path);
+        let keys = peko_channel::PortKeys(port.as_ref());
+        let same_actor = |a: &str, b: &str| match (a.parse::<ActorRef>(), b.parse::<ActorRef>()) {
+            (Ok(a), Ok(b)) => peko_subject::ActorKeys::same_actor(&keys, &a, &b),
+            _ => a == b,
+        };
+        let compartment = peko_tools_core::Compartment::Conversation {
+            channel: channel.to_string(),
+        };
+        match access
+            .rule_for(&peer.canonical_address(), &same_actor)
+            .own_dir(&compartment)
+        {
+            Some(own) => format!("{own}/{shared}"),
+            None => shared,
+        }
+    }
+
     /// B8c.4: shared body for [`Self::receive_streaming`] and
     /// `handle_principal_send`. Two call sites previously
     /// inlined the same five-step sequence (resolve peer's standing
@@ -1789,8 +1836,12 @@ impl PrincipalManager {
         // ADR-094: the files the person sent arrived in the channel's file
         // store; the peko gets its own copies (ADR-088 D2), and a note for
         // any that did not arrive.
+        let dir = self
+            .attachments_dir(&principal, author, Some(channel))
+            .await;
         let (message, attachments) = crate::principal::attachments::received_for_turn(
             &principal.workspace_path,
+            &dir,
             port.files_dir(channel).await.ok().as_deref(),
             message,
             files,

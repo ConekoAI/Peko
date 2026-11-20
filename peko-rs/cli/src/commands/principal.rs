@@ -160,7 +160,7 @@ pub enum PrincipalCommands {
     /// owner, permissions, or memory
     ///
     /// The seed carries its persona and, under `[files]`, its roles,
-    /// skills and workflows (text files, 64 KB together at most). Share
+    /// skills and workflows (text files, 1 MB together at most). Share
     /// it on PekoHub, or start a new peko from it with
     /// `peko create <name> -s <file>`. The new peko is its own peko,
     /// not a copy.
@@ -776,6 +776,7 @@ async fn create_principal(
             description: None,
             model_id: plan.model_id.clone(),
             seed: plan.seed,
+            seed_path: plan.seed_file,
             accept_setup: plan.accept_setup,
         })
         .await?;
@@ -792,12 +793,19 @@ async fn create_principal(
     wait_for_first_turn(name, paths, detach, wait_timeout).await
 }
 
+/// Largest seed sent inside the create request; a larger one goes by
+/// path. Leaves room in the request for JSON escaping.
+const INLINE_SEED_MAX_BYTES: usize = 32 * 1024;
+
 /// What `peko create` asks the daemon for.
 #[derive(Debug)]
 struct CreatePlan {
     model_id: String,
     /// The seed's text, as the daemon parses it.
     seed: Option<String>,
+    /// The seed file, absolute, when its text is too large to send: the
+    /// daemon reads it instead.
+    seed_file: Option<String>,
     /// The seed lists setup steps and they were accepted (ADR-104 D3).
     accept_setup: bool,
     /// `--force`: an existing peko of this name is removed first.
@@ -908,9 +916,20 @@ async fn plan_create(
         );
     }
 
+    // A request is one datagram; a seed that would not fit is read by the
+    // daemon from its file (both run on this computer).
+    let (seed_text, seed_file) = match (seed_text, seed_path) {
+        (Some(text), Some(path)) if text.len() > INLINE_SEED_MAX_BYTES => {
+            let absolute =
+                std::fs::canonicalize(path).with_context(|| format!("locate seed {path}"))?;
+            (None, Some(absolute.display().to_string()))
+        }
+        (text, _) => (text, None),
+    };
     Ok(Some(CreatePlan {
         model_id,
         seed: seed_text,
+        seed_file,
         accept_setup: accept,
         replace: exists,
     }))
