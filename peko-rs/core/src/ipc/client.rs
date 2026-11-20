@@ -812,6 +812,7 @@ impl DaemonClient {
             description,
             model_id: model_id.into(),
             seed: None,
+            seed_path: None,
             accept_setup: false,
         };
         self.request_response(packet).await

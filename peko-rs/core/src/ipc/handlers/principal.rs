@@ -1402,6 +1402,7 @@ impl RequestHandler for PrincipalHandler {
                 description,
                 model_id,
                 seed,
+                seed_path,
                 accept_setup,
             } => {
                 use crate::common::identifiers::validate_agent_name;
@@ -1417,6 +1418,23 @@ impl RequestHandler for PrincipalHandler {
                     return Ok(());
                 }
 
+                // A seed too large for one request comes as a path on
+                // this computer, which only an operator may have read.
+                let seed = match (seed, seed_path) {
+                    (Some(seed), _) => Some(seed),
+                    (None, None) => None,
+                    (None, Some(path)) => match read_seed_file(caller, &path).await {
+                        Ok(text) => Some(text),
+                        Err(e) => {
+                            let response = ResponsePacket::Error {
+                                request_id,
+                                message: format!("[invalid_seed] {e}"),
+                            };
+                            send_response(sink, response).await?;
+                            return Ok(());
+                        }
+                    },
+                };
                 // A seed (ADR-060) is checked before anything is written.
                 let seed = match seed.as_deref().map(crate::principal::seed::parse_seed) {
                     Some(Ok(seed)) => Some(seed),
@@ -2244,6 +2262,35 @@ fn parse_vouched_visitor(actor: &str) -> Result<peko_auth::ActorRef, String> {
     Ok(peko_auth::ActorRef::Visitor(peko_subject::Route::local(id)))
 }
 
+/// The text of the seed file at `path`, for `peko create --seed` with a
+/// seed too large for one request. Only an operator caller (the owner's
+/// own command line on this computer) may have the daemon read a file.
+async fn read_seed_file(caller: &CallerContext, path: &str) -> Result<String, String> {
+    if !caller.is_operator() {
+        return Err("only a command on this computer may name a seed file".into());
+    }
+    let path = std::path::Path::new(path);
+    if !path.is_absolute() {
+        return Err(format!(
+            "the seed path must be absolute: {}",
+            path.display()
+        ));
+    }
+    let meta = tokio::fs::metadata(path)
+        .await
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    if meta.len() > crate::principal::seed::SEED_TEXT_MAX_BYTES as u64 {
+        return Err(format!(
+            "{} is larger than a seed may be ({} MB)",
+            path.display(),
+            crate::principal::seed::SEED_TEXT_MAX_BYTES / (1024 * 1024)
+        ));
+    }
+    tokio::fs::read_to_string(path)
+        .await
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))
+}
+
 /// Admit `send_as` (ADR-113 D7): only a caller with the owner's settings
 /// authority, on this host, may say a message is from a visitor. The
 /// runtime records who vouched; it does not verify the visitor.
@@ -2472,8 +2519,16 @@ async fn run_principal_send(
     let attachments = if attachment_paths.is_empty() {
         Vec::new()
     } else {
-        match crate::principal::attachments::ingest(&principal.workspace_path, &attachment_paths)
-            .await
+        let dir = host
+            .principal_manager()
+            .attachments_dir(&principal, &peer, None)
+            .await;
+        match crate::principal::attachments::ingest_into(
+            &principal.workspace_path,
+            &dir,
+            &attachment_paths,
+        )
+        .await
         {
             Ok(attachments) => attachments,
             Err(reason) => return refuse_send(sink, request_id, reason).await,
@@ -5910,6 +5965,75 @@ mod tests {
                 }
                 other => panic!("expected Error, got {other:?}"),
             }
+        }
+
+        /// ADR-113: a visitor's files go in their conversation's own
+        /// folder, which their run reads; the owner's in `attachments/`.
+        #[tokio::test(flavor = "multi_thread")]
+        #[serial_test::serial]
+        async fn a_visitors_files_land_in_their_conversation_folder() {
+            let fx = fixture(true).await;
+            let manager = &fx.host.manager;
+            let visitor = ActorRef::Visitor(peko_subject::Route::local("+15550100".to_string()));
+            let dir = manager.attachments_dir(&fx.principal, &visitor, None).await;
+            assert!(dir.starts_with("contacts/"), "{dir}");
+            assert!(dir.ends_with("/attachments"), "{dir}");
+
+            let src = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(src.path(), b"order 1234").unwrap();
+            let copies = crate::principal::attachments::ingest_into(
+                &fx.principal.workspace_path,
+                &dir,
+                &[src.path().display().to_string()],
+            )
+            .await
+            .unwrap();
+            assert!(
+                copies[0].path.starts_with(&format!("{dir}/")),
+                "{}",
+                copies[0].path
+            );
+            assert!(fx.principal.workspace_path.join(&copies[0].path).is_file());
+
+            // The visitor's run reaches its own copy; another visitor's
+            // does not.
+            let port: Arc<dyn ChannelPort> = fx.store.clone();
+            let me = port.actor_info(&ActorRef::from(&fx.principal.id)).await;
+            let them = port.actor_info(&visitor).await;
+            let channel = peko_channel::dm_channel_id(&me.dm_key(), &them.dm_key());
+            let stamp_in = |actor: &str, channel: &str| peko_tools_core::ActingFor {
+                actor: actor.into(),
+                name: None,
+                trust: peko_tools_core::Trust::Untrusted,
+                compartment: peko_tools_core::Compartment::Conversation {
+                    channel: channel.into(),
+                },
+                origin: peko_tools_core::Origin::Ingress { channel: None },
+                owner_request: false,
+            };
+            let keys = peko_channel::PortKeys(port.as_ref());
+            let workspace = &fx.principal.workspace_path;
+            let file = workspace.join(&copies[0].path);
+            let theirs = crate::security::access::reach_by_keys(
+                workspace,
+                &stamp_in(&visitor.canonical_address(), channel.as_str()),
+                &keys,
+            )
+            .unwrap();
+            assert!(theirs.path_refusal(workspace, &file, false).is_none());
+            let other = crate::security::access::reach_by_keys(
+                workspace,
+                &stamp_in("visitor:local:someone-else", "dm_other"),
+                &keys,
+            )
+            .unwrap();
+            assert!(other.path_refusal(workspace, &file, false).is_some());
+
+            let owner = fx.principal.config.read().await.owner.clone();
+            assert_eq!(
+                manager.attachments_dir(&fx.principal, &owner, None).await,
+                "attachments"
+            );
         }
 
         /// ADR-113 D7: only a caller with the owner's authority may

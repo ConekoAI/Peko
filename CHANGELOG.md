@@ -4,6 +4,24 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Changed
+
+- **A seed can carry a business's material: up to 256 files and 1 MB
+  together** (was 64 files and 64 KB), enough for an FAQ, a price list and
+  policies. `peko create --seed` sends a seed over 32 KB by its path, which
+  the daemon reads (`principal_create` gains `seed_path`, accepted only
+  from the owner's command line on this computer).
+
+### Fixed
+
+- **A visitor's files can be read in their own conversation.** Files a
+  visitor sends (`peko send --as visitor:… --attach`, or from another
+  runtime) used to be copied into the shared `attachments/` folder, which
+  a visitor's conversation is not given, so the peko could not open them
+  for that person. They now go in that conversation's own folder
+  (`contacts/<conversation>/attachments/`), which that conversation reads
+  and no other does. Your own files still go in `attachments/`.
+
 ## [0.3.0] - 2026-11-19
 
 ### Security

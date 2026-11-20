@@ -2440,7 +2440,11 @@ An inbound DM post may carry the files its author attached:
 - `name` — the original file name, for display.
 - `path` — the copy in the principal's workspace, relative to it:
   `attachments/<YYYY-MM-DD>/<8 hex>-<safe name>`. The copy is the
-  record; the original may be gone.
+  record; the original may be gone. Files a visitor sends (ADR-113) are
+  copied into their conversation's own folder instead,
+  `contacts/<conversation>/attachments/<YYYY-MM-DD>/<8 hex>-<safe name>`
+  (the `own` folder `ACCESS.toml` gives them), which their run reads and
+  no other conversation does.
 - `mime` — sniffed from the leading bytes for PNG / JPEG / GIF / WebP,
   WAV / FLAC / OGG / MP3 (ID3) / AVI, else from the extension
   (`application/octet-stream` when unknown).

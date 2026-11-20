@@ -202,7 +202,7 @@ Options:
 ```text
 Export a peko's seed: its definition without its identity, owner, permissions, or memory
 
-The seed carries its persona and, under `[files]`, its roles, skills and workflows (text files, 64 KB together at most). Share it on PekoHub, or start a new peko from it with `peko create <name> -s <file>`. The new peko is its own peko, not a copy.
+The seed carries its persona and, under `[files]`, its roles, skills and workflows (text files, 1 MB together at most). Share it on PekoHub, or start a new peko from it with `peko create <name> -s <file>`. The new peko is its own peko, not a copy.
 
 Usage: peko seed [OPTIONS] <NAME>
 
