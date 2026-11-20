@@ -17,7 +17,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// The release workflow passes the tag as `PEKO_RELEASE_VERSION` at build
 /// time. A build without it (a source build) or with a value that doesn't
 /// belong to this crate version falls back to [`VERSION`]. Machine
-/// consumers (the daemon's `PEKO_VERSION=` line, IPC status, snapshot
+/// consumers (the engine's `PEKO_VERSION=` line, IPC status, snapshot
 /// manifests) keep the crate version.
 pub fn release_version() -> &'static str {
     release_version_from(option_env!("PEKO_RELEASE_VERSION"), VERSION)

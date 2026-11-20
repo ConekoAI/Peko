@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["Peko <peko@coneko.ai>"]
 description = "Peko long-running background daemon binary (Phase 12 — extracted from root `peko` crate). Depends only on the root `peko` lib for the `Daemon`/`DaemonConfig`/`LaunchMode` entry surface; no daemon internals are reachable from this crate."
 license = "MIT"
-repository = "https://github.com/ConekoAI/peko-runtime"
+repository = "https://github.com/ConekoAI/Peko"
 
 [[bin]]
 name = "peko-daemon"

@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const GITHUB_REPO: &str = "ConekoAI/peko-runtime";
+const GITHUB_REPO: &str = "ConekoAI/Peko";
 
 /// Handle update command
 pub async fn handle_update(check_only: bool, force: bool) -> Result<()> {
@@ -72,7 +72,7 @@ pub async fn handle_update(check_only: bool, force: bool) -> Result<()> {
 
     println!("\n✅ peko updated successfully to v{latest_version}");
     println!(
-        "   Restart the daemon to use the new version: peko daemon stop, then peko daemon start"
+        "   Restart the engine to use the new version: peko engine stop, then peko engine start"
     );
 
     Ok(())
@@ -162,7 +162,7 @@ fn parse_latest_release(stdout: &str) -> Result<String, ReleaseQueryError> {
     Ok(tag.trim_start_matches('v').to_string())
 }
 
-/// The binaries a release archive holds. `peko` starts the daemon from
+/// The binaries a release archive holds. `peko` starts the engine from
 /// the `peko-daemon` beside it, so an update replaces both together.
 const BINARIES: [&str; 2] = ["peko", "peko-daemon"];
 
@@ -299,8 +299,8 @@ fn install_binaries(staged: &[(PathBuf, PathBuf)]) -> Result<()> {
 
 /// Replace each `dest` with `new`, without sudo. Each binary in place is
 /// first renamed aside to `<name>.old`: Windows won't overwrite or
-/// delete a running exe (this one, or a running daemon) but does let it
-/// be renamed. A running daemon keeps its old binary until restarted.
+/// delete a running exe (this one, or a running engine) but does let it
+/// be renamed. A running engine keeps its old binary until restarted.
 fn replace_binaries(staged: &[(PathBuf, PathBuf)]) -> std::io::Result<()> {
     // (dest, where the binary it replaced went, if there was one)
     let mut done: Vec<(&Path, Option<PathBuf>)> = Vec::with_capacity(staged.len());
@@ -420,11 +420,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let staged = [
             stage(dir.path(), "peko", "new peko", Some("old peko")),
-            stage(dir.path(), "peko-daemon", "new daemon", None),
+            stage(dir.path(), "peko-daemon", "new engine", None),
         ];
         replace_binaries(&staged).unwrap();
         assert_eq!(std::fs::read_to_string(&staged[0].1).unwrap(), "new peko");
-        assert_eq!(std::fs::read_to_string(&staged[1].1).unwrap(), "new daemon");
+        assert_eq!(std::fs::read_to_string(&staged[1].1).unwrap(), "new engine");
         assert!(!aside_path(&staged[0].1).exists());
     }
 
@@ -432,12 +432,12 @@ mod tests {
     fn a_failure_part_way_restores_what_was_replaced() {
         let dir = tempfile::tempdir().unwrap();
         let first = stage(dir.path(), "peko", "new peko", Some("old peko"));
-        let (_, dest) = stage(dir.path(), "peko-daemon", "unused", Some("old daemon"));
+        let (_, dest) = stage(dir.path(), "peko-daemon", "unused", Some("old engine"));
         let missing = dir.path().join("staged").join("no-such-binary");
         let staged = [first, (missing, dest)];
         assert!(replace_binaries(&staged).is_err());
         assert_eq!(std::fs::read_to_string(&staged[0].1).unwrap(), "old peko");
-        assert_eq!(std::fs::read_to_string(&staged[1].1).unwrap(), "old daemon");
+        assert_eq!(std::fs::read_to_string(&staged[1].1).unwrap(), "old engine");
     }
 
     /// Windows locks a running exe as a handle that shares read and
@@ -452,8 +452,8 @@ mod tests {
         let staged = [stage(
             dir.path(),
             "peko-daemon.exe",
-            "new daemon",
-            Some("old daemon"),
+            "new engine",
+            Some("old engine"),
         )];
         let dest = &staged[0].1;
         let running = std::fs::OpenOptions::new()
@@ -467,13 +467,13 @@ mod tests {
         );
 
         replace_binaries(&staged).unwrap();
-        assert_eq!(std::fs::read_to_string(dest).unwrap(), "new daemon");
+        assert_eq!(std::fs::read_to_string(dest).unwrap(), "new engine");
         // The "running" binary keeps its file. (A real running exe can't
         // be deleted either, so its `.old` stays until the next update;
         // this handle allows deletion, so here it may already be gone.)
         let mut kept = String::new();
         std::io::Read::read_to_string(&mut &running, &mut kept).unwrap();
-        assert_eq!(kept, "old daemon");
+        assert_eq!(kept, "old engine");
     }
 
     #[test]

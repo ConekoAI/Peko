@@ -259,10 +259,10 @@ pub async fn execute(cmd: ModelCommands, paths: &GlobalPaths) -> Result<()> {
     }
 }
 
-/// Tell the running daemon to re-read `models.toml` from disk so the
+/// Tell the running engine to re-read `models.toml` from disk so the
 /// in-flight root agent sees the mutation just persisted by the caller.
-/// Silent on connection failure — the daemon may not be running (cold
-/// start, dev workflow), in which case the next `peko daemon start`
+/// Silent on connection failure — the engine may not be running (cold
+/// start, dev workflow), in which case the next `peko engine start`
 /// will pick up the new state from disk anyway.
 async fn notify_daemon_reload() {
     let Ok(client) = peko_core::ipc::DaemonClient::connect().await else {
@@ -275,17 +275,17 @@ async fn notify_daemon_reload() {
             ..
         }) => {
             if models_count > 0 || keys_count > 0 {
-                println!("Daemon reloaded: {models_count} model(s), {keys_count} key(s).");
+                println!("Engine reloaded: {models_count} model(s), {keys_count} key(s).");
             }
         }
         Ok(peko_core::ipc::ResponsePacket::Error { message, .. }) => {
-            eprintln!("Daemon reload returned error: {message}");
+            eprintln!("Engine reload returned error: {message}");
         }
         Ok(other) => {
-            eprintln!("Daemon reload returned unexpected packet: {other:?}");
+            eprintln!("Engine reload returned unexpected packet: {other:?}");
         }
         Err(e) => {
-            eprintln!("Daemon reload failed: {e}");
+            eprintln!("Engine reload failed: {e}");
         }
     }
 }

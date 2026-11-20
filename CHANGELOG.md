@@ -4,6 +4,30 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Changed
+
+- **The background process is called the engine.** `peko engine start`,
+  `stop`, `status` and `restart` replace `peko daemon …`, and messages and
+  guides say "engine". `peko daemon …` still works, so scripts and services
+  that call it keep running. The `peko-daemon` binary, the socket and the
+  log file (`daemon.log`) keep their names.
+- **The repository is `ConekoAI/Peko`.** The installers, `peko update` and
+  the Docker image label point at the new address. GitHub redirects the old
+  one, so releases before this keep installing and updating.
+- **Docs are reorganized.** New pages: [How Peko works](docs/HOW_IT_WORKS.md)
+  and the [security model](docs/SECURITY_MODEL.md). Reference pages moved to
+  `docs/reference/` (`BUILTIN_TOOLS.md`, `SKILLS.md`, `DATA_MODEL.md`,
+  `API_SURFACE.md`). Design records are no longer kept in this repository;
+  the ADR numbers cited in code and in this changelog stay as identifiers.
+  The repository gained a `LICENSE` file (MIT, as `Cargo.toml` already
+  said), `CONTRIBUTING.md`, `SECURITY.md` and issue templates.
+
+### Fixed
+
+- The User's Guide said PekoHub could read messages it relays. Since 0.2.0
+  they are sealed to the receiving computer; the guide now says what PekoHub
+  does see.
+
 ### Security
 
 - **`trusted` is retired (ADR-113 D1).** Everyone who is not a peko's owner

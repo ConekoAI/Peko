@@ -59,7 +59,7 @@ brings it back with everything it had.
 Check it:
 
 ```bash
-docker exec peko peko daemon status
+docker exec peko peko engine status
 ```
 
 ## 3. Add a model
@@ -150,7 +150,7 @@ docker run --rm --volumes-from peko --entrypoint peko \
 Build your bridge on this image (or copy `/opt/peko/bin/peko` into yours)
 and mount the same `/data`, running as the same user (uid 10001). The
 command reaches the runtime through the socket in `/data/run`, and gets its
-answer back there. Run only `peko send`, `peko log` and other commands from it; the daemon itself
+answer back there. Run only `peko send`, `peko log` and other commands from it; the engine itself
 runs in one container per volume.
 
 Only the peko's owner can send as a visitor, which here means anyone who

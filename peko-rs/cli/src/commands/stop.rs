@@ -71,7 +71,7 @@ pub async fn handle_stop(args: StopArgs, _paths: &GlobalPaths) -> Result<()> {
                 bail!(error.unwrap_or_else(|| "stop failed".into()))
             }
             ResponsePacket::Error { message, .. } => bail!(message),
-            other => bail!("unexpected response from daemon: {other:?}"),
+            other => bail!("unexpected response from engine: {other:?}"),
         };
     }
     let resp = client.principal_stop(args.principal.clone(), peer).await?;
@@ -99,7 +99,7 @@ pub async fn handle_stop(args: StopArgs, _paths: &GlobalPaths) -> Result<()> {
             Ok(())
         }
         ResponsePacket::Error { message, .. } => bail!(message),
-        other => bail!("unexpected response from daemon: {other:?}"),
+        other => bail!("unexpected response from engine: {other:?}"),
     }
 }
 

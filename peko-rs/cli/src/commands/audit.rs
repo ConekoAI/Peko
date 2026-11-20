@@ -113,7 +113,7 @@ pub enum AuditCommands {
         json: bool,
     },
 
-    /// Summarize recent events since the daemon started.
+    /// Summarize recent events since the engine started.
     List {
         /// Maximum number of recent events to consider.
         #[arg(short, long, default_value = "1000")]
@@ -127,11 +127,11 @@ pub enum AuditCommands {
     },
 }
 
-/// Connect to the daemon or surface a clear "not running" error.
+/// Connect to the engine or surface a clear "not running" error.
 async fn connect_daemon() -> Result<DaemonClient> {
     DaemonClient::connect()
         .await
-        .context("Daemon is not running. Start it with: peko daemon start")
+        .context("Engine is not running. Start it with: peko engine start")
 }
 
 /// Dispatch `peko audit <subcommand>`.
@@ -205,7 +205,7 @@ fn tail_jsonl(
             "📜 Audit directory does not exist yet: {}",
             audit_dir.display()
         );
-        eprintln!("   The daemon writes to this directory on first audit event.");
+        eprintln!("   The engine writes to this directory on first audit event.");
         return Ok(());
     }
 
@@ -324,7 +324,7 @@ fn today_audit_path(dir: &Path) -> PathBuf {
 /// `--follow` loop. Polls today's file with `O_APPEND`-aware reads
 /// (we read the whole file each tick; rotation is handled by the
 /// caller exiting and the user restarting). Cheap for small files
-/// (a few hundred lines/day is typical for a single-user daemon).
+/// (a few hundred lines/day is typical for a single-user engine).
 fn follow_today(
     path: &Path,
     type_prefix: Option<&str>,

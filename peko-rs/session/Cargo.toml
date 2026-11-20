@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["Peko <peko@peko.ai>"]
 description = "Session JSONL persistence, ownership, inbox contracts, and compaction storage"
 license = "MIT"
-repository = "https://github.com/ConekoAI/peko-runtime"
+repository = "https://github.com/ConekoAI/Peko"
 
 [dependencies]
 # Contract and persistence dependencies; no host/root dependency.

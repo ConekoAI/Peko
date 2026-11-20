@@ -26,7 +26,7 @@ The next model request discovers the server's tools. To pick it up right away, t
 on `MCP`, then use the individual `mcp__notes__<method>` tools on its next iteration.
 Use the exact advertised name; long or unsafe component names carry a stable digest suffix.
 `MCP {"action":"status"}` reports source paths, readiness, cached/fresh catalogs,
-tool counts and errors. Edits/removal take effect without restarting the daemon.
+tool counts and errors. Edits/removal take effect without restarting the engine.
 
 For Streamable HTTP with a bearer token:
 
@@ -52,4 +52,4 @@ Tokens belong to this peko and this server only.
 `resources`, `resource_templates` and `prompts` require `server`.
 `read_resource` also requires `uri`; `get_prompt` requires `name` and accepts an
 optional string-map `arguments`. `reconnect` resets connection retry backoff.
-See [DATA_MODEL](../../DATA_MODEL.md#12-workspace-mcp-server-definitions) for all fields.
+See [DATA_MODEL](../reference/DATA_MODEL.md#12-workspace-mcp-server-definitions) for all fields.

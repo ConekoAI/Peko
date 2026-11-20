@@ -13,3 +13,4 @@ config.toml
 AGENTS.md
 /.workbuddy-ai
 .workbuddy/
+.claude/

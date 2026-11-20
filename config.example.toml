@@ -17,11 +17,11 @@
 # optional (missing file = built-in defaults):
 
 # ════════════════════════════════════════════════════════════════════
-# ~/.peko/runtime.toml — daemon configuration
+# ~/.peko/runtime.toml — engine configuration
 # ($PEKO_HOME/runtime.toml when PEKO_HOME is set)
 # ════════════════════════════════════════════════════════════════════
 #
-# The only block the daemon consumes today is [provider.retry] — overrides
+# The only block the engine consumes today is [provider.retry] — overrides
 # for the LLM transport retry defaults. Values shown are the defaults.
 
 # [provider.retry]
@@ -31,7 +31,7 @@
 # retry_jitter = 0.1           # ±10% uniform spread; omit or 0 to disable
 # max_attempts = 8             # total transport+engine attempts (shared budget)
 #
-# Constraints (validated at daemon boot; invalid values fall back to
+# Constraints (validated at engine boot; invalid values fall back to
 # defaults with a warning):
 #   max_retries <= max_attempts
 #   retry_delay_ms > 0
@@ -67,7 +67,7 @@ keep_awake = true
 # Notes
 # ════════════════════════════════════════════════════════════════════
 #
-# - The daemon listens only on this computer (a local socket, with
+# - The engine listens only on this computer (a local socket, with
 #   127.0.0.1:11435 as a fallback); there is no setting to expose it.
 # - Logging verbosity is controlled by the RUST_LOG environment variable,
 #   not a config key.

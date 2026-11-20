@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["Peko <peko@coneko.ai>"]
 description = "Provider contract types (Phase 6) — owns ChatOptions, ChatResponse, StreamEvent, StopReason, ContentDelta, BlockType, ToolDefinition, ContentBlockId, ThinkingEffort, ThinkingFormat, ThinkingKeep, ToolChoice, ServiceTier, CacheRetention, ProviderCompat, DeferredToolsMode. Re-exports LlmMessage / ContentBlock / MessageRole / TokenUsage from peko-message."
 license = "MIT"
-repository = "https://github.com/ConekoAI/peko-runtime"
+repository = "https://github.com/ConekoAI/Peko"
 
 [dependencies]
 # Workspace member that owns the neutral agentic message contract —

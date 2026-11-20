@@ -37,7 +37,7 @@ pub enum VaultCommands {
     /// or generated and kept in the OS keychain). Use this to switch
     /// between keychain mode (the macOS default) and passphrase mode.
     ///
-    /// Stop the daemon first (`peko daemon stop`); this refuses to run
+    /// Stop the engine first (`peko engine stop`); this refuses to run
     /// while it is up.
     Migrate {
         /// Target unlock mode.
@@ -93,8 +93,8 @@ async fn migrate_cmd(paths: &GlobalPaths, target: UnlockMethod, skip_confirm: bo
     if let Ok(client) = peko_core::ipc::DaemonClient::connect().await {
         let _ = client;
         anyhow::bail!(
-            "refusing to migrate while a peko daemon is running; \
-             stop it with `peko daemon stop` and retry"
+            "refusing to migrate while the engine is running; \
+             stop it with `peko engine stop` and retry"
         );
     }
 

@@ -18,15 +18,15 @@ use std::time::Duration;
 use tokio::process::{Child, Command};
 use tracing::{debug, warn};
 
-/// CLI flag surface to use when invoking the daemon process.
+/// CLI flag surface to use when invoking the engine process.
 ///
 /// Phase 11c introduced the `peko-daemon` binary artifact. The two
 /// variants below capture the two arg layouts `spawn_daemon_with` may
 /// need to construct depending on which artifact is present:
 /// - `PekoDaemon` — direct invocation of the `peko-daemon` binary; the
-///   flags are passed as-is, no `daemon start` subcommand prefix.
+///   flags are passed as-is, no `engine start` subcommand prefix.
 /// - `PekoDaemonStartForeground` — legacy path that re-execs the CLI
-///   (`peko daemon start --foreground ...`) for installs / dev trees
+///   (`peko engine start --foreground ...`) for installs / dev trees
 ///   that have not built the new artifact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ArgPrefix {
@@ -34,35 +34,35 @@ enum ArgPrefix {
     PekoDaemonStartForeground,
 }
 
-/// Status information about the daemon process
+/// Status information about the engine process
 #[derive(Debug, Clone)]
 pub struct DaemonStatus {
-    /// Whether the daemon is responding to IPC
+    /// Whether the engine is responding to IPC
     pub responding: bool,
     /// Whether a process with the recorded PID exists
     pub process_exists: bool,
-    /// Daemon version (if responding)
+    /// Engine version (if responding)
     pub version: Option<String>,
     /// Uptime in seconds (if responding)
     pub uptime_secs: Option<u64>,
     /// PID (if known)
     pub pid: Option<u32>,
-    /// Whether the daemon is ready to serve requests
+    /// Whether the engine is ready to serve requests
     pub ready: bool,
-    /// Error message if the daemon is not responding but process exists
+    /// Error message if the engine is not responding but process exists
     pub error: Option<String>,
-    /// Tunnel health snapshot (issue #8). `None` if the daemon is not
+    /// Tunnel health snapshot (issue #8). `None` if the engine is not
     /// responding to IPC.
     pub tunnel: Option<TunnelStatusInfo>,
-    /// Launch mode of the running daemon (`Sidecar` vs. `Headless`),
+    /// Launch mode of the running engine (`Sidecar` vs. `Headless`),
     /// surfaced from `ResponsePacket::Status::mode`. ADR-043 adoption:
-    /// `peko daemon start` uses this to print which mode owns the IPC
-    /// socket when it refuses to start a second daemon. `None` if the
-    /// daemon didn't report it (older builds).
+    /// `peko engine start` uses this to print which mode owns the IPC
+    /// socket when it refuses to start a second engine. `None` if the
+    /// engine didn't report it (older builds).
     pub mode: Option<crate::daemon::LaunchMode>,
 }
 
-/// Tunnel health snapshot exposed in `peko daemon status --json` (issue #8).
+/// Tunnel health snapshot exposed in `peko engine status --json` (issue #8).
 #[derive(Debug, Clone)]
 pub struct TunnelStatusInfo {
     /// One of "disabled" | "connected" | "disconnected" | "degraded".
@@ -71,18 +71,18 @@ pub struct TunnelStatusInfo {
     pub reconnect_attempts: u32,
     /// Last error message, if any.
     pub last_error: Option<String>,
-    /// Whether the daemon is currently in degraded state.
+    /// Whether the engine is currently in degraded state.
     pub degraded: bool,
 }
 
-/// Service for managing the daemon process lifecycle
+/// Service for managing the engine process lifecycle
 #[derive(Debug, Clone)]
 pub struct DaemonProcessService {
     resolver: PathResolver,
 }
 
 impl DaemonProcessService {
-    /// Create a new daemon process service
+    /// Create a new engine process service
     #[must_use]
     pub fn new(resolver: PathResolver) -> Self {
         Self { resolver }
@@ -92,13 +92,13 @@ impl DaemonProcessService {
     // PID file helpers
     // ------------------------------------------------------------------
 
-    /// Get the path to the daemon PID file.
+    /// Get the path to the engine PID file.
     ///
     /// Two distinct paths exist in `<config_dir>/run/`:
-    /// - `daemon.pid` — the lockfile used by `peko daemon start` (CLI / headless)
+    /// - `daemon.pid` — the lockfile used by `peko engine start` (CLI / headless)
     /// - `desktop.lock` — the lockfile used when `peko-desktop` spawns the
     ///   bundled sidecar with `--sidecar-mode` (ADR-043). Distinct name
-    ///   prevents a CLI daemon and a desktop sidecar in the same config
+    ///   prevents a CLI engine and a desktop sidecar in the same config
     ///   dir from racing on the same lockfile.
     #[must_use]
     pub fn pid_file_path(&self, sidecar_mode: bool) -> PathBuf {
@@ -111,7 +111,7 @@ impl DaemonProcessService {
     }
 
     /// True iff a sidecar-mode lockfile is currently held on disk by a
-    /// live process. Used by `peko daemon restart` to preserve the mode of
+    /// live process. Used by `peko engine restart` to preserve the mode of
     /// whatever was running before the restart.
     ///
     /// Stale lockfiles (PID present but not running, or unparseable
@@ -169,7 +169,7 @@ impl DaemonProcessService {
         }
     }
 
-    /// Write the PID to the PID file (default daemon mode).
+    /// Write the PID to the PID file (default engine mode).
     pub fn write_pid(&self, pid: u32) -> anyhow::Result<()> {
         self.write_pid_for(pid, false)
     }
@@ -188,7 +188,7 @@ impl DaemonProcessService {
         Ok(())
     }
 
-    /// Remove the PID file and associated lock file (default daemon mode).
+    /// Remove the PID file and associated lock file (default engine mode).
     pub fn remove_pid_file(&self) {
         self.remove_pid_file_for(false);
     }
@@ -208,10 +208,10 @@ impl DaemonProcessService {
     // Running check
     // ------------------------------------------------------------------
 
-    /// Check if the daemon is running by attempting an IPC ping
+    /// Check if the engine is running by attempting an IPC ping
     ///
-    /// Returns `Ok(true)` if the daemon responds to a ping.
-    /// Returns `Ok(false)` if the daemon is not reachable.
+    /// Returns `Ok(true)` if the engine responds to a ping.
+    /// Returns `Ok(false)` if the engine is not reachable.
     pub async fn is_daemon_running(&self) -> anyhow::Result<bool> {
         match ConnectionManager::try_connect().await {
             Ok(conn) => {
@@ -236,7 +236,7 @@ impl DaemonProcessService {
         }
     }
 
-    /// Get full daemon status (IPC + PID file)
+    /// Get full engine status (IPC + PID file)
     pub async fn get_daemon_status(&self) -> anyhow::Result<DaemonStatus> {
         let pid = self.read_pid();
 
@@ -295,7 +295,7 @@ impl DaemonProcessService {
                     uptime_secs: None,
                     pid: Some(pid),
                     ready: false,
-                    error: Some(format!("daemon not responding (process {pid} exists)")),
+                    error: Some(format!("engine not responding (process {pid} exists)")),
                     tunnel: None,
                     mode: None,
                 });
@@ -319,16 +319,16 @@ impl DaemonProcessService {
     // Spawn
     // ------------------------------------------------------------------
 
-    /// Spawn the daemon as a background child process (default mode).
+    /// Spawn the engine as a background child process (default mode).
     ///
     /// Backwards-compatible wrapper around `spawn_daemon_with` with
     /// `sidecar_mode = false`. The CLI / headless path uses this.
     ///
-    /// The daemon binary is invoked with `daemon start --foreground` so it
+    /// The engine binary is invoked with `daemon start --foreground` (the alias every release understands) so it
     /// blocks in the child process. Stdout/stderr are suppressed.
     ///
     /// # Errors
-    /// Returns error if the daemon fails to spawn or does not become ready
+    /// Returns error if the engine fails to spawn or does not become ready
     /// within the timeout.
     pub async fn spawn_daemon(&self, interval_secs: u64) -> anyhow::Result<Child> {
         // Backwards-compatible wrapper: defaults to the runtime default cap.
@@ -340,27 +340,27 @@ impl DaemonProcessService {
         .await
     }
 
-    /// Spawn the daemon as a background child process.
+    /// Spawn the engine as a background child process.
     ///
     /// Phase 11c: prefers the standalone `peko-daemon` binary artifact
     /// (next to `current_exe()`) when present, and falls back to the
     /// legacy `peko daemon start --foreground` re-exec path when it is
     /// not. The fallback covers older installs and dev trees that have
     /// not built the new binary yet. Both paths produce an equivalent
-    /// background daemon with the same IPC contract.
+    /// background engine with the same IPC contract.
     ///
     /// # Arguments
     /// - `interval_secs` — cron poll interval
     /// - `max_reconnect_attempts` — PekoHub tunnel reconnect cap (issue #8)
-    /// - `sidecar_mode` — when true, the daemon is started with
+    /// - `sidecar_mode` — when true, the engine is started with
     ///   `--sidecar-mode` and writes to a distinct lockfile
     ///   (`<config_dir>/run/desktop.lock`) so it cannot collide with a
-    ///   CLI-launched daemon in the same config dir. `peko-desktop`'s
+    ///   CLI-launched engine in the same config dir. `peko-desktop`'s
     ///   `SidecarSupervisor` (PR D, ADR-043) calls this with
     ///   `sidecar_mode = true`.
     ///
     /// # Errors
-    /// Returns error if the daemon fails to spawn or does not become ready
+    /// Returns error if the engine fails to spawn or does not become ready
     /// within the timeout.
     pub async fn spawn_daemon_with(
         &self,
@@ -449,7 +449,7 @@ impl DaemonProcessService {
 
         if !ready {
             let _ = child.kill().await;
-            anyhow::bail!("Daemon failed to start - not ready within timeout");
+            anyhow::bail!("Engine failed to start - not ready within timeout");
         }
 
         // Write PID file (sidecar lock or daemon.pid depending on mode)
@@ -464,11 +464,11 @@ impl DaemonProcessService {
         Ok(child)
     }
 
-    /// Run the daemon in the current terminal (foreground mode).
+    /// Run the engine in the current terminal (foreground mode).
     ///
     /// Spawns the standalone `peko-daemon` binary artifact (next to
     /// `current_exe()`) and inherits its stdin/stdout/stderr so the
-    /// user sees the daemon's output inline. Blocks until the child
+    /// user sees the engine's output inline. Blocks until the child
     /// exits.
     ///
     /// Phase 0.Z-C: the legacy in-process `Daemon::new + Daemon::run`
@@ -480,10 +480,10 @@ impl DaemonProcessService {
     /// # Arguments
     /// - `interval_secs` — cron poll interval
     /// - `max_reconnect_attempts` — PekoHub tunnel reconnect cap (issue #8)
-    /// - `sidecar_mode` — when true, the daemon is started with
+    /// - `sidecar_mode` — when true, the engine is started with
     ///   `--sidecar-mode` and writes to a distinct lockfile
     ///   (`<config_dir>/run/desktop.lock`) so it cannot collide with a
-    ///   CLI-launched daemon in the same config dir.
+    ///   CLI-launched engine in the same config dir.
     pub async fn run_foreground(
         &self,
         interval_secs: u64,
@@ -611,7 +611,7 @@ impl DaemonProcessService {
     /// Resolves once this process receives SIGTERM, SIGINT or SIGHUP
     /// (Ctrl-C on Windows).
     ///
-    /// `run_foreground` selects on this alongside the daemon child's
+    /// `run_foreground` selects on this alongside the engine child's
     /// exit so a signal aimed at the CLI is passed down to
     /// `peko-daemon`. Without it the child is orphaned on every
     /// teardown path that signals the CLI — Ctrl-C, `kill $!` from a
@@ -683,18 +683,18 @@ impl DaemonProcessService {
         current_exe.with_file_name(daemon_name)
     }
 
-    /// Resolve the `Stdio` descriptor for the daemon process's stderr in
+    /// Resolve the `Stdio` descriptor for the engine process's stderr in
     /// the CLI background-spawn path. Tries to open
     /// `<config_dir>/logs/daemon.log` (creating the directory if
     /// needed) so dispatcher warnings and `tracing` output from the
-    /// daemon process are inspectable after a background `peko daemon
+    /// engine process are inspectable after a background `peko engine
     /// start`. Each start begins a new file with a startup banner line.
     /// The previous run's file is kept as `daemon.log.1` (one generation),
     /// so restarting after a crash does not erase what the crash logged.
     ///
     /// On any open failure (missing dir, permission denied, etc) we
     /// fall back to `/dev/null` so the spawn still succeeds — the
-    /// daemon is functional but its stderr is dropped. The fallback is
+    /// engine is functional but its stderr is dropped. The fallback is
     /// silent because the failure is recoverable and the user can
     /// still attach `--foreground` for debugging.
     /// Move the last run's `daemon.log` to `daemon.log.1`, replacing an
@@ -711,7 +711,7 @@ impl DaemonProcessService {
         let _ = std::fs::remove_file(&previous);
         if let Err(e) = std::fs::rename(log_path, &previous) {
             tracing::debug!(
-                "could not keep previous daemon log {}: {e}",
+                "could not keep previous engine log {}: {e}",
                 log_path.display()
             );
         }
@@ -721,7 +721,7 @@ impl DaemonProcessService {
         let log_dir = config_dir.join("logs");
         if let Err(e) = std::fs::create_dir_all(&log_dir) {
             tracing::debug!(
-                "could not create daemon log dir {}: {e}; falling back to /dev/null",
+                "could not create engine log dir {}: {e}; falling back to /dev/null",
                 log_dir.display()
             );
             return std::process::Stdio::null();
@@ -747,7 +747,7 @@ impl DaemonProcessService {
             }
             Err(e) => {
                 tracing::debug!(
-                    "could not open daemon log {}: {e}; falling back to /dev/null",
+                    "could not open engine log {}: {e}; falling back to /dev/null",
                     log_path.display()
                 );
                 std::process::Stdio::null()
@@ -755,9 +755,9 @@ impl DaemonProcessService {
         }
     }
 
-    /// Wait for the daemon to become ready via IPC ping
+    /// Wait for the engine to become ready via IPC ping
     ///
-    /// Returns `Ok(true)` if the daemon responds to a ping within the timeout.
+    /// Returns `Ok(true)` if the engine responds to a ping within the timeout.
     pub async fn wait_for_daemon_ready(&self, timeout: Duration) -> anyhow::Result<bool> {
         wait_for_healthy(
             || async {
@@ -793,16 +793,16 @@ impl DaemonProcessService {
     // Stop
     // ------------------------------------------------------------------
 
-    /// Stop the daemon
+    /// Stop the engine
     ///
     /// 1. Try graceful shutdown via IPC (unless `force` is true)
-    /// 2. Wait for the daemon to exit
+    /// 2. Wait for the engine to exit
     /// 3. Fall back to PID-based kill
     /// 4. Final verification via IPC
     /// 5. Fallback process-name kill if still running
     ///
     /// # Errors
-    /// Returns error if the daemon is still running after all stop attempts.
+    /// Returns error if the engine is still running after all stop attempts.
     pub async fn stop_daemon(&self, force: bool) -> anyhow::Result<()> {
         let pid = self.read_pid();
 
@@ -839,13 +839,13 @@ impl DaemonProcessService {
                     self.remove_pid_file();
                     return Ok(());
                 }
-                warn!("Daemon still running after graceful request, falling back to PID kill");
+                warn!("Engine still running after graceful request, falling back to PID kill");
             }
         }
 
         // 3. PID-based kill
         if let Some(pid) = pid {
-            debug!("Killing daemon via PID {pid}");
+            debug!("Killing engine via PID {pid}");
             let _ = kill_by_pid(pid, force).await;
 
             let exited =
@@ -861,7 +861,7 @@ impl DaemonProcessService {
         // this home runs. Only the PID this home's lockfile names is ours.
         tokio::time::sleep(Duration::from_millis(500)).await;
         if self.is_daemon_running().await? {
-            warn!("Daemon still responding after stop attempt");
+            warn!("Engine still responding after stop attempt");
             anyhow::bail!(still_running_message(pid, &self.pid_file_path(false)));
         }
         self.remove_pid_file();
@@ -870,7 +870,7 @@ impl DaemonProcessService {
     }
 }
 
-/// What `peko daemon stop` says when the daemon still answers after
+/// What `peko engine stop` says when the engine still answers after
 /// everything it may do: the PID to end by hand when this home's lockfile
 /// named one, or where the lockfile should have been when it did not.
 fn still_running_message(pid: Option<u32>, pid_file: &std::path::Path) -> String {
@@ -881,7 +881,7 @@ fn still_running_message(pid: Option<u32>, pid_file: &std::path::Path) -> String
             } else {
                 format!("kill -9 {pid}")
             };
-            format!("The daemon (PID {pid}) is still running after the stop attempt. End it with: {command}")
+            format!("The engine (PID {pid}) is still running after the stop attempt. End it with: {command}")
         }
         None => format!(
             "A daemon still answers on this home's IPC endpoint, but {} names no running \
@@ -900,7 +900,7 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 ///
 /// On Windows a child inherits every inheritable handle of its parent, not
 /// only the stdio it was given, and this process's own stdin/stdout/stderr
-/// are inheritable (they were inherited). A daemon spawned by `peko create`
+/// are inheritable (they were inherited). An engine spawned by `peko create`
 /// therefore held the CLI's output pipe open for its whole life, and
 /// whoever read that output (a script, a test, an IDE) never saw it end.
 /// The standard handles are made non-inheritable for the spawn and
@@ -973,7 +973,7 @@ mod tests {
     }
     use super::*;
 
-    /// The last resort names this home's daemon and how to end it; it never
+    /// The last resort names this home's engine and how to end it; it never
     /// suggests (or runs) a kill by process name.
     #[test]
     fn still_running_message_names_only_this_homes_daemon() {

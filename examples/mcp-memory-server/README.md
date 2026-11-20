@@ -35,7 +35,7 @@ mcp_servers:
     auto_start: true
 ```
 
-The `auto_start: true` flag tells Peko to start the server process automatically when the extension is enabled. Reserved parameter injection (`agent_id`, `session_id`) is a Peko runtime feature — see `docs/mcp/mcp_reserved_params_guide.md` for the full mechanism.
+The `auto_start: true` flag tells Peko to start the server process automatically when the extension is enabled. Reserved parameter injection (`agent_id`, `session_id`) is a Peko runtime feature — see `docs/mcp/RESERVED_PARAMETERS.md` for the full mechanism.
 
 ## What the LLM Sees
 
@@ -96,5 +96,5 @@ node examples/mcp-memory-server/server.js
 ## See also
 
 - `docs/mcp/MCP.md` — full MCP integration guide
-- `docs/mcp/mcp_reserved_params_guide.md` — how reserved parameter injection works
+- `docs/mcp/RESERVED_PARAMETERS.md` — how reserved parameter injection works
 - `src/extensions/framework/scaffold/templates/mcp/manifest.yaml` — canonical MCP manifest template

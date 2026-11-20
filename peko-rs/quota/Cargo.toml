@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["Peko <peko@coneko.ai>"]
 description = "Per-principal token quota meter (F18) — owns QuotaMeter, QuotaScope, QuotaState, QuotaConfig, QuotaError"
 license = "MIT"
-repository = "https://github.com/ConekoAI/peko-runtime"
+repository = "https://github.com/ConekoAI/Peko"
 
 [dependencies]
 # Workspace member owning the canonical TokenUsage contract.

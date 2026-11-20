@@ -275,7 +275,7 @@ jobs:
       # it (`0.1.3-rc.1`); for a plain release it equals the crate version.
       PEKO_RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
     runs-on: windows-latest
-    # Windows is in MVP scope (docs/MVP_GATE.md gate 0): no release
+    # Windows is in MVP scope: no release
     # publishes without the zip.
     steps:
       - uses: actions/checkout@v4

@@ -1,16 +1,64 @@
-# Peko 🐱
+<p align="center">
+  <img src="docs/media/logo.svg" width="96" alt="Peko">
+</p>
 
-**An AI assistant that keeps working when you're away, and that you can safely let other people talk to.**
+<h1 align="center">Peko</h1>
+
+<p align="center">
+  <b>An AI assistant that keeps working when you're away,<br>
+  and that you can safely let other people talk to.</b>
+</p>
+
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="#what-makes-it-different">Why Peko</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#documentation">Docs</a> ·
+  <a href="docs/SECURITY_MODEL.md">Security</a> ·
+  <a href="CONTRIBUTING.md">Contributing</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/ConekoAI/Peko/releases/latest"><img src="https://img.shields.io/github/v/release/ConekoAI/Peko?label=release" alt="Latest release"></a>
+  <a href="https://github.com/ConekoAI/Peko/actions/workflows/integration.yml"><img src="https://github.com/ConekoAI/Peko/actions/workflows/integration.yml/badge.svg?branch=master" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="macOS, Windows, Linux">
+</p>
 
 A **peko** is an AI agent that runs on your own computer, with any model you
-choose. It remembers what matters, follows up on what it promised, and handles
-messages from the people you let in. It follows your rules, and when it isn't
-sure, it asks you first.
+choose. It remembers what matters, follows up on what it promised, and
+handles messages from the people you let in. It follows your rules, and when
+it isn't sure, it asks you first.
 
-> **Version:** 0.1.x (preview) · **License:** MIT ·
-> macOS, Linux, Windows
+**Free and open source. Your pekos, your keys and your conversations stay on
+your computer.**
 
----
+## Install
+
+### Desktop app
+
+**[Download Peko Desktop](https://github.com/ConekoAI/peko-desktop/releases/latest)**
+for macOS, Windows or Linux. It includes everything: create pekos, chat with
+them, approve what they ask, and decide who may talk to them, without a
+terminal.
+
+### Command line
+
+macOS and Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ConekoAI/Peko/master/install.sh | bash
+```
+
+Windows, in PowerShell (per user, no administrator rights):
+
+```powershell
+irm https://raw.githubusercontent.com/ConekoAI/Peko/master/install.ps1 | iex
+```
+
+`peko update` moves to a newer release later. To run a peko on a server, see
+[Run a peko on a server](docs/getting-started/RUN_ON_A_SERVER.md) (Docker).
+To build from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Who it's for
 
@@ -19,16 +67,15 @@ consultants and freelancers with clients, founders with collaborators, anyone
 running a small community or project. You give a peko a job and some rules,
 then share it. People talk to the peko, and you step in only when it asks.
 
-What that can look like:
-
 - A client asks when the draft will be ready. Your peko checks the plan you
   gave it, answers, and notes the promise. If the date slips, it tells the
   client before they have to ask.
-- Someone asks your peko to run a command or share a file. Your rules
-  (`POLICY.md`) say whether that's allowed. If they don't settle it, the peko
-  asks you, and you approve or deny with one click or one command.
-- While you sleep, the peko writes up its day and updates its memory. It keeps
-  only facts it can trace back to a message, and a second model checks them.
+- Someone asks your peko to share a file. Your rules say whether that's
+  allowed. If they don't settle it, the peko asks you, and you approve or
+  deny with one click.
+- While you sleep, the peko writes up its day and updates its memory. It
+  keeps only facts it can trace back to a message, and a second model checks
+  them.
 
 ## What makes it different
 
@@ -37,42 +84,26 @@ What that can look like:
 - **It costs nothing while idle.** When nothing is waiting, its background
   check calls no model at all.
 - **It's safe to share.** Each conversation is kept apart, so what one person
-  says never leaks into another's conversation. A peko working for someone else
-  gets fewer tools than when it works for you, can't change its own rules,
-  and asks before doing anything sensitive. Messages that claim to speak for
-  you are kept out of its memory.
+  says never leaks into another's. Other people reach only the tools and
+  files you list, can't change the peko's rules, and can't decide anything
+  for you by claiming to be you. See the [security model](docs/SECURITY_MODEL.md).
 - **Everything it did is on record.** Every tool call goes into a
   tamper-evident log per peko: `peko audit ledger` reads it and
   `peko audit verify` checks it.
-- **It's yours.** A peko is a folder of plain files you can read and edit:
-  its definition (`peko.toml`), rules (`POLICY.md`), memory (`kb/`), and roles
-  and skills (Markdown). Back it up, or move it to another computer, with one
-  command. Bring any model that speaks the Anthropic Messages or OpenAI API,
-  hosted or local. Your API keys stay in an encrypted vault.
-
----
+- **It's yours.** A peko is a folder of plain files you can read and edit.
+  Back it up, or move it to another computer, with one command. Bring any
+  model that speaks the Anthropic Messages or OpenAI API, hosted or local.
+  Your API keys stay in an encrypted vault.
+- **It reaches other computers privately.** Pekos and people on different
+  computers talk through [PekoHub](https://pekohub.ai), which relays messages
+  it cannot read.
 
 ## Quick start
 
-Install:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/ConekoAI/peko-runtime/master/install.sh | bash
-```
-
-On Windows, in PowerShell (per user, no administrator rights):
-
-```powershell
-irm https://raw.githubusercontent.com/ConekoAI/peko-runtime/master/install.ps1 | iex
-```
-
-That installs the newest release. `peko update` moves to a newer one
-later. Releases in the `0.1.x` line don't break each other; a change that
-does starts `0.2.0`.
-
-Connect a model, create a peko, and say hello. Take the base URL from your
-provider's docs (most say "OpenAI-compatible": `openai_completions`); leave
-out `--model` once to see the models the endpoint offers:
+With the command line installed, connect a model, create a peko, and say
+hello. Take the base URL from your provider's docs (most say
+"OpenAI-compatible": `openai_completions`); leave out `--model` once to see
+the models the endpoint offers.
 
 ```bash
 peko model add --id my-model --api-format openai_completions \
@@ -81,16 +112,12 @@ peko create my-peko
 peko send my-peko "Hello, what can you do?"
 ```
 
-`peko create` starts the background daemon if it isn't running and waits while
-the new peko sets itself up. [Getting Started](docs/getting-started/GETTING_STARTED.md)
-walks through each step with real output; the
+`peko create` starts Peko's background engine if it isn't running and waits
+while the new peko sets itself up.
+[Getting Started](docs/getting-started/GETTING_STARTED.md) walks through each
+step with real output. The
 [tutorial](docs/getting-started/TUTORIAL_FIRST_PEKO.md) gives your peko a
 personality, a memory, a reminder and a skill.
-
-Optional: Python 3 on `PATH` lets a peko run the small scripts it writes for
-itself (the `Workflow` tool). Everything else works without it.
-
----
 
 ## Everyday use
 
@@ -99,8 +126,7 @@ itself (the `Workflow` tool). Everything else works without it.
 ```bash
 peko send my-peko "Remind me to call Sam on Friday"
 peko send my-peko --file notes.md          # a longer message from a file
-peko log my-peko                           # read the conversation
-peko log my-peko --watch                   # follow it live
+peko log my-peko --watch                   # follow the conversation live
 peko stop my-peko                          # stop what it's doing for you
 ```
 
@@ -111,12 +137,13 @@ directly; changes apply on its next turn.
 
 | File | What it is |
 |------|------------|
-| `peko.toml` | Name, description, goals and values, model, limits, who may talk to it |
+| `peko.toml` | Name, description, goals and values, model, limits |
 | `roles/conversation.md` | How it talks with you and other people |
 | `roles/root.md` | How it looks after its ongoing work: plans, schedules, check-ins |
 | `kb/CONVENTIONS.md` | House rules every role follows, including its persona and voice |
-| `POLICY.md` | Your rules for what it may do for other people |
 | `kb/MEMORY.md` | What it remembers about you and its work |
+| `ACCESS.toml` | Which tools and files other people's conversations reach |
+| `POLICY.md` | Your rules for what it may do for other people |
 | `skills/<name>/SKILL.md` | Instructions it loads when a task calls for them |
 | `mcp/<id>/server.json` | Outside tools it can use ([MCP](docs/mcp/MCP.md)) |
 
@@ -124,8 +151,6 @@ directly; changes apply on its next turn.
 
 ```bash
 peko invite my-peko                        # a link for one person (7 days)
-peko permit my-peko user:hub:<account> chat
-peko permissions my-peko
 peko approvals my-peko                     # requests waiting for you
 peko approve my-peko <id> [--always]
 peko deny my-peko <id>
@@ -133,8 +158,8 @@ peko deny my-peko <id>
 
 Pekos talk to people, and to each other, in DMs and group chats
 (`peko channel --help`). To reach people on other computers, link this
-computer to [PekoHub](https://pekohub.ai) with `peko auth login`. Your private
-pekos go online then; `peko register my-peko --public` lists one for anyone.
+computer to [PekoHub](https://pekohub.ai) with `peko auth login`.
+`peko register my-peko --public` lists a peko for anyone to find.
 
 ### Keep costs in check
 
@@ -142,9 +167,6 @@ pekos go online then; `peko register my-peko --public` lists one for anyone.
 peko quota set my-peko --budget 20 --cycle monthly   # stop at $20 a month
 peko quota status my-peko
 ```
-
-A per-call ceiling (`cost_per_call_max`) goes in the `[quota]` block of
-`peko.toml`.
 
 ### Back it up, move it, share its recipe
 
@@ -158,57 +180,34 @@ peko create new-peko -s my-peko.seed.toml  # start a fresh peko from a seed
 Import checks every file against its checksum and shows you the tools and
 commands it is about to install before writing anything.
 
-The full command list is in the [CLI reference](docs/user-guide/CLI_REFERENCE.md);
-`peko <command> --help` shows the same text.
-
----
-
-## Configuration
-
-You rarely need a config file: `peko model add` stores models and keys, and
-each peko's settings live in its own `peko.toml`. Two optional files tune the
-runtime itself:
-
-- `~/.peko/runtime.toml`: retries for model requests (`[provider.retry]`).
-- `~/.peko/config.toml`: when long conversations are summarized
-  (`[compaction]`).
-
-[`config.example.toml`](config.example.toml) documents both. The daemon has
-no web server; the CLI and the desktop app talk to it on this computer only.
-
-> Upgrading from a release candidate (`0.1.0-rc.N`)? Your pekos move from
-> `~/.peko/principals/` to `~/.peko/pekos/` the next time the daemon starts. A
-> peko's `principal.toml` becomes `peko.toml`, and `~/.peko/peko.toml` becomes
-> `~/.peko/runtime.toml`, the first time Peko reads them. `.peko` backups made
-> before the rename still import.
-
----
-
 ## Documentation
 
-- [Getting Started](docs/getting-started/GETTING_STARTED.md): install and talk to your first peko
-- [Tutorial](docs/getting-started/TUTORIAL_FIRST_PEKO.md): personality, memory, a reminder, a skill, a backup
-- [Run a peko on a server](docs/getting-started/RUN_ON_A_SERVER.md): the runtime in a Docker container, for a peko other people reach
-- [User's Guide](docs/user-guide/USERS_GUIDE.md): how pekos work, sharing, safety, limits, troubleshooting
-- [CLI Reference](docs/user-guide/CLI_REFERENCE.md): every command
-- [MCP](docs/mcp/MCP.md): give a peko outside tools
+| | |
+|---|---|
+| [Getting Started](docs/getting-started/GETTING_STARTED.md) | Install and talk to your first peko |
+| [Tutorial](docs/getting-started/TUTORIAL_FIRST_PEKO.md) | Personality, memory, a reminder, a skill, a backup |
+| [User's Guide](docs/user-guide/USERS_GUIDE.md) | How pekos work, sharing, limits, troubleshooting |
+| [CLI Reference](docs/user-guide/CLI_REFERENCE.md) | Every command |
+| [MCP](docs/mcp/MCP.md) | Give a peko outside tools |
+| [Run a peko on a server](docs/getting-started/RUN_ON_A_SERVER.md) | The engine in a Docker container |
+| [How Peko works](docs/HOW_IT_WORKS.md) | What runs on your computer, and a map of the code |
+| [Security model](docs/SECURITY_MODEL.md) | What Peko protects, and where that stops |
+
+[All docs](docs/README.md) · [Changelog](CHANGELOG.md)
+
+## Related projects
+
 - [Peko Desktop](https://github.com/ConekoAI/peko-desktop): the desktop app
+- [PekoHub](https://pekohub.ai): find public pekos and reach people on other computers
 
 ## Contributing
 
-Peko is written in Rust. Build it and run the tests:
+Bug reports, fixes and docs are welcome. [CONTRIBUTING.md](CONTRIBUTING.md)
+has the build and test steps. Please report security problems privately, as
+[SECURITY.md](SECURITY.md) describes.
 
-```bash
-git clone https://github.com/ConekoAI/peko-runtime
-cd peko-runtime
-cargo build --release -p peko-cli -p peko-daemon   # target/release/peko and peko-daemon
-cargo test --lib
-```
+## License
 
-Keep the two binaries in the same directory: `peko` starts the daemon from
-the binary beside it. [AGENTS.md](AGENTS.md) covers the code layout, CI tiers
-and style rules; design records live in [docs/architecture](docs/architecture/).
+[MIT](LICENSE)
 
----
-
-*Built with 🐱 by the Coneko team*
+<p align="center"><sub>Built with 🐱 by the Coneko team</sub></p>

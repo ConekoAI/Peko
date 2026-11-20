@@ -117,7 +117,7 @@ fn parse_budget(s: &str) -> Result<f64, String> {
 async fn connect_daemon() -> Result<DaemonClient> {
     DaemonClient::connect()
         .await
-        .context("Daemon is not running. Start it with: peko daemon start")
+        .context("Engine is not running. Start it with: peko engine start")
 }
 
 /// Top-level dispatcher for `peko quota <sub>`.

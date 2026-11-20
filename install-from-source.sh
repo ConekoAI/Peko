@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # Peko Install from Source
-# Usage: curl -fsSL https://raw.githubusercontent.com/ConekoAI/peko-runtime/main/install-from-source.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/ConekoAI/Peko/master/install-from-source.sh | bash
 #
 
 set -e
@@ -14,7 +14,7 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 # Configuration
-REPO_URL="https://github.com/ConekoAI/peko-runtime.git"
+REPO_URL="https://github.com/ConekoAI/Peko.git"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 CLONE_DIR="${CLONE_DIR:-/tmp/peko-build}"
 PEKO_HOME_DIR="${PEKO_HOME:-$HOME/.peko}"
@@ -211,7 +211,7 @@ cleanup() {
 main() {
     echo -e "${BLUE}═══════════════════════════════════════════════════${NC}"
     echo -e "${BLUE}  Peko Installer (from source)${NC}"
-    echo -e "${BLUE}  github.com/ConekoAI/peko-runtime${NC}"
+    echo -e "${BLUE}  github.com/ConekoAI/Peko${NC}"
     echo -e "${BLUE}═══════════════════════════════════════════════════${NC}"
     echo ""
     

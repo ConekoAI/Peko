@@ -1,4 +1,4 @@
-# Peko runtime: the daemon and the CLI, for running pekos on a server.
+# Peko runtime: the engine and the CLI, for running pekos on a server.
 #
 #   docker build -t peko .     (or: docker pull ghcr.io/conekoai/peko:0.3)
 #   docker run -d --name peko -v peko-data:/data \
@@ -45,7 +45,7 @@ RUN apt-get update \
     && mkdir -p /data /seeds /opt/peko/bin \
     && chown peko:peko /data /seeds
 
-# The binaries sit together (the CLI starts the daemon it finds beside
+# The binaries sit together (the CLI starts the engine it finds beside
 # it); `peko` on the PATH is a wrapper that reads the passphrase.
 COPY --from=binaries /out/peko /out/peko-daemon /opt/peko/bin/
 COPY docker/peko /usr/local/bin/peko
@@ -58,7 +58,7 @@ WORKDIR /home/peko
 # /data. There is no OS keychain in a container, so the vault is locked
 # with a passphrase: PEKO_MASTER_PASSPHRASE, or a file named by
 # PEKO_MASTER_PASSPHRASE_FILE (a Docker or Kubernetes secret).
-LABEL org.opencontainers.image.source="https://github.com/ConekoAI/peko-runtime" \
+LABEL org.opencontainers.image.source="https://github.com/ConekoAI/Peko" \
       org.opencontainers.image.description="The Peko runtime: pekos on a server, managed from the command line" \
       org.opencontainers.image.licenses="MIT"
 ENV PEKO_HOME=/data \
@@ -67,6 +67,6 @@ ENV PEKO_HOME=/data \
 VOLUME ["/data"]
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
-    CMD peko daemon status >/dev/null 2>&1 || exit 1
+    CMD peko engine status >/dev/null 2>&1 || exit 1
 
 ENTRYPOINT ["tini", "--", "peko-entrypoint"]

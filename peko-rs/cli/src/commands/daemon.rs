@@ -11,30 +11,30 @@ use crate::commands::GlobalPaths;
 use clap::Subcommand;
 use peko_core::common::services::DaemonProcessService;
 
-/// Daemon management subcommands
+/// Engine management subcommands
 ///
-/// The daemon is the core service that manages agents and provides the HTTP API.
-/// It must be running before you can create or run agents.
+/// The engine is the background process that runs your pekos. `peko create`
+/// starts it when it isn't running; Peko Desktop runs its own.
 ///
 /// Examples:
-///   # Start the daemon (spawns child process, CLI returns immediately)
-///   peko daemon start
+///   # Start the engine (spawns child process, CLI returns immediately)
+///   peko engine start
 ///
 ///   # Start in foreground (blocks in current terminal)
-///   peko daemon start --foreground
+///   peko engine start --foreground
 ///
-///   # Check daemon status
-///   peko daemon status
+///   # Check engine status
+///   peko engine status
 ///
-///   # Stop the daemon gracefully
-///   peko daemon stop
+///   # Stop the engine gracefully
+///   peko engine stop
 ///
-///   # Restart the daemon
-///   peko daemon restart
+///   # Restart the engine
+///   peko engine restart
 #[derive(Subcommand)]
 #[command(disable_version_flag = true)]
 pub enum DaemonCommands {
-    /// Start the daemon
+    /// Start the engine
     Start {
         /// Run in foreground (don't spawn child process)
         #[arg(short, long)]
@@ -52,28 +52,28 @@ pub enum DaemonCommands {
         max_reconnect_attempts: u32,
         /// Run in sidecar mode for `peko-desktop`. Uses a distinct lockfile
         /// (`desktop.lock`) so the desktop's bundled engine cannot collide
-        /// with a CLI-launched daemon in the same config dir. See ADR-043.
+        /// with a CLI-launched engine in the same config dir. See ADR-043.
         /// Not user-facing — the desktop sets this when it spawns the
         /// bundled sidecar.
         #[arg(long, hide = true)]
         sidecar_mode: bool,
     },
 
-    /// Stop the daemon
+    /// Stop the engine
     Stop {
         /// Force stop (kill immediately without graceful shutdown)
         #[arg(short, long)]
         force: bool,
     },
 
-    /// Check daemon status
+    /// Check engine status
     Status {
         /// Output as JSON
         #[arg(long)]
         json: bool,
     },
 
-    /// Restart the daemon
+    /// Restart the engine
     Restart {
         /// Polling interval in seconds
         #[arg(short, long, default_value = "15")]
@@ -88,7 +88,7 @@ pub enum DaemonCommands {
     Check,
 }
 
-/// Handle daemon commands
+/// Handle engine commands
 pub async fn handle_daemon(
     cmd: DaemonCommands,
     paths: &GlobalPaths,
@@ -113,7 +113,7 @@ pub async fn handle_daemon(
                     .ok()
                     .and_then(|s| s.mode.map(|m| m.as_str().to_string()))
                     .unwrap_or_else(|| "headless".to_string());
-                println!("⚠️  Daemon is already running (owned by {mode_label} daemon)");
+                println!("⚠️  Engine is already running (owned by {mode_label} engine)");
                 return Ok(());
             }
 
@@ -121,7 +121,7 @@ pub async fn handle_daemon(
             let data_dir = paths.data_dir.clone();
 
             if foreground {
-                println!("🚀 Starting daemon in foreground (interval: {interval}s)...");
+                println!("🚀 Starting engine in foreground (interval: {interval}s)...");
                 println!("   Config dir: {}", config_dir.display());
                 println!("   Data dir: {}", data_dir.display());
 
@@ -137,7 +137,7 @@ pub async fn handle_daemon(
                     .run_foreground(interval, max_reconnect_attempts, sidecar_mode)
                     .await?;
             } else {
-                println!("🚀 Starting daemon in background (interval: {interval}s)...");
+                println!("🚀 Starting engine in background (interval: {interval}s)...");
                 println!("   Config dir: {}", config_dir.display());
                 println!("   Data dir: {}", data_dir.display());
                 if sidecar_mode {
@@ -150,11 +150,11 @@ pub async fn handle_daemon(
                     .await
                 {
                     Ok(_) => {
-                        println!("✅ Daemon started successfully");
-                        println!("   Check status: peko daemon status");
+                        println!("✅ Engine started successfully");
+                        println!("   Check status: peko engine status");
                     }
                     Err(e) => {
-                        eprintln!("❌ Failed to start daemon: {e}");
+                        eprintln!("❌ Failed to start engine: {e}");
                         eprintln!("   Try running with --foreground for debugging");
                         return Err(e);
                     }
@@ -164,23 +164,23 @@ pub async fn handle_daemon(
         }
         DaemonCommands::Stop { force } => {
             if !service.is_daemon_running().await? {
-                println!("ℹ️  Daemon is not running");
+                println!("ℹ️  Engine is not running");
                 return Ok(());
             }
 
             if force {
-                println!("💀 Force stopping daemon...");
+                println!("💀 Force stopping engine...");
             } else {
-                println!("🛑 Stopping daemon gracefully...");
+                println!("🛑 Stopping engine gracefully...");
             }
 
             match service.stop_daemon(force).await {
                 Ok(()) => {
-                    println!("✅ Daemon stopped");
+                    println!("✅ Engine stopped");
                     Ok(())
                 }
                 Err(e) => {
-                    eprintln!("❌ Failed to stop daemon: {e}");
+                    eprintln!("❌ Failed to stop engine: {e}");
                     Err(e)
                 }
             }
@@ -190,11 +190,11 @@ pub async fn handle_daemon(
             interval,
             max_reconnect_attempts,
         } => {
-            println!("🔄 Restarting daemon...");
+            println!("🔄 Restarting engine...");
 
             if service.is_daemon_running().await? {
                 if let Err(e) = service.stop_daemon(false).await {
-                    eprintln!("⚠️  Failed to stop daemon: {e}");
+                    eprintln!("⚠️  Failed to stop engine: {e}");
                     eprintln!("   Trying to start anyway...");
                 } else {
                     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
@@ -213,19 +213,19 @@ pub async fn handle_daemon(
                 .await
             {
                 Ok(_) => {
-                    println!("✅ Daemon restarted");
+                    println!("✅ Engine restarted");
                     Ok(())
                 }
                 Err(e) => {
-                    eprintln!("❌ Failed to restart daemon: {e}");
+                    eprintln!("❌ Failed to restart engine: {e}");
                     Err(e)
                 }
             }
         }
         DaemonCommands::Check => {
             if !service.is_daemon_running().await? {
-                println!("❌ Daemon is not running");
-                return Err(anyhow::anyhow!("Daemon is not running"));
+                println!("❌ Engine is not running");
+                return Err(anyhow::anyhow!("Engine is not running"));
             }
 
             println!("🔍 Triggering cron check...");
@@ -235,7 +235,7 @@ pub async fn handle_daemon(
     }
 }
 
-/// Show daemon status
+/// Show engine status
 async fn show_daemon_status(service: &DaemonProcessService, json: bool) -> anyhow::Result<()> {
     let status = service.get_daemon_status().await?;
 
@@ -259,7 +259,7 @@ async fn show_daemon_status(service: &DaemonProcessService, json: bool) -> anyho
             }
             println!("{}", serde_json::to_string_pretty(&output)?);
         } else {
-            println!("📊 Daemon Status:");
+            println!("📊 Engine Status:");
             println!("  Status: ✅ Running");
             if let Some(v) = status.version {
                 println!("  Version: {v}");
@@ -296,7 +296,7 @@ async fn show_daemon_status(service: &DaemonProcessService, json: bool) -> anyho
                 status.error.unwrap_or_default()
             );
         } else {
-            println!("📊 Daemon Status:");
+            println!("📊 Engine Status:");
             println!(
                 "  Status: ❌ Not responding (process {} exists but IPC unreachable)",
                 status.pid.unwrap_or(0)
@@ -311,9 +311,9 @@ async fn show_daemon_status(service: &DaemonProcessService, json: bool) -> anyho
     if json {
         println!("{{\"running\": false, \"reason\": \"no_daemon\"}}");
     } else {
-        println!("📊 Daemon Status:");
+        println!("📊 Engine Status:");
         println!("  Status: ❌ Not running");
-        println!("  Start with: peko daemon start");
+        println!("  Start with: peko engine start");
     }
     Ok(())
 }

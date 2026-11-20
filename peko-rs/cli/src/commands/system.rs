@@ -38,7 +38,7 @@ pub enum SystemCommands {
     },
 }
 
-/// Helper: connect to daemon and send a request/response packet
+/// Helper: connect to engine and send a request/response packet
 async fn ipc_request(
     packet: peko_core::ipc::RequestPacket,
 ) -> anyhow::Result<peko_core::ipc::ResponsePacket> {

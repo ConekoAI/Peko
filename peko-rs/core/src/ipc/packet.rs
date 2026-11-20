@@ -5329,13 +5329,13 @@ mod tests {
                 DoctorCheck {
                     name: "daemon_ready".to_string(),
                     status: "pass".to_string(),
-                    message: "Daemon is ready".to_string(),
+                    message: "Engine is ready".to_string(),
                     suggestion: None,
                 },
                 DoctorCheck {
                     name: "not_degraded".to_string(),
                     status: "warn".to_string(),
-                    message: "Daemon is in degraded mode".to_string(),
+                    message: "Engine is in degraded mode".to_string(),
                     suggestion: Some("Restart daemon".to_string()),
                 },
             ],

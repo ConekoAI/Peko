@@ -1,12 +1,12 @@
 #!/bin/sh
 # Container entrypoint.
 #
-#   (no arguments)    run the daemon in the foreground
+#   (no arguments)    run the engine in the foreground
 #   anything else     run it as a `peko` command and exit
 #                     (`docker run --rm peko version`)
 #
-# Only the bare form starts a daemon. `daemon status` and the like are
-# commands: a second daemon on the same /data would take the first one's
+# Only the bare form starts an engine. `engine status` and the like are
+# commands: a second engine on the same /data would take the first one's
 # place.
 set -eu
 
@@ -38,7 +38,7 @@ if [ ! -w "${PEKO_HOME:-/data}" ]; then
     exit 73
 fi
 
-# The passphrase from a secret file, for the daemon itself.
+# The passphrase from a secret file, for the engine itself.
 if [ -z "${PEKO_MASTER_PASSPHRASE:-}" ]; then
     if [ ! -r "$PEKO_MASTER_PASSPHRASE_FILE" ]; then
         echo "peko: cannot read PEKO_MASTER_PASSPHRASE_FILE ($PEKO_MASTER_PASSPHRASE_FILE)" >&2
@@ -48,6 +48,6 @@ if [ -z "${PEKO_MASTER_PASSPHRASE:-}" ]; then
     export PEKO_MASTER_PASSPHRASE
 fi
 
-# The daemon itself, not `peko daemon start`: it is the process that
+# The engine itself, not `peko engine start`: it is the process that
 # handles SIGTERM, so `docker stop` shuts it down cleanly.
 exec /opt/peko/bin/peko-daemon
