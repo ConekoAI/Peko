@@ -1,0 +1,31 @@
+# Dependabot version updates. Security fixes arrive on their own, as soon
+# as an advisory is published; these are the routine ones, once a week,
+# grouped so each ecosystem opens one pull request.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      rust:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: pip
+    directory: /sdks/python/peko_workflow
+    schedule:
+      interval: monthly
+
+  - package-ecosystem: npm
+    directory: /examples/mcp-memory-server
+    schedule:
+      interval: monthly
