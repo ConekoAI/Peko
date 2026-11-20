@@ -187,7 +187,7 @@ sha2 = "0.10"
 # ADR-108: pairing proof MAC, and push notifications sealed to a paired
 # phone's key (HPKE, RFC 9180: X25519, HKDF-SHA256, ChaCha20-Poly1305).
 hmac = "0.12"
-hpke = { version = "0.12", default-features = false, features = ["alloc", "x25519"] }
+hpke = { version = "0.13", default-features = false, features = ["alloc", "x25519"] }
 # ADR-111 D3: CPace over ristretto255 for joining a device by a short code.
 curve25519-dalek = "4.1"
 
