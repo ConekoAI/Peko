@@ -209,5 +209,3 @@ has the build and test steps. Please report security problems privately, as
 ## License
 
 [MIT](LICENSE)
-
-<p align="center"><sub>Built with 🐱 by the Coneko team</sub></p>
