@@ -107,8 +107,8 @@ jobs:
       dockerfile: ${{ steps.filter.outputs.dockerfile }}
       workflow: ${{ steps.filter.outputs.workflow }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4
         id: filter
         with:
           filters: |
@@ -182,7 +182,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.src == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Run boundary check
         run: bash scripts/check_module_boundaries.sh
 
@@ -201,9 +201,9 @@ jobs:
     needs: changes
     if: needs.changes.outputs.crates == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Run workspace dep-graph check
@@ -232,7 +232,7 @@ jobs:
       || github.event_name == 'schedule'
       || github.event_name == 'workflow_dispatch'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -253,7 +253,7 @@ jobs:
       || github.event_name == 'schedule'
       || github.event_name == 'workflow_dispatch'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -282,7 +282,7 @@ jobs:
       || github.event_name == 'schedule'
       || github.event_name == 'workflow_dispatch'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -310,7 +310,7 @@ jobs:
       || github.event_name == 'schedule'
       || github.event_name == 'workflow_dispatch'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -352,7 +352,7 @@ jobs:
       && github.actor != 'dependabot[bot]'
     steps:
       - name: Checkout peko-runtime
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: peko-runtime
       - name: Checkout pekohub
@@ -361,12 +361,12 @@ jobs:
         # peko-runtime/peko-rs/core/tests/docker/. pekohub is private:
         # PEKOHUB_READ_TOKEN is a fine-grained token with Contents: read
         # on ConekoAI/pekohub only.
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ConekoAI/pekohub
           path: pekohub
           token: ${{ secrets.PEKOHUB_READ_TOKEN }}
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:

@@ -43,7 +43,7 @@ jobs:
       version: ${{ steps.decide.outputs.version }}
       prerelease: ${{ steps.decide.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Decide what to release
         id: decide
@@ -103,7 +103,7 @@ jobs:
       PEKO_RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.prepare.outputs.tag }}
       
@@ -113,13 +113,13 @@ jobs:
           targets: x86_64-unknown-linux-gnu
       
       - name: Cache cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cargo/registry
           key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
       
       - name: Cache cargo index
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cargo/git
           key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
@@ -133,7 +133,7 @@ jobs:
           tar -czf dist/peko-linux-x86_64.tar.gz -C target/x86_64-unknown-linux-gnu/release peko peko-daemon
       
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: peko-linux-x86_64
           path: dist/peko-linux-x86_64.tar.gz
@@ -150,7 +150,7 @@ jobs:
     # openssl-sys (reqwest's native-tls needs the target's OpenSSL).
     runs-on: ubuntu-22.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.prepare.outputs.tag }}
       
@@ -160,7 +160,7 @@ jobs:
           targets: aarch64-unknown-linux-gnu
       
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -177,7 +177,7 @@ jobs:
           tar -czf dist/peko-linux-aarch64.tar.gz -C target/aarch64-unknown-linux-gnu/release peko peko-daemon
       
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: peko-linux-aarch64
           path: dist/peko-linux-aarch64.tar.gz
@@ -192,7 +192,7 @@ jobs:
       PEKO_RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.prepare.outputs.tag }}
       
@@ -202,7 +202,7 @@ jobs:
           targets: x86_64-apple-darwin
       
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -219,7 +219,7 @@ jobs:
           tar -czf dist/peko-macos-x86_64.tar.gz -C target/x86_64-apple-darwin/release peko peko-daemon
       
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: peko-macos-x86_64
           path: dist/peko-macos-x86_64.tar.gz
@@ -234,7 +234,7 @@ jobs:
       PEKO_RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.prepare.outputs.tag }}
       
@@ -244,7 +244,7 @@ jobs:
           targets: aarch64-apple-darwin
       
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -261,7 +261,7 @@ jobs:
           tar -czf dist/peko-macos-aarch64.tar.gz -C target/aarch64-apple-darwin/release peko peko-daemon
       
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: peko-macos-aarch64
           path: dist/peko-macos-aarch64.tar.gz
@@ -278,7 +278,7 @@ jobs:
     # Windows is in MVP scope: no release
     # publishes without the zip.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.prepare.outputs.tag }}
 
@@ -307,7 +307,7 @@ jobs:
           Compress-Archive -Path "$bin/peko.exe", "$bin/peko-daemon.exe" -DestinationPath dist/peko-windows-x86_64.zip
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: peko-windows-x86_64
           path: dist/peko-windows-x86_64.zip
@@ -319,10 +319,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           pattern: peko-*
@@ -397,7 +397,7 @@ jobs:
           cat RELEASE_NOTES.md
       
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
           name: Peko v${{ steps.release_notes.outputs.version }}
