@@ -253,8 +253,8 @@ You read carefully and cite every source you use.
 """
 ```
 
-A path can be anywhere in the peko's folder, and a seed holds at most 64
-files and 64 KB together. Three things a seed cannot write: `peko.toml`
+A path can be anywhere in the peko's folder, and a seed holds at most 256
+files and 1 MB together, enough for a shop's FAQ, price list and policies. Three things a seed cannot write: `peko.toml`
 (the seed is that file), anything under `local/` (the peko's sessions,
 approvals and schedules), and `kb/inbox/`.
 

@@ -162,6 +162,11 @@ pub enum RequestPacket {
         /// caller. `model_id` and `description` override the seed's.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seed: Option<String>,
+        /// A seed file on this computer, read by the daemon, for a seed
+        /// too large to travel in one request. Only an operator caller
+        /// may name one; ignored when `seed` is given.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seed_path: Option<String>,
         /// The caller showed the seed's setup steps to the person and
         /// they accepted them (ADR-104). A seed that carries setup steps
         /// is refused with `[setup_not_accepted]` and the steps unless
@@ -4389,6 +4394,7 @@ mod tests {
             description: Some("personal assistant".to_string()),
             model_id: "gpt-4o".to_string(),
             seed: Some("name = \"ada\"\n".to_string()),
+            seed_path: None,
             accept_setup: true,
         };
         let bytes = req.to_bytes().unwrap();
@@ -4401,6 +4407,7 @@ mod tests {
                 model_id,
                 seed,
                 accept_setup,
+                ..
             } => {
                 assert!(accept_setup);
                 assert_eq!(request_id, 302);
@@ -4421,6 +4428,7 @@ mod tests {
             description: None,
             model_id: "claude-sonnet-4-5".to_string(),
             seed: None,
+            seed_path: None,
             accept_setup: false,
         };
         let bytes = minimal.to_bytes().unwrap();
@@ -4436,6 +4444,7 @@ mod tests {
                 model_id,
                 seed,
                 accept_setup,
+                ..
             } => {
                 assert!(!accept_setup, "absent means not accepted");
                 assert_eq!(request_id, 303);

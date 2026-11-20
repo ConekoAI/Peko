@@ -130,6 +130,17 @@ pub(crate) fn check(attachments: &[Attachment], limits: Limits) -> Result<(), St
 /// is copied unless every file passes, so a refused request leaves no
 /// trace. The error is the user-facing reason.
 pub(crate) async fn ingest(workspace: &Path, paths: &[String]) -> Result<Vec<Attachment>, String> {
+    ingest_into(workspace, DIR, paths).await
+}
+
+/// [`ingest`] into `dir` (workspace-relative): a visitor's files go in
+/// their conversation's own folder (ADR-113), so that conversation, and
+/// only it, reads them.
+pub(crate) async fn ingest_into(
+    workspace: &Path,
+    dir: &str,
+    paths: &[String],
+) -> Result<Vec<Attachment>, String> {
     let sources = validate(paths, Limits::LOCAL).await?;
     let named: Vec<(PathBuf, String)> = sources
         .into_iter()
@@ -141,18 +152,22 @@ pub(crate) async fn ingest(workspace: &Path, paths: &[String]) -> Result<Vec<Att
             (source, name)
         })
         .collect();
-    copy_into_workspace(workspace, &named).await
+    copy_into(workspace, dir, &named).await
 }
 
-/// Copy each `(source, name)` into the workspace under `name` (ADR-088
-/// D2). Files a remote post brought (ADR-094) keep the name the sender
-/// gave them.
-pub(crate) async fn copy_into_workspace(
+/// Copy each `(source, name)` into the workspace under `base`
+/// (workspace-relative; `attachments/` for the owner's files), in a
+/// folder for the day, under `name` (ADR-088 D2). Files a remote post
+/// brought (ADR-094) keep the name the sender gave them.
+pub(crate) async fn copy_into(
     workspace: &Path,
+    base: &str,
     files: &[(PathBuf, String)],
 ) -> Result<Vec<Attachment>, String> {
     let day = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    let dir = Path::new(DIR).join(&day);
+    let mut dir = PathBuf::new();
+    dir.extend(base.split('/').filter(|part| !part.is_empty()));
+    let dir = dir.join(&day);
     tokio::fs::create_dir_all(workspace.join(&dir))
         .await
         .map_err(|e| format!("cannot create the attachments directory: {e}"))?;
@@ -407,6 +422,7 @@ pub(crate) fn absolute(workspace: &Path, attachment: &Attachment) -> PathBuf {
 /// and the workspace copies.
 pub(crate) async fn received_for_turn(
     workspace: &Path,
+    dir: &str,
     files_dir: Option<&Path>,
     message: &str,
     files: &[Attachment],
@@ -419,7 +435,7 @@ pub(crate) async fn received_for_turn(
             None => missing.push(a),
         }
     }
-    let copies = match copy_into_workspace(workspace, &here).await {
+    let copies = match copy_into(workspace, dir, &here).await {
         Ok(copies) => copies,
         Err(e) => {
             tracing::warn!("remote attachments not copied into the workspace: {e}");
@@ -746,7 +762,7 @@ mod tests {
             sha256: Some("1".repeat(64)),
         });
         let (message, copies) =
-            received_for_turn(workspace.path(), Some(store.path()), "look", &files).await;
+            received_for_turn(workspace.path(), DIR, Some(store.path()), "look", &files).await;
         assert_eq!(copies.len(), 1);
         assert_eq!(copies[0].name, "photo.png");
         assert!(copies[0].path.starts_with("attachments/"));

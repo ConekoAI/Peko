@@ -140,12 +140,16 @@ pub const SEED_RULE_FILES: &[&str] = &[
 /// server's command, a workflow script, a hook on tool calls.
 const RUNS_COMMANDS_DIRS: &[&str] = &["mcp", "workflows", "hooks"];
 
-/// Most bytes of file content one seed may carry. A seed stays one
-/// small text file.
-pub const SEED_FILES_MAX_BYTES: usize = 64 * 1024;
+/// Most bytes of file content one seed may carry: room for a business's
+/// FAQ, price list and policies, still one text file you can read.
+pub const SEED_FILES_MAX_BYTES: usize = 1024 * 1024;
 
 /// Most files one seed may carry.
-pub const SEED_FILES_MAX_COUNT: usize = 64;
+pub const SEED_FILES_MAX_COUNT: usize = 256;
+
+/// Most bytes a seed's text may have in all (its files are escaped
+/// inside it, so it runs larger than their content).
+pub const SEED_TEXT_MAX_BYTES: usize = 2 * 1024 * 1024;
 
 /// One file a seed carries: a path inside the new peko's workspace and
 /// its text (ADR-107).
@@ -437,6 +441,12 @@ pub struct Seed {
 /// # Errors
 /// When the text is not a valid `peko.toml`.
 pub fn parse_seed(text: &str) -> Result<Seed> {
+    anyhow::ensure!(
+        text.len() <= SEED_TEXT_MAX_BYTES,
+        "a seed may be at most {} MB; this one is {} KB",
+        SEED_TEXT_MAX_BYTES / (1024 * 1024),
+        text.len().div_ceil(1024)
+    );
     #[derive(serde::Deserialize)]
     struct Extras {
         persona: Option<String>,
@@ -845,7 +855,14 @@ own = "contacts/{conversation}/"
             "name = \"ada\"\n[files]\n\"roles/a.md\" = \"{}\"\n",
             "x".repeat(SEED_FILES_MAX_BYTES + 1)
         );
-        assert!(format!("{:#}", parse_seed(&big).unwrap_err()).contains("at most 64 KB"));
+        assert!(format!("{:#}", parse_seed(&big).unwrap_err()).contains("at most 1024 KB"));
+        // A business's FAQ and price list fit.
+        let shop = format!(
+            "name = \"ada\"\n[files]\n\"public/faq.md\" = \"{}\"\n\"public/prices.md\" = \"{}\"\n",
+            "q".repeat(300 * 1024),
+            "p".repeat(300 * 1024)
+        );
+        assert_eq!(parse_seed(&shop).unwrap().files.len(), 2);
     }
 
     /// The persona a seed gave a peko is in the seed exported from it.
