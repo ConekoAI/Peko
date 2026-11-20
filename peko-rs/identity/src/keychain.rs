@@ -182,6 +182,12 @@ impl EncryptedKeyStorage {
 
         let serialized = serialize_encrypted(&encrypted);
 
+        // The folder may not exist yet: a first identity can be stored
+        // before anything else has created it.
+        if let Some(parent) = file_path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create key folder: {parent:?}"))?;
+        }
         std::fs::write(file_path, &serialized)
             .with_context(|| format!("Failed to write encrypted key file: {file_path:?}"))?;
 
@@ -256,6 +262,21 @@ mod tests {
 
         let retrieved = EncryptedKeyStorage::retrieve_key(&file_path, &passphrase).unwrap();
         assert_eq!(retrieved, private_key);
+    }
+
+    #[test]
+    fn storing_a_key_creates_its_folder() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir
+            .path()
+            .join("data")
+            .join("identities")
+            .join("k.enc");
+        let passphrase = SecretString::from("test-passphrase-123".to_string());
+
+        EncryptedKeyStorage::store_key(&file_path, "c2VjcmV0", &passphrase).unwrap();
+
+        assert!(file_path.exists());
     }
 
     #[test]
