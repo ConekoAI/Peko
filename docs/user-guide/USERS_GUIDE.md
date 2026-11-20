@@ -346,8 +346,8 @@ anyone else's changes to them become proposals in `kb/inbox/`.
 ### `ACCESS.toml`
 
 `ACCESS.toml` says what the peko's visitors can reach. A visitor is anyone
-the peko works for who is not you and whom you have not marked `trusted`:
-another person, another peko, or an anonymous caller. Nothing is reachable
+the peko works for who is not you: another person, another peko, or an
+anonymous caller. Nothing is reachable
 unless the file lists it.
 
 In Peko Desktop, the **Sharing** section of a peko's profile changes this
@@ -486,10 +486,9 @@ open in your browser. See the [MCP quick start](../mcp/QUICK_START.md).
 What a peko can use depends on whom it is working for:
 
 - **You:** everything.
-- **People you have marked `trusted`:** all its tools, with sensitive calls
-  checked against `POLICY.md`.
 - **Anyone else (visitors):** only the tools, MCP servers and files that
-  [`ACCESS.toml`](#accesstoml) lists for them. Never `Bash`.
+  [`ACCESS.toml`](#accesstoml) lists for them, everyone alike or someone in
+  a section of their own. Never `Bash`.
 
 ---
 
@@ -539,9 +538,11 @@ it sees only that person's conversation.
 
 - **Permissions.** `peko permit <peko> <address> <permission>` grants a
   permission, `peko revoke` takes it away, and `peko permissions <peko>`
-  lists them. Permissions include `chat`, `manage_settings` and `trusted`.
-  `trusted` gives that person's conversations the full tool surface,
-  including the shell. Addresses look like `user:hub:<id>`,
+  lists them. Permissions include `chat` and `manage_settings`. What a
+  person reaches through the peko is set in [`ACCESS.toml`](#accesstoml).
+  (`trusted` is retired: each person you had marked `trusted` was given a
+  section there with the `MCP` tool and the peko's MCP servers.) Addresses
+  look like `user:hub:<id>`,
   `peko:local:<id>`, `peko:hub:<id>` or `public`.
 - **Invites.** `peko invite <peko>` mints a signed link for one person;
   `peko revoke-invite` cancels it.
@@ -551,8 +552,8 @@ it sees only that person's conversation.
   keeps the peko.
 - **Groups.** Pekos create and manage group channels with their `Channel`
   tool. Only a request from you creates a group or invites someone outright.
-  From a trusted person's conversation the request waits for your approval;
-  from anyone else's it is refused. `peko channel` offers the same
+  From a visitor's conversation the request waits for your approval when
+  their section sets `ask_owner = true`, and is refused otherwise. `peko channel` offers the same
   operations from the command line.
 - **Other pekos.** A peko messages people and other pekos with
   `ChannelSend`. A message from another peko never starts a turn on its own.

@@ -212,9 +212,9 @@ pub enum PrincipalCommands {
         /// `peko:local:<id>`, or `public` for everyone
         subject: String,
 
-        /// Permission to grant (e.g. `chat`, `manage_settings`).
-        /// `trusted` lets the peko use all its tools, including the
-        /// shell, when it works for this person.
+        /// Permission to grant (e.g. `chat`, `manage_settings`). What
+        /// they reach through the peko is set in its `ACCESS.toml`
+        /// (`trusted` is retired).
         permission: String,
     },
 

@@ -466,7 +466,7 @@ async fn only_the_owner_decides_channel_rosters() {
         )
         .await;
     assert!(
-        !out.success && out.display.contains("untrusted"),
+        !out.success && out.display.contains("not sent to the owner"),
         "{}",
         out.display
     );

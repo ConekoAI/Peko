@@ -21,8 +21,10 @@ pub const OWNER_ONLY_TOOLS: &[&str] = &["Plan", "Bash"];
 /// who can reach the principal and whom it can reach (ADR-082 D6);
 /// `role` changes the instructions it follows in a conversation (ADR-087
 /// D6); `admin` changes who may manage a group (ADR-092 D1); `join` puts
-/// the principal in a group someone else runs (ADR-098 D2). An untrusted run never gets them; a trusted run's call waits for
-/// the owner ([`crate::security::judge::owner_decides`]).
+/// the principal in a group someone else runs (ADR-098 D2). A visitor's
+/// run gets them only as the owner's decision: refused unless its
+/// `ACCESS.toml` section sets `ask_owner`, and then each call waits for
+/// the owner ([`crate::security::judge::owner_decides`], ADR-113 D1).
 pub const CHANNEL_OWNER_ACTIONS: &[&str] = &[
     "create", "invite", "role", "admin", "register", "link", "join",
 ];
@@ -99,13 +101,16 @@ pub fn owner_task_refusal(
 
 /// Why `stamp` may not make this particular call, if it may not: the
 /// per-action part of the floor, beside the per-tool [`tool_refusal`].
+/// `ask_owner` is the visitor's `ACCESS.toml` switch: with it on, an
+/// owner action is not refused here but goes to the owner.
 #[must_use]
 pub fn action_refusal(
     stamp: &ActingFor,
     tool_name: &str,
     params: &serde_json::Value,
+    ask_owner: bool,
 ) -> Option<String> {
-    if !stamp.is_untrusted() {
+    if !stamp.is_untrusted() || ask_owner {
         return None;
     }
     let what = match channel_owner_action(tool_name, params)? {
@@ -115,7 +120,8 @@ pub fn action_refusal(
         _ => "Creating groups and inviting people",
     };
     Some(format!(
-        "{what} is not available while acting for {} (untrusted). Ask the owner to set it up.",
+        "{what} is not available while acting for {}, and this conversation's requests are \
+         not sent to the owner. Say you cannot do this here.",
         shown_actor(&stamp.actor)
     ))
 }

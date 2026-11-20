@@ -494,8 +494,17 @@ async fn an_untrusted_run_does_not_choose_admins() {
         &fx.guest_ctx(&channel, Trust::Untrusted).acting_for(),
         CHANNEL_TOOL_NAME,
         &json!({"action": "admin", "channel": "group:crew", "actor": "x", "admin": true}),
+        false,
     )
     .expect("refused");
+    // ADR-113 D1: with `ask_owner`, the owner decides instead.
+    assert!(crate::security::floor::action_refusal(
+        &fx.guest_ctx(&channel, Trust::Untrusted).acting_for(),
+        CHANNEL_TOOL_NAME,
+        &json!({"action": "admin", "channel": "group:crew", "actor": "x", "admin": true}),
+        true,
+    )
+    .is_none());
     assert!(reason.contains("admins"), "{reason}");
 }
 

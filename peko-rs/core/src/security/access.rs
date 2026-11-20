@@ -885,6 +885,47 @@ fn apply_shared(table: &mut toml_edit::Table, shared: &Shared) {
     }
 }
 
+/// ADR-113 D1/D9: give each actor the owner had marked `trusted` a
+/// section of its own, since `trusted` is retired: a copy of
+/// `[visitors]` plus the `MCP` tool and every MCP server in the
+/// workspace (what trusted added beyond a visitor). An actor that already
+/// has a section keeps it. Returns the actors given one.
+pub fn migrate_trusted(
+    workspace: &Path,
+    trusted: &[String],
+    same_actor: &dyn Fn(&str, &str) -> bool,
+) -> Result<Vec<String>, String> {
+    if trusted.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (visitors, mut people) = shared_as_written(workspace)?;
+    let servers = mcp_servers(workspace);
+    let mut added = Vec::new();
+    for actor in trusted {
+        if people
+            .iter()
+            .any(|(address, _)| address == actor || same_actor(address, actor))
+        {
+            continue;
+        }
+        let mut rule = visitors.clone();
+        if !rule.tools.iter().any(|t| t == "MCP") {
+            rule.tools.push("MCP".into());
+        }
+        for server in &servers {
+            if !rule.mcp.contains(server) {
+                rule.mcp.push(server.clone());
+            }
+        }
+        people.push((actor.clone(), rule));
+        added.push(actor.clone());
+    }
+    if !added.is_empty() {
+        set_shared(workspace, &visitors, &people)?;
+    }
+    Ok(added)
+}
+
 /// The bytes under `dir`, following no links. Missing is zero.
 #[must_use]
 pub fn dir_size(dir: &Path) -> u64 {
@@ -1455,5 +1496,32 @@ own_max_bytes = 1000
         std::fs::write(mcp.join("calendar.yaml"), "x: 1").unwrap();
         std::fs::write(mcp.join(".hidden.json"), "{}").unwrap();
         assert_eq!(mcp_servers(dir.path()), vec!["calendar", "orders"]);
+    }
+
+    #[test]
+    fn a_trusted_actor_becomes_a_section_with_the_mcp_servers() {
+        let dir = tempfile::tempdir().unwrap();
+        seed(dir.path()).unwrap();
+        let mcp = dir.path().join("mcp").join("orders");
+        std::fs::create_dir_all(&mcp).unwrap();
+        std::fs::write(mcp.join("server.json"), "{}").unwrap();
+
+        let added = migrate_trusted(dir.path(), &["user:hub:alice".into()], &exact).unwrap();
+        assert_eq!(added, vec!["user:hub:alice"]);
+        let access = Access::load(dir.path());
+        let (address, rule) = &access.contacts[0];
+        assert_eq!(address, "user:hub:alice");
+        assert!(rule.allows_tool("MCP"));
+        assert!(rule.allows_mcp("orders"));
+        assert_eq!(rule.read, access.visitors.read);
+        // Everyone else is unchanged.
+        assert!(!access.visitors.allows_mcp("orders"));
+
+        // Once is enough; a section the owner already wrote is kept.
+        assert!(
+            migrate_trusted(dir.path(), &["user:hub:alice".into()], &exact)
+                .unwrap()
+                .is_empty()
+        );
     }
 }
