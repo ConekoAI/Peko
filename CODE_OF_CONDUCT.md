@@ -7,5 +7,5 @@ In short: be respectful, assume good faith, and keep discussion about the
 work. Harassment and personal attacks are not accepted in issues, pull
 requests or any other project space.
 
-To report a problem, write to <peko@coneko.ai>. Reports are kept
+To report a problem, write to <support@coneko.co>. Reports are kept
 confidential.
