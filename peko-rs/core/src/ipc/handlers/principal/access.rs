@@ -136,6 +136,7 @@ async fn view(
             })
             .collect(),
         servers,
+        workspace: workspace.display().to_string(),
         problem,
     }
 }

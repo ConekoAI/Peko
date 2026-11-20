@@ -2766,6 +2766,9 @@ pub enum ResponsePacket {
         known: Vec<AccessKnown>,
         /// The MCP servers in its workspace, by id.
         servers: Vec<String>,
+        /// The peko's workspace, absolute on this computer: the paths in
+        /// the rules are relative to it.
+        workspace: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         problem: Option<String>,
     },
@@ -6022,6 +6025,7 @@ mod tests {
                 display_name: Some("Ada".into()),
             }],
             servers: vec!["orders".into()],
+            workspace: "/home/me/.peko/pekos/desk".into(),
             problem: None,
         };
         let raw = String::from_utf8(resp.to_bytes().unwrap()).unwrap();
