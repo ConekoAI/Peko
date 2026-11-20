@@ -65,6 +65,8 @@ pub enum ConnectionHandle {
     Unix {
         socket: Arc<UnixDatagram>,
         path: PathBuf,
+        /// The reply socket's file, removed when the last clone drops.
+        reply: Option<Arc<ReplySocketFile>>,
     },
     /// UDP socket (Windows fallback, or Unix opt-in)
     Udp {
@@ -91,7 +93,7 @@ impl ConnectionHandle {
     pub async fn send(&self, bytes: &[u8]) -> anyhow::Result<()> {
         match self {
             #[cfg(unix)]
-            Self::Unix { socket, path } => {
+            Self::Unix { socket, path, .. } => {
                 socket.send_to(bytes, path).await?;
             }
             Self::Udp { socket, addr } => {
@@ -145,7 +147,11 @@ impl ConnectionHandle {
     pub async fn try_clone(&self) -> anyhow::Result<Self> {
         match self {
             #[cfg(unix)]
-            Self::Unix { socket, path } => {
+            Self::Unix {
+                socket,
+                path,
+                reply,
+            } => {
                 // CRITICAL: share the same underlying `Arc<UnixDatagram>`,
                 // not a freshly-bound temp socket. The daemon learns the
                 // CLI's reply path from the first `recv_from` on the
@@ -159,6 +165,7 @@ impl ConnectionHandle {
                 Ok(Self::Unix {
                     socket: Arc::clone(socket),
                     path: path.clone(),
+                    reply: reply.clone(),
                 })
             }
             Self::Udp { socket, addr } => {
@@ -306,10 +313,7 @@ impl ConnectionManager {
             anyhow::bail!("Unix socket does not exist: {}", path);
         }
 
-        let tmp_path = std::env::temp_dir().join(format!("PEKO_cli_{}.sock", std::process::id()));
-        let _ = std::fs::remove_file(&tmp_path);
-        let socket = UnixDatagram::bind(&tmp_path)
-            .map_err(|e| anyhow::anyhow!("Failed to bind Unix socket: {e}"))?;
+        let (socket, reply) = bind_reply_socket(&path_buf)?;
 
         // The client also sends full request packets. macOS defaults to a
         // 2048-byte SO_SNDBUF, rejecting even modest assignment prompts.
@@ -358,6 +362,7 @@ impl ConnectionManager {
         Ok(ConnectionHandle::Unix {
             socket: Arc::new(socket),
             path: path_buf,
+            reply: Some(Arc::new(reply)),
         })
     }
 
@@ -498,6 +503,92 @@ impl ConnectionManager {
     }
 }
 
+/// The file of a CLI's reply socket; removing it when the connection is
+/// gone keeps the run directory from filling with dead sockets.
+#[cfg(unix)]
+#[derive(Debug)]
+pub struct ReplySocketFile(PathBuf);
+
+#[cfg(unix)]
+impl Drop for ReplySocketFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Longest socket path every Unix accepts (`sun_path` is 104 bytes on
+/// macOS, 108 on Linux, both counting the terminating NUL).
+#[cfg(unix)]
+const MAX_SOCKET_PATH: usize = 100;
+
+/// Remove the reply sockets of commands that are gone.
+///
+/// A command that exits through `std::process::exit`, or is killed, never
+/// removes its socket, and the run directory is on the runtime's volume,
+/// so they would pile up. Whether one is still in use cannot be told from
+/// its pid (it may be another container's); connecting to it can: the
+/// kernel refuses a connection to a socket file nobody holds. Connecting
+/// a datagram socket sends nothing.
+#[cfg(unix)]
+fn remove_dead_reply_sockets(dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !(name.starts_with("cli-") && name.ends_with(".sock")) {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(probe) = std::os::unix::net::UnixDatagram::unbound() else {
+            return;
+        };
+        if let Err(e) = probe.connect(&path) {
+            if e.kind() == std::io::ErrorKind::ConnectionRefused {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+}
+
+/// Bind the socket the daemon answers on.
+///
+/// It goes beside the daemon's own socket, so a CLI in another container
+/// that shares the runtime's volume still hears back: the daemon replies
+/// to the path the request came from, and a path in this process's own
+/// `/tmp` does not exist where the daemon runs. The run directory is
+/// also private to the runtime's user (0700), which `/tmp` is not. The
+/// name is random, not the pid: two containers both run their commands
+/// with low pids. When the daemon's directory cannot take it (a long or
+/// read-only path), the socket goes in the temporary directory as before.
+#[cfg(unix)]
+fn bind_reply_socket(
+    daemon_socket: &std::path::Path,
+) -> anyhow::Result<(UnixDatagram, ReplySocketFile)> {
+    let name = format!(
+        "cli-{}-{}.sock",
+        std::process::id(),
+        &uuid::Uuid::new_v4().simple().to_string()[..12]
+    );
+    let beside = daemon_socket
+        .parent()
+        .map(|dir| dir.join(&name))
+        .filter(|p| p.as_os_str().len() <= MAX_SOCKET_PATH);
+    if let Some(path) = beside {
+        if let Some(dir) = path.parent() {
+            remove_dead_reply_sockets(dir);
+        }
+        if let Ok(socket) = UnixDatagram::bind(&path) {
+            return Ok((socket, ReplySocketFile(path)));
+        }
+    }
+    let path = std::env::temp_dir().join(name);
+    let socket = UnixDatagram::bind(&path)
+        .map_err(|e| anyhow::anyhow!("Failed to bind Unix socket: {e}"))?;
+    Ok((socket, ReplySocketFile(path)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -566,9 +657,6 @@ mod tests {
         let send_result = connection.send(&bytes).await;
         if send_result.is_err() {
             serve.abort();
-            let _ = std::fs::remove_file(
-                std::env::temp_dir().join(format!("PEKO_cli_{}.sock", std::process::id())),
-            );
         }
         send_result.unwrap();
         let received = tokio::time::timeout(Duration::from_secs(5), serve)
@@ -579,9 +667,87 @@ mod tests {
             matches!(received, RequestPacket::PrincipalSendStream { message: actual, .. } if actual == message)
         );
         drop(connection);
-        let _ = std::fs::remove_file(
-            std::env::temp_dir().join(format!("PEKO_cli_{}.sock", std::process::id())),
-        );
+        let left: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("cli-"))
+            .collect();
+        assert!(left.is_empty(), "reply socket left behind: {left:?}");
+    }
+
+    /// A socket left by a command that is gone is removed when the next
+    /// one binds; a socket still held is kept.
+    #[cfg(unix)]
+    #[test]
+    fn dead_reply_sockets_are_removed_live_ones_kept() {
+        let dir = tempfile::Builder::new()
+            .prefix("ipc-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let dead = dir.path().join("cli-1-dead.sock");
+        drop(std::os::unix::net::UnixDatagram::bind(&dead).unwrap());
+        assert!(dead.exists(), "the file outlives its socket");
+        let live_path = dir.path().join("cli-2-live.sock");
+        let _live = std::os::unix::net::UnixDatagram::bind(&live_path).unwrap();
+        let other = dir.path().join("daemon.pid");
+        std::fs::write(&other, "1").unwrap();
+
+        remove_dead_reply_sockets(dir.path());
+
+        assert!(!dead.exists());
+        assert!(live_path.exists());
+        assert!(other.exists());
+    }
+
+    /// The daemon answers the path a request came from. In the server
+    /// test above that path is checked to be beside the daemon's socket,
+    /// where a CLI in another container sharing the volume can be reached.
+    #[cfg(unix)]
+    #[test]
+    fn the_reply_socket_sits_beside_the_daemons() {
+        let dir = tempfile::Builder::new()
+            .prefix("ipc-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = rt.enter();
+        let (socket, file) = bind_reply_socket(&dir.path().join("daemon.sock")).unwrap();
+        let bound = socket.local_addr().unwrap();
+        let bound = bound.as_pathname().unwrap();
+        assert_eq!(bound.parent().unwrap(), dir.path());
+        assert!(bound
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("cli-"));
+        drop(socket);
+        drop(file);
+        assert!(!bound.exists());
+    }
+
+    /// A directory whose socket path would be too long falls back to the
+    /// temporary directory instead of failing.
+    #[cfg(unix)]
+    #[test]
+    fn a_long_run_directory_falls_back_to_tmp() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = rt.enter();
+        let long = std::path::PathBuf::from("/")
+            .join("x".repeat(120))
+            .join("daemon.sock");
+        let (socket, _file) = bind_reply_socket(&long).unwrap();
+        let bound = socket.local_addr().unwrap();
+        assert!(bound
+            .as_pathname()
+            .unwrap()
+            .starts_with(std::env::temp_dir()));
     }
 }
 

@@ -252,6 +252,7 @@ mod tests {
         let conn = ConnectionHandle::Unix {
             socket: std::sync::Arc::new(tokio::net::UnixDatagram::from_std(client_std).unwrap()),
             path: client_path.clone(),
+            reply: None,
         };
         let (router, handle) = spawn_receiver_with_timeout(conn, Duration::from_millis(50));
 

@@ -1,6 +1,6 @@
 # Peko CLI Reference
 
-Generated from the CLI's own `--help` output by `scripts/gen_cli_reference.py` (peko 0.1.1). Regenerate it after changing any command; `peko <command> --help` shows the same text.
+Generated from the CLI's own `--help` output by `scripts/gen_cli_reference.py` (peko 0.3.0). Regenerate it after changing any command; `peko <command> --help` shows the same text.
 
 ## `peko`
 
@@ -39,6 +39,8 @@ Commands:
   daemon         Daemon management (the background process that runs your pekos)
   channel        Direct messages and group chats with people and pekos
   model          LLM model management (runtime model catalog)
+  device         Your account's computers and phones
+  code           An identity's code, to read to its owner
   quota          How many tokens and requests a peko may use
   update         Update Peko to the latest version
   completions    Generate shell completions
@@ -418,7 +420,7 @@ Options:
 ```text
 Stop what a peko is doing in your conversation
 
-The peko stops at once if it is waiting for the model (a tool that is running returns first), what it was in the middle of saying is not kept, and the conversation shows `⏹ stopped by user`. If it isn't working on anything, this says so and exits 0. With `--peer <address>` (owner only), such as `user:hub:<id>`, stop it in someone else's conversation instead.
+The peko stops waiting for the model at once (a running tool returns first) and the conversation shows `⏹ stopped by user`. If it isn't working on anything, this says so and exits 0. With `--peer <address>` (owner only), such as `user:hub:<id>`, stop it in someone else's conversation instead.
 
 Usage: peko stop [OPTIONS] <PEKO>
 
@@ -471,6 +473,9 @@ Options:
 
       --watch
           Block and stream new messages live (replay newer than `--cursor` first, then live rows as they're posted). Heartbeats keep a quiet thread's stream alive
+
+      --sent
+          Follow everything the peko posts in every one-to-one conversation, each line naming whom it went to. For a script that relays a peko's conversations to another service. Only the peko's owner can. With `--since`, the peko's posts newer than the duration come first. With `--json`: NDJSON, one `{"to", "channel", "message"}` object per line
 ```
 
 ## `peko auth`
@@ -1178,6 +1183,119 @@ Usage: peko model test [OPTIONS] <ID>
 
 Arguments:
   <ID>  Configured model id to test
+
+```
+
+## `peko device`
+
+```text
+Your account's computers and phones
+
+They are one list, and a device joins it only with a code shown on one already on it: a PekoHub sign-in alone adds nothing.
+
+Examples: peko device add peko device join K7DX-KQ7R-MTPZ peko device list peko device remove dev_5f0c1c1e9a7b4f52
+
+Usage: peko device [OPTIONS] <COMMAND>
+
+Commands:
+  add      Show a code that adds a device to your account
+  join     Join this computer to your account with a code from another device
+  list     List your account's devices, and what waits for you about it
+  remove   Remove a device from your account
+  approve  Approve something that waits about your account (from `peko device list`)
+  deny     Refuse something that waits about your account
+  help     Print this message or the help of the given subcommand(s)
+
+```
+
+### `peko device add`
+
+```text
+Show a code that adds a device to your account
+
+The code works once and for ten minutes. On a phone, open Peko and scan it; on another computer, run `peko device join <code>`.
+
+Usage: peko device add [OPTIONS]
+
+```
+
+### `peko device join`
+
+```text
+Join this computer to your account with a code from another device
+
+On a device already on your account, choose Add a device (or run `peko device add`) and type the code it shows here.
+
+Usage: peko device join [OPTIONS] <CODE>
+
+Arguments:
+  <CODE>
+          The code, like ABCD-EFGH-JKMN
+
+```
+
+### `peko device list`
+
+```text
+List your account's devices, and what waits for you about it
+
+Usage: peko device list [OPTIONS]
+
+```
+
+### `peko device remove`
+
+```text
+Remove a device from your account
+
+No computer of yours acts on it afterwards. It can join again with a new code.
+
+Usage: peko device remove [OPTIONS] <DEVICE_ID>
+
+Arguments:
+  <DEVICE_ID>
+          The device's id (`did:key:…`, or a phone's `dev_…`), from `peko device list`
+
+```
+
+### `peko device approve`
+
+```text
+Approve something that waits about your account (from `peko device list`)
+
+Usage: peko device approve [OPTIONS] <ID>
+
+Arguments:
+  <ID>  Its id (`apr_owner…`, `apr_keychange…`, `apr_devreset…`)
+
+```
+
+### `peko device deny`
+
+```text
+Refuse something that waits about your account
+
+Usage: peko device deny [OPTIONS] <ID>
+
+Arguments:
+  <ID>  Its id (`apr_owner…`, `apr_keychange…`, `apr_devreset…`)
+
+```
+
+## `peko code`
+
+```text
+An identity's code, to read to its owner
+
+Your account's, one of your pekos', or someone else's as this computer knows them. Two owners who read matching codes know PekoHub put them in touch with each other.
+
+Examples: peko code peko code ada peko code peko:hub:6f1c2a52-58b6-4b8e-9d1c-6a3f0b6f1a01
+
+Usage: peko code [OPTIONS] [WHO]
+
+Arguments:
+  [WHO]
+          Whose code: one of your pekos (name), `peko:hub:<id>` for someone else's peko, or `user:hub:<id>` for a person. Your account's when left out
 
 ```
 

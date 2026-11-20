@@ -417,3 +417,14 @@ jobs:
     uses: ./.github/workflows/release-smoke.yml
     with:
       version: ${{ needs.prepare.outputs.tag }}
+
+  # Publish ghcr.io/conekoai/peko from the release's Linux binaries
+  # (docker-image.yml).
+  image:
+    needs: [prepare, create-release]
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/docker-image.yml
+    with:
+      version: ${{ needs.prepare.outputs.tag }}
