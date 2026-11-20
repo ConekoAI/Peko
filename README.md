@@ -42,6 +42,11 @@ for macOS, Windows or Linux. It includes everything: create pekos, chat with
 them, approve what they ask, and decide who may talk to them, without a
 terminal.
 
+<p align="center">
+  <img src="docs/media/app-chat.png" width="49%" alt="Chatting with a peko in Peko Desktop">
+  <img src="docs/media/app-sharing.png" width="49%" alt="Choosing what other people reach when they talk to a peko">
+</p>
+
 ### Command line
 
 macOS and Linux:

@@ -148,8 +148,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=%i
-ExecStart=${INSTALL_DIR}/peko daemon start --foreground
-ExecStop=${INSTALL_DIR}/peko daemon stop
+ExecStart=${INSTALL_DIR}/peko engine start --foreground
+ExecStop=${INSTALL_DIR}/peko engine stop
 Restart=always
 RestartSec=10
 StartLimitInterval=60s
@@ -215,7 +215,7 @@ print_post_install() {
     echo "      use --no-key for local endpoints — see \`peko model add --help\`)"
     echo ""
     echo "  2. Start the engine:"
-    echo "     peko daemon start"
+    echo "     peko engine start"
     echo ""
     echo "  3. Create your first peko and talk to it:"
     echo "     peko create my-peko --model my-model"

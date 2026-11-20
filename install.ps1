@@ -116,7 +116,7 @@ function Install-Peko {
             # goes away on the next install once nothing runs it.
             if (Test-Path $old) { Remove-Item -Force $old -ErrorAction SilentlyContinue }
             if (Test-Path $dest) {
-                if (Test-Path $old) { throw "$old is still in use; stop Peko (peko daemon stop) and run the installer again" }
+                if (Test-Path $old) { throw "$old is still in use; stop Peko (peko engine stop) and run the installer again" }
                 Rename-Item -Path $dest -NewName "$bin.old"
             }
             Copy-Item -Path (Join-Path $extracted $bin) -Destination $dest
@@ -130,7 +130,7 @@ function Install-Peko {
         Where-Object { $_.Path -and $_.Path.StartsWith($InstallDir, [StringComparison]::OrdinalIgnoreCase) }
     if ($running) {
         Write-Host 'An engine from the previous version is still running. Restart it to use the new one:' -ForegroundColor Yellow
-        Write-Host '  peko daemon stop; peko daemon start'
+        Write-Host '  peko engine stop; peko engine start'
     }
 
     if (-not $NoModifyPath) { Add-ToUserPath $InstallDir }
@@ -152,7 +152,7 @@ function Install-Peko {
     Write-Host '      use --no-key for local endpoints - see `peko model add --help`)'
     Write-Host ''
     Write-Host '  2. Start the engine:'
-    Write-Host '     peko daemon start'
+    Write-Host '     peko engine start'
     Write-Host ''
     Write-Host '  3. Create your first peko and talk to it:'
     Write-Host '     peko create my-peko --model my-model'
