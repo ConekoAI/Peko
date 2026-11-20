@@ -23,6 +23,10 @@ All notable changes to Peko.
 
 ### Added
 
+- **`Session status` says whom the run acts for and what it may reach**
+  (`this_run`): the person or peko, the trust, the conversation and, for a
+  visitor, the files, own folder, tools and MCP servers their section
+  gives them and whether their requests go to the owner.
 - **The runtime is published as a Docker image.** Each release now
   publishes `ghcr.io/conekoai/peko` for amd64 and arm64, tagged with its
   version, its version line (`0.3`) and `latest`. It is built from the
@@ -54,6 +58,14 @@ All notable changes to Peko.
 
 ### Fixed
 
+- **A visitor's search from the top of a peko's folder finds what they may
+  reach, instead of being refused.** `Glob` and `Grep` for someone other
+  than the owner, from a folder above what `ACCESS.toml` gives them (the
+  peko's folder itself, say), now walk only the shared paths and that
+  conversation's own folder, and skip everything else, other
+  conversations' notes included. They used to be refused, and a model
+  spent several failed calls before finding `public/`. `Read` on a folder
+  now says to list it with `Glob`.
 - **A `peko` command in another container now reaches the runtime** when it
   shares the runtime's `/data` volume, so a relay can run in its own
   container. The command's reply socket is now in the runtime's `run`

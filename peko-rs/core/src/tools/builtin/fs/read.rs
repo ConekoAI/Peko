@@ -94,6 +94,14 @@ impl ReadTool {
             .await
             .with_context(|| format!("Failed to read file metadata: {}", resolved.display()))?;
 
+        if metadata.is_dir() {
+            return Err(anyhow::anyhow!(
+                "{} is a folder, not a file: list it with Glob (pattern \"*\", path \"{}\"), \
+                 then Read a file in it",
+                resolved.display(),
+                file_path
+            ));
+        }
         if !metadata.is_file() {
             return Err(anyhow::anyhow!(
                 "Path is not a file: {}",
@@ -357,6 +365,22 @@ mod tests {
     /// ADR-088: an image, audio, or video file comes back as a line and a
     /// `media` reference for the engine to attach, not as base64 text —
     /// unless base64 is asked for.
+    /// Reading a folder says how to list it.
+    #[tokio::test]
+    async fn reading_a_folder_points_to_glob() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = ReadTool::new().with_workspace(temp_dir.path());
+        fs::create_dir_all(temp_dir.path().join("public"))
+            .await
+            .unwrap();
+        let err = tool
+            .execute(json!({"file_path": "public"}))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("is a folder") && err.contains("Glob"), "{err}");
+    }
+
     #[tokio::test]
     async fn media_files_come_back_as_media() {
         let temp_dir = TempDir::new().unwrap();

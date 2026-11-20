@@ -406,6 +406,37 @@ impl Reach {
         Some(Unreached::Unlisted { reason, relative })
     }
 
+    /// What a search from `target` may walk into: the reachable paths
+    /// under it (this conversation's own folder and the listed `read` and
+    /// `write` paths), absolute. A visitor's `Glob` / `Grep` from a folder
+    /// above them, such as the workspace itself, walks only these and the
+    /// folders leading to them, instead of being refused (ADR-113). Empty
+    /// when nothing reachable lies under `target`. Both paths must
+    /// already be [`floor::resolve`]d.
+    #[must_use]
+    pub fn search_scope(&self, workspace: &Path, target: &Path) -> Vec<PathBuf> {
+        let Ok(relative) = target.strip_prefix(workspace) else {
+            return Vec::new();
+        };
+        let relative = relative.to_string_lossy().replace('\\', "/");
+        let relative = relative.trim_end_matches('/');
+        let mut scope: Vec<PathBuf> = self
+            .own_dir
+            .iter()
+            .chain(&self.rule.read)
+            .chain(&self.rule.write)
+            .filter(|path| relative.is_empty() || under(path, relative))
+            .map(|path| {
+                let mut full = workspace.to_path_buf();
+                full.extend(path.split('/'));
+                full
+            })
+            .collect();
+        scope.sort();
+        scope.dedup();
+        scope
+    }
+
     /// This reach with `grant` added: what an owner-approved call runs
     /// under.
     #[must_use]
