@@ -214,7 +214,7 @@ libc = "0.2"
 
 # Time
 chrono = { version = "0.4", features = ["serde"] }
-cron = "0.12"
+cron = "0.17"
 
 # UUID
 uuid = { version = "1.7", features = ["v4", "v5", "v7", "serde"] }
