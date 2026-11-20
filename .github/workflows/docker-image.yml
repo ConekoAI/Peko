@@ -1,0 +1,111 @@
+name: Docker Image
+
+# Publishes ghcr.io/conekoai/peko for a release: the image the Dockerfile
+# describes, with that release's own Linux binaries (nothing is compiled
+# here), for amd64 and arm64. Called by release.yml once the release is
+# published; can also be run by hand for an existing release.
+#
+# Tags: <version>, and for a plain release also <major>.<minor> and latest.
+# A prerelease gets only its own tag.
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'Release tag (e.g. v0.3.0)'
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release tag (e.g. v0.3.0)'
+        required: true
+        type: string
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/conekoai/peko
+    steps:
+      - name: Name the release
+        id: tag
+        run: |
+          TAG="${{ inputs.version }}"
+          case "$TAG" in v*) ;; *) TAG="v$TAG" ;; esac
+          VERSION="${TAG#v}"
+          {
+            echo "tag=$TAG"
+            echo "version=$VERSION"
+          } >> "$GITHUB_OUTPUT"
+          TAGS="$IMAGE:$VERSION"
+          case "$VERSION" in
+            *-*) ;;
+            *)
+              MINOR="$(echo "$VERSION" | cut -d. -f1-2)"
+              TAGS="$TAGS,$IMAGE:$MINOR,$IMAGE:latest" ;;
+          esac
+          echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
+          echo "Publishing $TAGS"
+
+      # The Dockerfile and container scripts of the release itself.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+
+      - name: Fetch the release's Linux binaries
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download "${{ steps.tag.outputs.tag }}" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'peko-linux-*.tar.gz' --dir release
+          mkdir -p dist/amd64 dist/arm64
+          tar -xzf release/peko-linux-x86_64.tar.gz -C dist/amd64
+          tar -xzf release/peko-linux-aarch64.tar.gz -C dist/arm64
+          ls -l dist/*
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          build-args: BINARIES=prebuilt
+          tags: ${{ steps.tag.outputs.tags }}
+          labels: org.opencontainers.image.version=${{ steps.tag.outputs.version }}
+          push: true
+
+      # The published image starts, refuses to run without a passphrase,
+      # runs a daemon with one, and names the release's version.
+      - name: Smoke the published image
+        run: |
+          REF="$IMAGE:${{ steps.tag.outputs.version }}"
+          docker pull "$REF"
+          docker run --rm "$REF" version | tee version.txt
+          grep -F "${{ steps.tag.outputs.version }}" version.txt
+
+          if docker run --rm "$REF" >no-pass.txt 2>&1; then
+            echo "::error::the image started without a passphrase"; exit 1
+          fi
+          grep -F "no passphrase" no-pass.txt
+
+          docker run -d --name smoke -e PEKO_MASTER_PASSPHRASE=smoke-test "$REF"
+          for _ in $(seq 1 30); do
+            if docker exec smoke peko daemon status; then ok=1; break; fi
+            sleep 1
+          done
+          docker logs smoke
+          [ "${ok:-}" = 1 ] || { echo "::error::the daemon did not come up"; exit 1; }
+          docker stop smoke

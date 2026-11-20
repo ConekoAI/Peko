@@ -671,6 +671,22 @@ pub enum RequestPacket {
         author: Option<String>,
     },
 
+    /// Follow everything a peko posts in its one-to-one conversations
+    /// (owner only): one `PrincipalSentAppended` per post, naming whom it
+    /// went to, with `Heartbeat` ticks between. For a script that
+    /// relays a peko's conversations to another service, so a message
+    /// the peko sends later (after its owner approves a request, say)
+    /// reaches the person too. `since` (RFC 3339) first replays the
+    /// peko's posts newer than it, oldest first; without it the stream
+    /// starts now. No `Done`: it ends when the client goes away.
+    #[serde(rename = "principal_sent_watch")]
+    PrincipalSentWatch {
+        request_id: u64,
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<String>,
+    },
+
     /// Watch a peer's conversation thread with a Principal: replay
     /// `Posted` events newer than `since_cursor`, then stream new
     /// messages live.
@@ -1295,6 +1311,7 @@ impl RequestPacket {
             | Self::PrincipalSendStream { request_id, .. }
             | Self::PrincipalLog { request_id, .. }
             | Self::PrincipalLogWatch { request_id, .. }
+            | Self::PrincipalSentWatch { request_id, .. }
             | Self::PrincipalExport { request_id, .. }
             | Self::PrincipalImport { request_id, .. }
             | Self::PrincipalImportPreview { request_id, .. }
@@ -2709,6 +2726,18 @@ pub enum ResponsePacket {
         message: PrincipalLogMessage,
     },
 
+    /// One post on a `PrincipalSentWatch` stream: what the peko said,
+    /// to whom (`to`, the other member of the conversation), and in
+    /// which channel. `message.id` is the post's stable id when it has
+    /// one, so a relay can skip a post it already delivered.
+    #[serde(rename = "principal_sent_appended")]
+    PrincipalSentAppended {
+        request_id: u64,
+        to: peko_auth::ActorRef,
+        channel: String,
+        message: PrincipalLogMessage,
+    },
+
     #[serde(rename = "principal_exported")]
     PrincipalExported {
         request_id: u64,
@@ -3432,6 +3461,7 @@ impl ResponsePacket {
             | Self::RunSummary { request_id, .. }
             | Self::PrincipalLog { request_id, .. }
             | Self::PrincipalLogAppended { request_id, .. }
+            | Self::PrincipalSentAppended { request_id, .. }
             | Self::ApprovalList { request_id, .. }
             | Self::PrincipalSetupStatus { request_id, .. }
             | Self::ApprovalDecided { request_id, .. }
@@ -3541,6 +3571,7 @@ impl ResponsePacket {
             Self::RunSummary { .. } => "RunSummary",
             Self::PrincipalLog { .. } => "PrincipalLog",
             Self::PrincipalLogAppended { .. } => "PrincipalLogAppended",
+            Self::PrincipalSentAppended { .. } => "PrincipalSentAppended",
             Self::ApprovalList { .. } => "ApprovalList",
             Self::PrincipalSetupStatus { .. } => "PrincipalSetupStatus",
             Self::ApprovalDecided { .. } => "ApprovalDecided",
@@ -5931,6 +5962,45 @@ mod tests {
                 assert!(since_cursor.is_none());
             }
             _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn principal_sent_watch_roundtrips() {
+        let bare = r#"{"type":"principal_sent_watch","request_id":3,"name":"desk"}"#;
+        match RequestPacket::from_bytes(bare.as_bytes()).unwrap() {
+            RequestPacket::PrincipalSentWatch { name, since, .. } => {
+                assert_eq!(name, "desk");
+                assert_eq!(since, None);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        let resp = ResponsePacket::PrincipalSentAppended {
+            request_id: 3,
+            to: <peko_auth::ActorRef as std::str::FromStr>::from_str("visitor:local:+15550100")
+                .unwrap(),
+            channel: "dm_x".into(),
+            message: PrincipalLogMessage::new(
+                peko_auth::ActorRef::User("local".into()),
+                "open 9-5",
+                None,
+            ),
+        };
+        let raw = String::from_utf8(resp.to_bytes().unwrap()).unwrap();
+        assert!(
+            raw.contains("\"type\":\"principal_sent_appended\""),
+            "{raw}"
+        );
+        assert!(
+            raw.contains(r#""to":{"kind":"visitor","id":"+15550100"}"#),
+            "{raw}"
+        );
+        match ResponsePacket::from_bytes(raw.as_bytes()).unwrap() {
+            ResponsePacket::PrincipalSentAppended { to, message, .. } => {
+                assert_eq!(to.to_string(), "visitor:+15550100");
+                assert_eq!(message.text, "open 9-5");
+            }
+            other => panic!("wrong variant: {other:?}"),
         }
     }
 
