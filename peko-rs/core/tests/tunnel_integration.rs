@@ -137,7 +137,7 @@ async fn authenticate_tunnel(
         key_statement: None,
     };
     write
-        .send(Message::Binary(hello.to_bytes().unwrap()))
+        .send(Message::Binary(hello.to_bytes().unwrap().into()))
         .await
         .expect("Failed to send RuntimeHello");
 
@@ -167,7 +167,7 @@ async fn authenticate_tunnel(
         signature: challenge_signature,
     };
     write
-        .send(Message::Binary(ack.to_bytes().unwrap()))
+        .send(Message::Binary(ack.to_bytes().unwrap().into()))
         .await
         .expect("Failed to send TunnelChallengeAck");
 
@@ -257,7 +257,7 @@ async fn register_test_principal(
         },
     };
     write
-        .send(Message::Binary(announce.to_bytes().unwrap()))
+        .send(Message::Binary(announce.to_bytes().unwrap().into()))
         .await
         .unwrap();
     let receipt = timeout(Duration::from_secs(10), async {
@@ -268,8 +268,8 @@ async fn register_test_principal(
                 .expect("Tunnel closed before receipt")
                 .expect("WebSocket error")
             {
-                Message::Binary(bytes) => bytes,
-                Message::Text(text) => text.into_bytes(),
+                Message::Binary(bytes) => bytes.to_vec(),
+                Message::Text(text) => text.as_bytes().to_vec(),
                 _ => continue,
             };
             match TunnelMessage::from_bytes(&bytes).unwrap() {
@@ -308,7 +308,7 @@ async fn test_tunnel_handshake_and_heartbeat() {
     // Send heartbeat, expect ack
     let heartbeat = TunnelMessage::Heartbeat { seq: 1 };
     write
-        .send(Message::Binary(heartbeat.to_bytes().unwrap()))
+        .send(Message::Binary(heartbeat.to_bytes().unwrap().into()))
         .await
         .unwrap();
 
@@ -348,7 +348,7 @@ async fn test_tunnel_rejects_invalid_signature() {
         key_statement: None,
     };
     write
-        .send(Message::Binary(hello.to_bytes().unwrap()))
+        .send(Message::Binary(hello.to_bytes().unwrap().into()))
         .await
         .unwrap();
 
@@ -490,7 +490,7 @@ async fn test_tunnel_instance_announce_and_api_visibility() {
         },
     };
     write
-        .send(Message::Binary(heartbeat.to_bytes().unwrap()))
+        .send(Message::Binary(heartbeat.to_bytes().unwrap().into()))
         .await
         .unwrap();
 
@@ -557,7 +557,7 @@ async fn test_tunnel_proxied_request_response() {
     };
 
     write
-        .send(Message::Binary(req.to_bytes().unwrap()))
+        .send(Message::Binary(req.to_bytes().unwrap().into()))
         .await
         .unwrap();
 
@@ -567,7 +567,10 @@ async fn test_tunnel_proxied_request_response() {
 
     write
         .send(Message::Binary(
-            TunnelMessage::Heartbeat { seq: 1 }.to_bytes().unwrap(),
+            TunnelMessage::Heartbeat { seq: 1 }
+                .to_bytes()
+                .unwrap()
+                .into(),
         ))
         .await
         .unwrap();
@@ -608,7 +611,7 @@ async fn test_tunnel_streaming_chunks_survive() {
             payload: format!("chunk-{i}").into_bytes(),
         };
         write
-            .send(Message::Binary(chunk.to_bytes().unwrap()))
+            .send(Message::Binary(chunk.to_bytes().unwrap().into()))
             .await
             .unwrap();
     }
@@ -616,7 +619,7 @@ async fn test_tunnel_streaming_chunks_survive() {
         request_id: "test-stream".to_string(),
     };
     write
-        .send(Message::Binary(end.to_bytes().unwrap()))
+        .send(Message::Binary(end.to_bytes().unwrap().into()))
         .await
         .unwrap();
 
@@ -625,7 +628,10 @@ async fn test_tunnel_streaming_chunks_survive() {
     // Verify connection still alive via heartbeat
     write
         .send(Message::Binary(
-            TunnelMessage::Heartbeat { seq: 42 }.to_bytes().unwrap(),
+            TunnelMessage::Heartbeat { seq: 42 }
+                .to_bytes()
+                .unwrap()
+                .into(),
         ))
         .await
         .unwrap();
