@@ -53,6 +53,6 @@ peko's model to write text for it (sampling) only when you turn that on, and
 that use counts against the peko's quota.
 
 For every field of `server.json`, see the
-[data model](../../DATA_MODEL.md#12-workspace-mcp-server-definitions). The
+[data model](../reference/DATA_MODEL.md#12-workspace-mcp-server-definitions). The
 design record is
-[ADR-075](../architecture/adr/ADR-075-principal-owned-mcp-runtime.md).
+ADR-075.

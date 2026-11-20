@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["Peko <peko@coneko.ai>"]
 description = "Neutral message contract (ContentBlock, LlmMessage, MessageRole, TokenUsage, …) shared by Peko runtime components"
 license = "MIT"
-repository = "https://github.com/ConekoAI/peko-runtime"
+repository = "https://github.com/ConekoAI/Peko"
 
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }

@@ -126,7 +126,7 @@ fn inventory_matches_implementations_and_schemas_compile() {
     // Windows checkouts may convert the doc to CRLF; match headings on LF.
     let catalog = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/architecture/builtin-tools.md"
+        "/../../docs/reference/BUILTIN_TOOLS.md"
     ))
     .replace("\r\n", "\n");
     for tool in implementations {

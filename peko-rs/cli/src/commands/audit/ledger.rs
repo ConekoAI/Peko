@@ -53,7 +53,7 @@ pub async fn show(paths: &GlobalPaths, peko: &str, query: Query) -> Result<()> {
     let target = target(paths, peko)?;
     if !target.ledger_dir.exists() {
         eprintln!(
-            "📒 '{peko}' has no tool ledger yet ({}). The daemon writes it on the first tool call.",
+            "📒 '{peko}' has no tool ledger yet ({}). The engine writes it on the first tool call.",
             target.ledger_dir.display()
         );
         return Ok(());

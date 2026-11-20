@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security problem
+    url: https://github.com/ConekoAI/Peko/security/advisories/new
+    about: Please report vulnerabilities privately, not as an issue.
+  - name: Peko Desktop
+    url: https://github.com/ConekoAI/peko-desktop/issues
+    about: Problems with the desktop app go to its own repository.

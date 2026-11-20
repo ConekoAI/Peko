@@ -25,7 +25,7 @@ between conversations, and runs in the background on your machine.
 ## 1. Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ConekoAI/peko-runtime/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ConekoAI/Peko/master/install.sh | bash
 ```
 
 This installs two binaries, `peko` and `peko-daemon`, into `/usr/local/bin`
@@ -33,12 +33,12 @@ This installs two binaries, `peko` and `peko-daemon`, into `/usr/local/bin`
 runtime home `~/.peko`. To install somewhere else, pass `--install-dir`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ConekoAI/peko-runtime/master/install.sh | bash -s -- --install-dir ~/.local/bin
+curl -fsSL https://raw.githubusercontent.com/ConekoAI/Peko/master/install.sh | bash -s -- --install-dir ~/.local/bin
 ```
 
 The installer takes the newest release. To install a particular one, name
 it with `--version`, for example `bash -s -- --version 0.1.0`. The
-[releases page](https://github.com/ConekoAI/peko-runtime/releases) lists
+[releases page](https://github.com/ConekoAI/Peko/releases) lists
 them.
 
 On Windows, run the PowerShell installer instead. It installs per user,
@@ -46,8 +46,8 @@ without administrator rights, into `%LOCALAPPDATA%\Programs\peko\bin`, adds
 that directory to your user `PATH`, and takes `-Version` and `-InstallDir`:
 
 ```powershell
-irm https://raw.githubusercontent.com/ConekoAI/peko-runtime/master/install.ps1 | iex
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/ConekoAI/peko-runtime/master/install.ps1))) -Version <version>
+irm https://raw.githubusercontent.com/ConekoAI/Peko/master/install.ps1 | iex
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/ConekoAI/Peko/master/install.ps1))) -Version <version>
 ```
 
 Check the install:
@@ -122,21 +122,21 @@ peko model test my-model
 
 ---
 
-## 3. Start the daemon
+## 3. Start the engine
 
-The daemon is the background process that runs your pekos.
+The engine is the background process that runs your pekos.
 
 ```bash
-peko daemon start
+peko engine start
 ```
 
 ```
-🚀 Starting daemon in background (interval: 15s)...
+🚀 Starting engine in background (interval: 15s)...
    Config dir: ~/.peko
    Data dir: ~/Library/Application Support/peko
 
-✅ Daemon started successfully
-   Check status: peko daemon status
+✅ Engine started successfully
+   Check status: peko engine status
 ```
 
 (On Linux the data directory is `~/.local/share/peko`.)
@@ -152,7 +152,7 @@ peko create my-peko
 With only one model set up, the peko uses it; with several, name one with
 `--model my-model`. `create` waits for the peko's first turn, in which it
 sets itself up. How long that takes depends on your model; the turn starts a
-few seconds after the daemon is up:
+few seconds after the engine is up:
 
 ```
 Using model 'my-model', the only one set up.
@@ -160,7 +160,7 @@ Created peko 'my-peko' at ~/.peko/pekos/my-peko (model: my-model)
   kb scaffold: 8 files seeded
   root role: roles/root.md seeded
   kb journal: birth entry seeded
-Daemon: peko 'my-peko' loaded
+Engine: peko 'my-peko' loaded
 Waiting for 'my-peko' to set itself up (its first turn)…
 🎉 Peko 'my-peko' is ready. Talk to it: peko send my-peko "…" — read along: peko log my-peko
 ```
@@ -257,8 +257,8 @@ peko log my-peko --watch           # follow it live
 peko stop my-peko                  # stop the turn it is running for you
 peko export my-peko                # snapshot it into a .peko package
 
-peko daemon status
-peko daemon stop
+peko engine status
+peko engine stop
 
 peko --help                        # every command
 peko send --help                   # one command's options
@@ -274,14 +274,14 @@ The install directory is not on your `PATH`. With the default install it is
 `/usr/local/bin`. If you used `--install-dir ~/.local/bin`, add that
 directory to `PATH` in your shell profile.
 
-### `create` or `send` says the daemon is not running
+### `create` or `send` says the engine is not running
 
 ```bash
-peko daemon start
-peko daemon status
+peko engine start
+peko engine status
 ```
 
-The daemon writes its log to `~/.peko/logs/daemon.log`, and keeps the
+The engine writes its log to `~/.peko/logs/daemon.log`, and keeps the
 previous run's as `daemon.log.1`.
 
 ### "no key for model '…'"
@@ -308,7 +308,7 @@ peko model test my-model
 
 `create` waits up to 300 seconds for the first turn (`--wait-timeout`
 changes that). The peko stays set up either way and finishes its first turn
-the next time the daemon starts. A slow model or a failing endpoint is the
+the next time the engine starts. A slow model or a failing endpoint is the
 usual cause, so run `peko model test` first.
 
 ---
@@ -320,4 +320,4 @@ usual cause, so run `peko model test` first.
 | [Tutorial: shaping your first peko](TUTORIAL_FIRST_PEKO.md) | Roles, memory, a reminder, a skill |
 | [User's Guide](../user-guide/USERS_GUIDE.md) | Concepts, configuration, tooling, limits, troubleshooting |
 | [CLI Reference](../user-guide/CLI_REFERENCE.md) | Every command |
-| [Peko workspace](../architecture/PRINCIPAL_WORKSPACE.md) | The workspace layout in detail |
+| Peko workspace | The workspace layout in detail |

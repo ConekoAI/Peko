@@ -69,7 +69,7 @@ pub struct LogCommand {
     pub since: Option<String>,
 
     /// Case-insensitive substring filter on message text. Combines
-    /// with paging: the daemon walks older pages until the page fills
+    /// with paging: the engine walks older pages until the page fills
     /// or the log is exhausted. Ignored with `--watch`.
     #[arg(long, value_name = "TEXT")]
     pub search: Option<String>,
@@ -113,10 +113,10 @@ pub struct LogCommand {
     pub json: bool,
 }
 
-/// Handle the `peko log` command. Without flags: one page (daemon
+/// Handle the `peko log` command. Without flags: one page (engine
 /// default 50). `--limit N` is a hard cap on that single page; `--all`
 /// opts into the multi-page drain (bounded so a runaway caller can't
-/// pin the daemon forever); `--cursor` pages older messages manually.
+/// pin the engine forever); `--cursor` pages older messages manually.
 /// `--watch` streams: replay newer than `--cursor`, then live rows.
 pub async fn handle_log(cmd: LogCommand, _paths: &GlobalPaths, json: bool) -> Result<()> {
     let LogCommand {
@@ -156,7 +156,7 @@ pub async fn handle_log(cmd: LogCommand, _paths: &GlobalPaths, json: bool) -> Re
         }
         let client = DaemonClient::connect()
             .await
-            .context("Daemon is not running. Start it with: peko daemon start")?;
+            .context("Engine is not running. Start it with: peko engine start")?;
         return handle_group_log(
             &client, &slug, limit, since_secs, search, author, cursor, all, watch, use_json,
         )
@@ -165,7 +165,7 @@ pub async fn handle_log(cmd: LogCommand, _paths: &GlobalPaths, json: bool) -> Re
 
     let client = DaemonClient::connect()
         .await
-        .context("Daemon is not running. Start it with: peko daemon start")?;
+        .context("Engine is not running. Start it with: peko engine start")?;
 
     if sent {
         let since = since_secs.map(|secs| {
@@ -236,7 +236,7 @@ pub async fn handle_log(cmd: LogCommand, _paths: &GlobalPaths, json: bool) -> Re
     }
 
     let resolved_peer =
-        resolved_peer.ok_or_else(|| anyhow::anyhow!("peko log: no pages received from daemon"))?;
+        resolved_peer.ok_or_else(|| anyhow::anyhow!("peko log: no pages received from engine"))?;
     // ADR-089 D5: a failed last run is shown beside the conversation, as
     // a status line — it is not one of its messages.
     let failure_line = run_failure.as_ref().map(format_run_failure);
@@ -322,7 +322,7 @@ fn local_minute(rfc3339: &str) -> String {
 /// live rows as they're appended. Human mode reuses
 /// `render_chat_message`; `--json` emits NDJSON (one message object
 /// per line). Heartbeats are ignored; a lagged broadcast surfaces the
-/// daemon's resync error; stream end (daemon shutdown) is a clean
+/// engine's resync error; stream end (engine shutdown) is a clean
 /// exit. Ctrl-C kills the process via the default SIGINT behavior.
 async fn watch_principal_log(
     client: &DaemonClient,
@@ -352,7 +352,7 @@ async fn watch_principal_log(
             }
             Some(_) => {}
             None => {
-                eprintln!("[peko] log watch stream closed (daemon shutdown)");
+                eprintln!("[peko] log watch stream closed (engine shutdown)");
                 return Ok(());
             }
         }
@@ -393,7 +393,7 @@ async fn watch_sent(
             }
             Some(_) => {}
             None => {
-                eprintln!("[peko] stream closed (daemon shutdown)");
+                eprintln!("[peko] stream closed (engine shutdown)");
                 return Ok(());
             }
         }
@@ -415,7 +415,7 @@ fn sent_row_json(
 
 /// `peko log group:<slug>`: read the group channel's log directly via
 /// the `ChannelPeek` IPC. ADR-057: the reader's identity is derived
-/// server-side from the connection — the daemon membership-gates the
+/// server-side from the connection — the engine membership-gates the
 /// read against it (ADR-049 D6, amended).
 ///
 /// Flag mapping onto what ChannelPeek actually supports:
@@ -524,7 +524,7 @@ async fn handle_group_log(
 /// only the newly appended lines instead of re-scanning the whole
 /// log. (The raw `ChannelEventsWatch` stream stays unused here: it
 /// has no heartbeats and would die at the CLI's 60s per-packet idle
-/// timeout on a quiet channel — see ADR-049 Phase 4.) A daemon that
+/// timeout on a quiet channel — see ADR-049 Phase 4.) An engine that
 /// predates `event_ids` (parallel-length mismatch) falls back to the
 /// legacy count-based diff. Ctrl-C exits via default SIGINT.
 async fn watch_group_log(
@@ -559,7 +559,7 @@ async fn watch_group_log(
                 }
                 None => {
                     eprintln!(
-                        "[peko] daemon did not return event ids; falling back to full re-reads"
+                        "[peko] engine did not return event ids; falling back to full re-reads"
                     );
                     legacy_printed = Some(0);
                 }
@@ -589,7 +589,7 @@ fn print_group_row(id: &str, at: &str, author: &str, text: &str, use_json: bool)
 ///
 /// `tail`/`before` select the bounded tail read (newest `tail` rows
 /// older than `before`); `query`/`author` select search mode (the
-/// daemon's backward filtered scan; `tail` caps matches, `before`
+/// engine's backward filtered scan; `tail` caps matches, `before`
 /// anchors the scan); otherwise the request is a forward walk from
 /// `since`.
 #[allow(clippy::too_many_arguments)]

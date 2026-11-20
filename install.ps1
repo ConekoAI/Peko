@@ -1,10 +1,10 @@
 #
 # Peko Installer for Windows - Download from GitHub Releases
 # Usage (PowerShell):
-#   irm https://raw.githubusercontent.com/ConekoAI/peko-runtime/master/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/ConekoAI/Peko/master/install.ps1 | iex
 #
 # With options:
-#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/ConekoAI/peko-runtime/master/install.ps1))) -Version 0.2.0
+#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/ConekoAI/Peko/master/install.ps1))) -Version 0.2.0
 #
 # Or save the file and run: .\install.ps1 -Version 0.2.0 -InstallDir C:\tools\peko
 #
@@ -33,7 +33,7 @@ function Install-Peko {
     # Windows PowerShell 5.1 may default to TLS 1.0, which GitHub refuses.
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
-    $repo = 'ConekoAI/peko-runtime'
+    $repo = 'ConekoAI/Peko'
     if (-not $InstallDir) { $InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\peko\bin' }
     if (-not $BaseUrl) { $BaseUrl = "https://github.com/$repo/releases/download" }
     $BaseUrl = $BaseUrl.TrimEnd('/')
@@ -41,7 +41,7 @@ function Install-Peko {
 
     Write-Host '==================================================='
     Write-Host '  Peko Installer'
-    Write-Host '  github.com/ConekoAI/peko-runtime'
+    Write-Host '  github.com/ConekoAI/Peko'
     Write-Host '==================================================='
     Write-Host ''
 
@@ -99,7 +99,7 @@ function Install-Peko {
         $extracted = Join-Path $tmp 'extracted'
         Expand-Archive -Path $zip -DestinationPath $extracted -Force
 
-        # `peko` starts the daemon from the `peko-daemon` beside it, so both
+        # `peko` starts the engine from the `peko-daemon` beside it, so both
         # must land in the same directory.
         $bins = @('peko.exe', 'peko-daemon.exe')
         foreach ($bin in $bins) {
@@ -129,7 +129,7 @@ function Install-Peko {
     $running = Get-Process peko-daemon -ErrorAction SilentlyContinue |
         Where-Object { $_.Path -and $_.Path.StartsWith($InstallDir, [StringComparison]::OrdinalIgnoreCase) }
     if ($running) {
-        Write-Host 'A daemon from the previous version is still running. Restart it to use the new one:' -ForegroundColor Yellow
+        Write-Host 'An engine from the previous version is still running. Restart it to use the new one:' -ForegroundColor Yellow
         Write-Host '  peko daemon stop; peko daemon start'
     }
 
@@ -151,7 +151,7 @@ function Install-Peko {
     Write-Host '     (<format>: anthropic_messages | openai_completions | openai_responses;'
     Write-Host '      use --no-key for local endpoints - see `peko model add --help`)'
     Write-Host ''
-    Write-Host '  2. Start the daemon:'
+    Write-Host '  2. Start the engine:'
     Write-Host '     peko daemon start'
     Write-Host ''
     Write-Host '  3. Create your first peko and talk to it:'
@@ -169,7 +169,7 @@ function Install-Peko {
         Write-Host ''
     }
     Write-Host 'Documentation:'
-    Write-Host '  https://github.com/ConekoAI/peko-runtime#readme'
+    Write-Host '  https://github.com/ConekoAI/Peko#readme'
     Write-Host ''
 }
 

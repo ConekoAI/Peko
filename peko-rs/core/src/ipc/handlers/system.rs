@@ -135,7 +135,7 @@ impl RequestHandler for SystemHandler {
                     name: "daemon_ready".to_string(),
                     status: if ready { "pass" } else { "fail" }.to_string(),
                     message: if ready {
-                        "Daemon is ready to serve requests".to_string()
+                        "Engine is ready to serve requests".to_string()
                     } else {
                         "Daemon is not ready".to_string()
                     },
@@ -153,7 +153,7 @@ impl RequestHandler for SystemHandler {
                     message: if !degraded {
                         "Daemon is operating normally".to_string()
                     } else {
-                        "Daemon is in degraded mode".to_string()
+                        "Engine is in degraded mode".to_string()
                     },
                     suggestion: if degraded {
                         Some("Check resource usage and consider restarting".to_string())
@@ -166,7 +166,7 @@ impl RequestHandler for SystemHandler {
                 checks.push(DoctorCheck {
                     name: "uptime".to_string(),
                     status: "pass".to_string(),
-                    message: format!("Daemon uptime: {seconds} seconds", seconds = uptime),
+                    message: format!("Engine uptime: {seconds} seconds", seconds = uptime),
                     suggestion: None,
                 });
 

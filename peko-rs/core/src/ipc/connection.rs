@@ -262,7 +262,7 @@ impl ConnectionManager {
                 // or another user's daemon on the shared loopback port.
                 return Self::connect_pipe_with_timeout(name.clone(), ping_timeout)
                     .await
-                    .map_err(|e| anyhow::anyhow!("No daemon on {name}: {e:#}"));
+                    .map_err(|e| anyhow::anyhow!("No engine on {name}: {e:#}"));
             }
         }
 
@@ -293,7 +293,7 @@ impl ConnectionManager {
             return Ok(handle);
         }
 
-        anyhow::bail!("No daemon found")
+        anyhow::bail!("No engine found")
     }
 
     /// Ping a *specific* Unix socket path, rather than whatever

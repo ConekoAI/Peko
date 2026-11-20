@@ -227,7 +227,7 @@ pub async fn handle_config(
 // constants rather than `toml::Value` builders.
 
 const MINIMAL_CONFIG_TEMPLATE: &str = r#"# Peko runtime configuration (runtime.toml)
-# Everything here is optional — the daemon boots with built-in defaults.
+# Everything here is optional — the engine boots with built-in defaults.
 # Models/keys: `peko model add --template <id> --model <wire-id> --key "$KEY"`.
 # Per-peko settings: the peko's own peko.toml.
 

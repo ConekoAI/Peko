@@ -29,14 +29,14 @@ Commands:
   permissions    List permissions on a peko
   invite         Mint a signed invite link for a peko (share with one friend)
   revoke-invite  Revoke a previously minted invite token
-  diff           Show pekos whose `peko.toml` has changed since the daemon last started
+  diff           Show pekos whose `peko.toml` has changed since the engine last started
   send           Send a message to a peko
   stop           Stop what a peko is doing in your conversation
   log            Read your conversation with a peko
   auth           Sign in to PekoHub (`peko auth login`) and see who you are
   credential     Provider API key management (OS keychain backed)
   system         System diagnostics and maintenance
-  daemon         Daemon management (the background process that runs your pekos)
+  engine         Start, stop and check the engine (the background process that runs your pekos)
   channel        Direct messages and group chats with people and pekos
   model          LLM model management (runtime model catalog)
   device         Your account's computers and phones
@@ -60,7 +60,7 @@ Options:
   -V, --version                  Print version
 
 Examples:
-  peko daemon start                          # Start the daemon
+  peko engine start                          # Start the engine
   peko create my-peko                        # Create a new peko
   peko export my-peko -o my-peko.peko        # Export a peko package
   peko send my-peko "Hello"                  # Send message to a peko
@@ -72,7 +72,7 @@ Examples:
 ```text
 Create a new peko and wait until it is ready
 
-Makes the peko's folder, writes its definition (from `--seed`, or defaults), starts the daemon if needed, and waits while the peko sets itself up on its first turn. Pass `--detach` to return right away (for scripts).
+Makes the peko's folder, writes its definition (from `--seed`, or defaults), starts the engine if needed, and waits while the peko sets itself up on its first turn. Pass `--detach` to return right away (for scripts).
 
 To change a peko later, edit its `peko.toml` and `roles/root.md`; edits apply on its next turn.
 
@@ -96,10 +96,10 @@ Options:
           Answer yes to what `create` would ask: the destructive `--force` confirmation, and accepting a seed's `setup` steps. For scripts and CI
 
       --detach
-          Don't wait for the peko's first turn. It still runs, as soon as the daemon gets to it
+          Don't wait for the peko's first turn. It still runs, as soon as the engine gets to it
 
       --wait-timeout <SECS>
-          Stop waiting for the peko's first turn after this many seconds. Without it, `create` waits until the turn is done and shows what the peko is doing; Ctrl-C stops the waiting, not the peko. The peko is created either way, and its first turn goes on in the daemon
+          Stop waiting for the peko's first turn after this many seconds. Without it, `create` waits until the turn is done and shows what the peko is doing; Ctrl-C stops the waiting, not the peko. The peko is created either way, and its first turn goes on in the engine
 ```
 
 ## `peko register`
@@ -246,7 +246,7 @@ Usage: peko permit [OPTIONS] <NAME> <SUBJECT> <PERMISSION>
 Arguments:
   <NAME>        Peko name
   <SUBJECT>     Who gets it: an address such as `user:hub:<account>` or `peko:local:<id>`, or `public` for everyone
-  <PERMISSION>  Permission to grant (e.g. `chat`, `manage_settings`). `trusted` lets the peko use all its tools, including the shell, when it works for this person
+  <PERMISSION>  Permission to grant (e.g. `chat`, `manage_settings`). What they reach through the peko is set in its `ACCESS.toml` (`trusted` is retired)
 
 ```
 
@@ -344,7 +344,7 @@ Arguments:
 
 Options:
       --scope <SCOPE>            Comma-separated permissions to grant via the invite (e.g. `chat`). Defaults to `chat` when omitted
-      --ttl <TTL>                Time-to-live, parsed as a duration string (e.g. `7d`, `24h`, `30m`). Defaults to `7d`. Hard-capped at 30 days by the daemon [default: 7d]
+      --ttl <TTL>                Time-to-live, parsed as a duration string (e.g. `7d`, `24h`, `30m`). Defaults to `7d`. Hard-capped at 30 days by the engine [default: 7d]
 ```
 
 ## `peko revoke-invite`
@@ -363,9 +363,9 @@ Arguments:
 ## `peko diff`
 
 ```text
-Show pekos whose `peko.toml` has changed since the daemon last started
+Show pekos whose `peko.toml` has changed since the engine last started
 
-Compares each file with the copy the daemon fingerprinted when it started, and prints the names of pekos that changed.
+Compares each file with the copy the engine fingerprinted when it started, and prints the names of pekos that changed.
 
 Useful in scripts: peko diff && echo "config drift detected" || true
 
@@ -460,7 +460,7 @@ Options:
           Only messages newer than the duration. Accepts `<N>h`, `<N>d`, `<N>m`, `<N>s` (e.g., `24h`, `7d`, `30m`, `3600s`). Ignored with `--watch`
 
       --search <TEXT>
-          Case-insensitive substring filter on message text. Combines with paging: the daemon walks older pages until the page fills or the log is exhausted. Ignored with `--watch`
+          Case-insensitive substring filter on message text. Combines with paging: the engine walks older pages until the page fills or the log is exhausted. Ignored with `--watch`
 
       --author <AUTHOR>
           Only messages by this author, written exactly as the log shows it (for example `user:local`). Ignored with `--watch`
@@ -662,29 +662,29 @@ Options:
       --all                      Remove everything (full reset)
 ```
 
-## `peko daemon`
+## `peko engine`
 
 ```text
-Daemon management (the background process that runs your pekos)
+Start, stop and check the engine (the background process that runs your pekos)
 
-Usage: peko daemon [OPTIONS] <COMMAND>
+Usage: peko engine [OPTIONS] <COMMAND>
 
 Commands:
-  start    Start the daemon
-  stop     Stop the daemon
-  status   Check daemon status
-  restart  Restart the daemon
+  start    Start the engine
+  stop     Stop the engine
+  status   Check engine status
+  restart  Restart the engine
   check    Trigger immediate cron check
   help     Print this message or the help of the given subcommand(s)
 
 ```
 
-### `peko daemon start`
+### `peko engine start`
 
 ```text
-Start the daemon
+Start the engine
 
-Usage: peko daemon start [OPTIONS]
+Usage: peko engine start [OPTIONS]
 
 Options:
   -f, --foreground
@@ -695,32 +695,32 @@ Options:
           Maximum number of consecutive PekoHub tunnel reconnect attempts before reporting degraded state. With the default backoff (1/2/4/.../60s steps, each randomized to half to all of the step), 50 attempts take roughly 22–45 minutes of retries. Set to a very large value (e.g. 4294967295) to disable the cap and retry forever. See issue #8 [default: 50]
 ```
 
-### `peko daemon stop`
+### `peko engine stop`
 
 ```text
-Stop the daemon
+Stop the engine
 
-Usage: peko daemon stop [OPTIONS]
+Usage: peko engine stop [OPTIONS]
 
 Options:
   -f, --force                    Force stop (kill immediately without graceful shutdown)
 ```
 
-### `peko daemon status`
+### `peko engine status`
 
 ```text
-Check daemon status
+Check engine status
 
-Usage: peko daemon status [OPTIONS]
+Usage: peko engine status [OPTIONS]
 
 ```
 
-### `peko daemon restart`
+### `peko engine restart`
 
 ```text
-Restart the daemon
+Restart the engine
 
-Usage: peko daemon restart [OPTIONS]
+Usage: peko engine restart [OPTIONS]
 
 Options:
   -i, --interval <INTERVAL>
@@ -729,12 +729,12 @@ Options:
           Maximum number of consecutive PekoHub tunnel reconnect attempts before reporting degraded state (passed through to `start`) [default: 50]
 ```
 
-### `peko daemon check`
+### `peko engine check`
 
 ```text
 Trigger immediate cron check
 
-Usage: peko daemon check [OPTIONS]
+Usage: peko engine check [OPTIONS]
 
 ```
 
@@ -1439,7 +1439,7 @@ Arguments:
 ```text
 What your pekos did: the audit log and each peko's tool ledger
 
-peko audit tail [--since 1h] [--peko NAME] [--limit N] [--follow] Read the audit log files (kept across restarts). peko audit list [--peko NAME] Recent events since the daemon started. peko audit ledger NAME / peko audit verify NAME Every tool call a peko made, and a check that none was altered.
+peko audit tail [--since 1h] [--peko NAME] [--limit N] [--follow] Read the audit log files (kept across restarts). peko audit list [--peko NAME] Recent events since the engine started. peko audit ledger NAME / peko audit verify NAME Every tool call a peko made, and a check that none was altered.
 
 Examples: peko audit tail --since 30m peko audit tail --peko alice --limit 20 peko audit list --type tool.call
 
@@ -1449,7 +1449,7 @@ Commands:
   tail    Print audit events from the JSONL file (durable history)
   ledger  Show every tool call a peko made, newest first
   verify  Check that a peko's tool-call record is complete and unaltered
-  list    Summarize recent events since the daemon started
+  list    Summarize recent events since the engine started
   help    Print this message or the help of the given subcommand(s)
 
 ```
@@ -1505,7 +1505,7 @@ Arguments:
 ### `peko audit list`
 
 ```text
-Summarize recent events since the daemon started
+Summarize recent events since the engine started
 
 Usage: peko audit list [OPTIONS]
 

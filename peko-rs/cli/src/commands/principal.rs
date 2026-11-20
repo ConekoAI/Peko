@@ -29,7 +29,7 @@ pub enum PrincipalCommands {
     /// Create a new peko and wait until it is ready
     ///
     /// Makes the peko's folder, writes its definition (from `--seed`, or
-    /// defaults), starts the daemon if needed, and waits while the peko
+    /// defaults), starts the engine if needed, and waits while the peko
     /// sets itself up on its first turn. Pass `--detach` to return right
     /// away (for scripts).
     ///
@@ -86,7 +86,7 @@ pub enum PrincipalCommands {
         yes: bool,
 
         /// Don't wait for the peko's first turn. It still runs, as soon
-        /// as the daemon gets to it.
+        /// as the engine gets to it.
         #[arg(long)]
         detach: bool,
 
@@ -94,7 +94,7 @@ pub enum PrincipalCommands {
         /// seconds. Without it, `create` waits until the turn is done
         /// and shows what the peko is doing; Ctrl-C stops the waiting,
         /// not the peko. The peko is created either way, and its first
-        /// turn goes on in the daemon.
+        /// turn goes on in the engine.
         #[arg(long, value_name = "SECS")]
         wait_timeout: Option<u64>,
     },
@@ -289,7 +289,7 @@ pub enum PrincipalCommands {
 
         /// Time-to-live, parsed as a duration string (e.g. `7d`, `24h`,
         /// `30m`). Defaults to `7d`. Hard-capped at 30 days by the
-        /// daemon.
+        /// engine.
         #[arg(long, value_name = "TTL", default_value = "7d")]
         ttl: String,
     },
@@ -303,10 +303,10 @@ pub enum PrincipalCommands {
         jti: String,
     },
 
-    /// Show pekos whose `peko.toml` has changed since the daemon
+    /// Show pekos whose `peko.toml` has changed since the engine
     /// last started
     ///
-    /// Compares each file with the copy the daemon fingerprinted when
+    /// Compares each file with the copy the engine fingerprinted when
     /// it started, and prints the names of pekos that changed.
     ///
     /// Useful in scripts:
@@ -417,7 +417,7 @@ pub async fn handle_principal(
 }
 
 /// ADR-046: `peko diff` — show principals whose
-/// `peko.toml` has drifted since the last daemon boot.
+/// `peko.toml` has drifted since the last engine boot.
 ///
 /// Reads the baseline at `<data_dir>/runtime/principal-hashes.json`,
 /// walks the principals dir, SHA-256s each `peko.toml`, and
@@ -425,7 +425,7 @@ pub async fn handle_principal(
 /// drift" rather than a flood of false positives.
 ///
 /// v1 limitation: line-level TOML diff is a follow-up. This is the
-/// "something changed" canary — the daemon emits the Security
+/// "something changed" canary — the engine emits the Security
 /// audit event at startup; this command reads the same baseline
 /// to let the user investigate at the CLI without grepping JSONL.
 async fn show_principal_drift(name: Option<&str>, paths: &GlobalPaths, json: bool) -> Result<()> {
@@ -555,7 +555,7 @@ async fn show_principal_drift(name: Option<&str>, paths: &GlobalPaths, json: boo
 
     if drifted.is_empty() {
         if baseline.is_empty() {
-            println!("✅ No drift baseline yet — run the daemon once to capture current hashes.");
+            println!("✅ No drift baseline yet — run the engine once to capture current hashes.");
         } else {
             println!("✅ No peko config drift detected.");
         }
@@ -581,12 +581,12 @@ async fn show_principal_drift(name: Option<&str>, paths: &GlobalPaths, json: boo
             }
         }
     }
-    println!("\nRun `peko audit tail --since 1d` for the daemon's startup-time drift event(s).");
+    println!("\nRun `peko audit tail --since 1d` for the engine's startup-time drift event(s).");
 
     Ok(())
 }
 
-/// The `peko.toml` hash per peko from the daemon's drift baseline: each
+/// The `peko.toml` hash per peko from the engine's drift baseline: each
 /// entry is `{"principal": "<sha256>", ...}`, or a bare hash in the older
 /// shape. Entries of any other shape are skipped.
 fn definition_hashes(
@@ -674,7 +674,7 @@ async fn setup_principal(name: &str, status_only: bool, paths: &GlobalPaths) -> 
                 anyhow::bail!(error.unwrap_or_else(|| "setup could not be started".into()))
             }
             ResponsePacket::Error { message, .. } => anyhow::bail!(message),
-            other => anyhow::bail!("unexpected daemon response: {other:?}"),
+            other => anyhow::bail!("unexpected engine response: {other:?}"),
         }
     }
     let results = watch_setup(name, paths, &client, !status_only, None).await?;
@@ -713,7 +713,7 @@ async fn watch_setup(
                 ..
             } => (setup_state, results),
             ResponsePacket::Error { message, .. } => anyhow::bail!(message),
-            other => anyhow::bail!("unexpected daemon response: {other:?}"),
+            other => anyhow::bail!("unexpected engine response: {other:?}"),
         };
         if follow {
             for line in shown.new_steps(&ledger_dir) {
@@ -726,7 +726,7 @@ async fn watch_setup(
         if deadline.is_some_and(|deadline| std::time::Instant::now() > deadline) {
             anyhow::bail!(
                 "'{name}' has not finished its setup steps in the time given. It goes on \
-                 in the daemon. See how it stands: peko setup {name} --status. Stop it: \
+                 in the engine. See how it stands: peko setup {name} --status. Stop it: \
                  peko stop {name} --main"
             );
         }
@@ -735,9 +735,9 @@ async fn watch_setup(
 }
 
 /// `peko create` (ADR-054, ADR-105): decide what to create, have the
-/// daemon create it, and (unless `--detach`) wait for its first turn.
+/// engine create it, and (unless `--detach`) wait for its first turn.
 ///
-/// The daemon is the only thing that creates a peko. This command reads
+/// The engine is the only thing that creates a peko. This command reads
 /// the seed, gets the setup steps accepted, picks the model, and asks.
 #[allow(clippy::too_many_arguments)]
 async fn create_principal(
@@ -757,7 +757,7 @@ async fn create_principal(
     ensure_daemon(paths).await?;
     let client = DaemonClient::connect()
         .await
-        .context("the daemon is running but its IPC socket would not connect")?;
+        .context("the engine is running but its IPC socket would not connect")?;
 
     if plan.replace {
         match client.principal_remove(name).await? {
@@ -788,7 +788,7 @@ async fn create_principal(
         peko_core::ipc::ResponsePacket::Error { message, .. } => {
             anyhow::bail!("could not create peko '{name}': {message}")
         }
-        other => anyhow::bail!("unexpected daemon response to create: {other:?}"),
+        other => anyhow::bail!("unexpected engine response to create: {other:?}"),
     }
     wait_for_first_turn(name, paths, detach, wait_timeout).await
 }
@@ -797,14 +797,14 @@ async fn create_principal(
 /// path. Leaves room in the request for JSON escaping.
 const INLINE_SEED_MAX_BYTES: usize = 32 * 1024;
 
-/// What `peko create` asks the daemon for.
+/// What `peko create` asks the engine for.
 #[derive(Debug)]
 struct CreatePlan {
     model_id: String,
-    /// The seed's text, as the daemon parses it.
+    /// The seed's text, as the engine parses it.
     seed: Option<String>,
     /// The seed file, absolute, when its text is too large to send: the
-    /// daemon reads it instead.
+    /// engine reads it instead.
     seed_file: Option<String>,
     /// The seed lists setup steps and they were accepted (ADR-104 D3).
     accept_setup: bool,
@@ -812,7 +812,7 @@ struct CreatePlan {
     replace: bool,
 }
 
-/// Everything `create` decides before the daemon is involved: the
+/// Everything `create` decides before the engine is involved: the
 /// overwrite guard, the seed and the acceptance of its setup steps, and
 /// the model. Writes nothing. `None` means the person said no at a
 /// prompt.
@@ -935,20 +935,20 @@ async fn plan_create(
     }))
 }
 
-/// Make sure a daemon is running: it is what creates the peko and runs
+/// Make sure an engine is running: it is what creates the peko and runs
 /// its first turn.
 async fn ensure_daemon(paths: &GlobalPaths) -> Result<()> {
     let service = peko_core::common::services::DaemonProcessService::new(paths.resolver().clone());
     if service.is_daemon_running().await.unwrap_or(false) {
         return Ok(());
     }
-    println!("Starting the daemon…");
+    println!("Starting the engine…");
     // Same defaults as `peko daemon start` (interval 5s, 50 reconnect
     // attempts — see the Start command).
     service
         .spawn_daemon_with(5, 50, false)
         .await
-        .context("failed to spawn the daemon sidecar")?;
+        .context("failed to spawn the engine sidecar")?;
     // The IPC socket binds only after the boot scan.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
@@ -960,7 +960,7 @@ async fn ensure_daemon(paths: &GlobalPaths) -> Result<()> {
             return Ok(());
         }
         if std::time::Instant::now() > deadline {
-            anyhow::bail!("daemon did not become ready within 30s");
+            anyhow::bail!("engine did not become ready within 30s");
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
@@ -1010,7 +1010,7 @@ async fn wait_for_first_turn(
         if deadline.is_some_and(|deadline| std::time::Instant::now() > deadline) {
             anyhow::bail!(
                 "'{name}' did not finish setting up within {}s. The peko is created \
-                 and its first turn goes on in the daemon. Watch it: \
+                 and its first turn goes on in the engine. Watch it: \
                  peko audit ledger {name} --follow. Stop it: peko stop {name} --main",
                 wait_timeout.unwrap_or_default()
             );
@@ -1072,7 +1072,7 @@ fn genesis_completed(scheduler: &peko_cron::CronScheduler) -> Result<bool> {
         return Ok(true);
     }
     anyhow::bail!(
-        "the peko's first turn failed ({}): {}. Check the daemon log; restart the daemon \
+        "the peko's first turn failed ({}): {}. Check the engine log; restart the engine \
          to try again",
         run.status,
         run.error
@@ -1355,8 +1355,8 @@ async fn remove_principal(name: &str, yes: bool, paths: &GlobalPaths, json: bool
 }
 
 /// Resolve a path the user typed against the CLI's working directory.
-/// The daemon runs in its own directory, so a relative path sent as-is
-/// would land wherever the daemon happened to be started.
+/// The engine runs in its own directory, so a relative path sent as-is
+/// would land wherever the engine happened to be started.
 fn absolute_from_cwd(path: &str) -> Result<String> {
     let path = std::path::Path::new(path);
     let absolute = if path.is_absolute() {
@@ -1385,12 +1385,12 @@ async fn export_principal(name: &str, output: Option<String>) -> Result<()> {
             anyhow::bail!("Failed to export peko: {message}");
         }
         other => {
-            anyhow::bail!("Unexpected response from daemon: {other:?}");
+            anyhow::bail!("Unexpected response from engine: {other:?}");
         }
     }
 }
 
-/// `peko seed` — reads the peko's `peko.toml` directly; the daemon
+/// `peko seed` — reads the peko's `peko.toml` directly; the engine
 /// need not be running.
 fn export_seed(
     name: &str,
@@ -1487,7 +1487,7 @@ async fn import_principal(
             anyhow::bail!("Failed to import peko: {message}");
         }
         other => {
-            anyhow::bail!("Unexpected response from daemon: {other:?}");
+            anyhow::bail!("Unexpected response from engine: {other:?}");
         }
     }
 }
@@ -1538,7 +1538,7 @@ fn decode_preview_response(
             anyhow::bail!("Failed to preview peko {operation}: {message}");
         }
         other => {
-            anyhow::bail!("Unexpected response from daemon: {other:?}");
+            anyhow::bail!("Unexpected response from engine: {other:?}");
         }
     }
 }
@@ -1632,7 +1632,7 @@ async fn transfer_principal(name: &str, owner: &str) -> Result<()> {
             Ok(())
         }
         ResponsePacket::Error { message, .. } => anyhow::bail!("Transfer failed: {message}"),
-        other => anyhow::bail!("Unexpected response from daemon: {other:?}"),
+        other => anyhow::bail!("Unexpected response from engine: {other:?}"),
     }
 }
 
@@ -1684,7 +1684,7 @@ async fn list_approvals(name: &str, json: bool) -> Result<()> {
             Ok(())
         }
         ResponsePacket::Error { message, .. } => anyhow::bail!("{message}"),
-        other => anyhow::bail!("Unexpected response from daemon: {other:?}"),
+        other => anyhow::bail!("Unexpected response from engine: {other:?}"),
     }
 }
 
@@ -1715,7 +1715,7 @@ async fn decide_approval(
             Ok(())
         }
         ResponsePacket::Error { message, .. } => anyhow::bail!("{message}"),
-        other => anyhow::bail!("Unexpected response from daemon: {other:?}"),
+        other => anyhow::bail!("Unexpected response from engine: {other:?}"),
     }
 }
 
@@ -1747,7 +1747,7 @@ async fn grant_permission(name: &str, subject_str: &str, permission_str: &str) -
             anyhow::bail!("Failed to grant permission: {message}");
         }
         other => {
-            anyhow::bail!("Unexpected response from daemon: {other:?}");
+            anyhow::bail!("Unexpected response from engine: {other:?}");
         }
     }
 }
@@ -1780,7 +1780,7 @@ async fn revoke_permission(name: &str, subject_str: &str, permission_str: &str) 
             anyhow::bail!("Failed to revoke permission: {message}");
         }
         other => {
-            anyhow::bail!("Unexpected response from daemon: {other:?}");
+            anyhow::bail!("Unexpected response from engine: {other:?}");
         }
     }
 }
@@ -1811,7 +1811,7 @@ async fn list_permissions(name: &str) -> Result<()> {
             anyhow::bail!("Failed to list permissions: {message}");
         }
         other => {
-            anyhow::bail!("Unexpected response from daemon: {other:?}");
+            anyhow::bail!("Unexpected response from engine: {other:?}");
         }
     }
 }
@@ -1904,7 +1904,7 @@ async fn mint_invite(name: &str, scope: Vec<String>, ttl: &str) -> Result<()> {
             anyhow::bail!("Failed to mint invite: {message}");
         }
         other => {
-            anyhow::bail!("Unexpected response from daemon: {other:?}");
+            anyhow::bail!("Unexpected response from engine: {other:?}");
         }
     }
 }
@@ -1928,7 +1928,7 @@ async fn revoke_invite(name: &str, jti: &str) -> Result<()> {
             anyhow::bail!("Failed to revoke invite: {message}");
         }
         other => {
-            anyhow::bail!("Unexpected response from daemon: {other:?}");
+            anyhow::bail!("Unexpected response from engine: {other:?}");
         }
     }
 }
@@ -2023,8 +2023,8 @@ mod tests {
     use crate::commands::{from_cli, Cli, Commands};
     use clap::Parser;
 
-    /// Export and import paths reach the daemon absolute, so a relative
-    /// path means the user's directory, not the daemon's.
+    /// Export and import paths reach the engine absolute, so a relative
+    /// path means the user's directory, not the engine's.
     #[test]
     fn typed_paths_resolve_against_the_cli_working_directory() {
         let cwd = std::env::current_dir().unwrap();

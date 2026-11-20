@@ -1,143 +1,33 @@
-# Peko Documentation
+# Peko documentation
 
-**Last Updated:** 2026-08-25
-**Version:** 0.1.0
+## Start here
 
-Complete documentation for the Peko multi-agent runtime.
+- [Getting Started](getting-started/GETTING_STARTED.md): install Peko and talk to your first peko
+- [Tutorial: shaping your first peko](getting-started/TUTORIAL_FIRST_PEKO.md): persona, memory, a reminder, a skill, a backup
+- [Run a peko on a server](getting-started/RUN_ON_A_SERVER.md): the engine in a Docker container, for a peko other people reach
 
----
+## Using Peko
 
-## Quick Navigation
+- [User's Guide](user-guide/USERS_GUIDE.md): how pekos work, configuration, sharing, limits, troubleshooting
+- [CLI Reference](user-guide/CLI_REFERENCE.md): every `peko` command and flag, generated from `--help`
 
-### 🚀 Getting Started
+## Giving a peko tools
 
-- **[Getting Started Guide](getting-started/GETTING_STARTED.md)** — Install Peko and talk to your first peko
-- **[Tutorial: shaping your first peko](getting-started/TUTORIAL_FIRST_PEKO.md)** — Persona, memory, a reminder, a skill, backup
-- **[Run a peko on a server](getting-started/RUN_ON_A_SERVER.md)** — The runtime in a Docker container, for a peko other people reach
+- [MCP](mcp/MCP.md): connect outside tools
+- [MCP quick start](mcp/QUICK_START.md): examples for a local script, an API token, and OAuth
+- [Reserved parameters](mcp/RESERVED_PARAMETERS.md): values the engine fills in for an MCP server
+- [Skills](reference/SKILLS.md): the `SKILL.md` format and how a peko loads one
+- [Built-in tools](reference/BUILTIN_TOOLS.md): what each tool does and takes
 
-### 📚 User Guides
+## How it works
 
-- **[User's Guide](user-guide/USERS_GUIDE.md)** — Concepts, configuration, tooling, limits, troubleshooting
-- **[CLI Reference](user-guide/CLI_REFERENCE.md)** — Every `peko` command and flag, generated from `--help`
+- [How Peko works](HOW_IT_WORKS.md): what runs on your computer, a turn step by step, and a map of the code
+- [Security model](SECURITY_MODEL.md): what Peko protects, how, and where that stops
 
-### 🏗️ Architecture
+## For contributors
 
-- **[MVP Launch Gate](MVP_GATE.md)** — Draft: the verifiable checklist that flips the project out of "pre-launch"
-- **[Principal Workspace](architecture/PRINCIPAL_WORKSPACE.md)** — Per-principal tooling, layout, plugin packaging (ADR-047)
-- **[Prompt Model](architecture/PROMPT_MODEL.md)** — How every prompt is assembled: tiers, frozen prefix, `<runtime-context>` tail sections, placeholder contract (ADR-050/052/055/064)
-- **[Skills](architecture/SKILLS.md)** — Skills as workspace files: SKILL.md format, per-turn catalog, invocation, authoring
-- **[Agent–Session Paradigm](architecture/AGENT_SESSION_PARADIGM.md)** — Target mental model: agent = session, principal as session tree, channels, cron heartbeat
-- **[Architecture Decision Records](architecture/adr/)** — ADR-001 through ADR-075
-- **[Public API Surface](../API_SURFACE.md)** — Rust public API contracts
-- **[Data Model](../DATA_MODEL.md)** — On-disk and in-memory data formats
-- **[Changelog](../CHANGELOG.md)** — Version history
-- **[Agent Guide](../AGENTS.md)** — Build instructions, code style, CI tiers
-- **[CI Tests](testing/CI.md)** — Native/mock tiers, suite selection and fixtures
-
-### 🔌 MCP
-
-- **[Principal-owned MCP design](architecture/adr/ADR-075-principal-owned-mcp-runtime.md)** — Implemented: Codex source study, principal ownership, startup, refresh, credentials, and consistent calls
-- **[MCP Overview](mcp/MCP.md)** — Model Context Protocol integration
-- **[MCP Quick Start](mcp/QUICK_START.md)** — Configure a principal-owned MCP server
-- **[MCP Migration Guide](mcp/MIGRATION_GUIDE.md)** — Moving tools to MCP
-- **[Reserved Parameters Guide](mcp/mcp_reserved_params_guide.md)** — Runtime context injection
-- **[Reserved Parameters Proposal](mcp/mcp_reserved_params_proposal.md)** — Design proposal
-
----
-
-## Repository Layout (docs only)
-
-```
-docs/
-├── README.md                        # This file
-├── MVP_GATE.md                      # Draft: MVP launch gate checklist
-├── getting-started/
-│   ├── GETTING_STARTED.md
-│   └── TUTORIAL_FIRST_PEKO.md
-├── user-guide/
-│   ├── USERS_GUIDE.md
-│   └── CLI_REFERENCE.md
-├── architecture/
-│   ├── AGENT_SESSION_PARADIGM.md
-│   ├── CAPABILITY_BASED_EXTENSIONS.md
-│   ├── PRINCIPAL_WORKSPACE.md      # ADR-047 — replaces EXTENSION_SYSTEM.md
-│   ├── SKILLS.md                   # skills as workspace files (SKILL.md format + catalog)
-│   ├── builtin-tools.md
-│   └── adr/                         # ADR-001 through ADR-075
-└── mcp/
-    ├── MCP.md
-    ├── QUICK_START.md
-    ├── MIGRATION_GUIDE.md
-    ├── mcp_reserved_params_guide.md
-    └── mcp_reserved_params_proposal.md
-```
-
-For top-level project docs, see [`../README.md`](../README.md).
-
----
-
-## ADR Index
-
-| Range | Topic |
-|-------|-------|
-| [ADR-001](../) — ADR-015 | Early architecture (JSONL sessions, did, providers, tools) |
-| [ADR-016](architecture/adr/ADR-016.md) | Unified session resolution + async completion *(Accepted — implemented in 0.1.0; superseded by ADR-039/041/042)* |
-| [ADR-017](architecture/adr/ADR-017.md) | Unified Extension Architecture |
-| [ADR-018a](architecture/adr/ADR-018a-tool-execution-unification.md) / [018b](architecture/adr/ADR-018b-unified-tool-registry.md) / [018c](architecture/adr/ADR-018c-tool-naming-cleanup.md) | Tool execution unification |
-| [ADR-019](architecture/adr/ADR-019-dynamic-tool-and-prompt-updates.md) | Dynamic tool / prompt updates |
-| [ADR-020](architecture/adr/ADR-020-daemon-based-async-execution.md) | Daemon-based async execution |
-| [ADR-021](architecture/adr/ADR-021-daemon-as-central-runtime.md) | Daemon as central runtime |
-| [ADR-022](architecture/adr/ADR-022-session-compaction.md) | Session compaction |
-| [ADR-023](architecture/adr/ADR-023-minimal-a2a-messaging.md) | Minimal A2A messaging |
-| [ADR-024](architecture/adr/ADR-024-unified-extension-manifest.md) | Unified extension manifest |
-| [ADR-025](architecture/adr/ADR-025-gateway-extension.md) | Gateway extension |
-| [ADR-026](architecture/adr/ADR-026-extension-lifecycle-separation.md) | Extension lifecycle separation |
-| [ADR-027](architecture/adr/ADR-027-unified-packaging.md) | Unified packaging (superseded by `.principal` packages — ADR-041) |
-| [ADR-028](architecture/adr/ADR-028-top-level-config-cli.md) | Top-level config CLI |
-| [ADR-029](architecture/adr/ADR-029-cli-registry-defaults.md) | CLI registry defaults |
-| [ADR-030](architecture/adr/ADR-030-hybrid-ipc-migration-path.md) | Hybrid IPC migration path |
-| [ADR-031](architecture/adr/ADR-031-agent-team-membership.md) | Agent/team membership (superseded — ADR-039/041) |
-| [ADR-032](architecture/adr/ADR-032-runtime-identity-and-multi-host-awareness.md) | Runtime identity & multi-host awareness |
-| [ADR-033](architecture/adr/ADR-033-ownership-and-permission-model.md) | Ownership & permission model |
-| [ADR-034](architecture/adr/ADR-034-runtime-authentication-and-authorization.md) | Runtime auth/authz |
-| [ADR-035](architecture/adr/ADR-035-runtime-pekohub-tunnel-protocol.md) | Runtime ↔ Pekohub tunnel protocol |
-| [ADR-036](architecture/adr/ADR-036-extension-developer-experience.md) | `peko ext init` and semantic validation |
-| [ADR-037](architecture/adr/ADR-037-agent-extension-bundling-and-layer-rationalization.md) | Agent-extension bundling |
-| [ADR-038](architecture/adr/ADR-038-named-pipes-on-windows.md) | Windows named-pipe transport |
-| [ADR-039](architecture/adr/ADR-039-principal-model.md) | Principal model (User/Agent/Team/Public) |
-| [ADR-040](architecture/adr/ADR-040-tool-timeout-and-async-refactor.md) | Tool timeout & async refactor |
-| [ADR-041](architecture/adr/ADR-041-principal-as-container.md) | Principal-as-container and session blackboxing |
-| [ADR-042](architecture/adr/ADR-042-no-external-session-concept.md) | No external `session` concept in the CLI/IPC surface (`peko log` is the only read path) |
-| [ADR-047](architecture/adr/ADR-047-principal-workspace-as-tooling-trust-boundary.md) | Principal workspace as the tooling trust boundary — supersedes the extension framework (ADR-017/024/026/036) |
-| [ADR-048](architecture/adr/ADR-048-channel-native-cli-surface.md) | Channel-native CLI surface: merged `send`, `stop` (replaces `interrupt`), `log --watch`; `PrincipalSendControl` removed |
-| [ADR-049](architecture/adr/ADR-049-multi-party-group-channels.md) | Multi-party group channels: users + principals as members, `Subject`-typed membership/authorship, user write path, loop-safe wake policy |
-| [ADR-050](architecture/adr/ADR-050-capabilities-as-workspace-files.md) | Capabilities as workspace files: extension-management CLI + persona IPC retired; per-turn workspace agents/skills catalog in the system prompt; presence = visibility |
-| [ADR-051](architecture/adr/ADR-051-compaction-pages-as-addressable-archive.md) | Compaction pages as an addressable archive: logical page chain over compaction boundary events, agent retrieval via read/search tools, page catalog in the summary message |
-| [ADR-058](architecture/adr/ADR-058-origin-signed-messaging.md) | Origin-signed messaging: per-principal keys, author-signed envelopes (JWS), proof-of-possession registration, typed bridge claims, local peer credentials |
-| [ADR-062](architecture/adr/ADR-062-retire-universal-tools.md) | Universal tools retired: stdio protocol + `<workspace>/tools/` scanner deleted; migration to MCP or `Workflow` (ADR-061) |
-| [ADR-063](architecture/adr/ADR-063-async-task-delivery-consolidation.md) | Async task delivery consolidation |
-| [ADR-064](architecture/adr/ADR-064-agents-to-roles-terminology.md) | `agents/` → `roles/` terminology unification: agent = live session actor, role = the initiating template; `role_catalog`, `role` param, `role:*` capabilities, packaging layer rename |
-| [ADR-069](architecture/adr/ADR-069-builtin-tool-installation-lifetimes.md) | Explicit built-in installation phases, private run bindings, and principal-owned async services |
-| [ADR-070](architecture/adr/ADR-070-exact-unfiltered-tool-contracts.md) | Exact tool names, unfiltered availability, and retired compatibility wrappers |
-| [ADR-075](architecture/adr/ADR-075-principal-owned-mcp-runtime.md) | Principal-owned MCP runtime: Codex source study, shared principal connections, scoped credentials/quota, workspace refresh, and consistent catalog bindings |
-| [ADR-072](architecture/adr/ADR-072-human-started-runs-and-durable-delivery.md) | Only humans and cron start runs; groups wake on `@<name>`; ChannelRead watch + unread summary; durable cross-runtime delivery |
-| [ADR-074](architecture/adr/ADR-074-per-principal-contact-discovery.md) | Per-principal contact discovery: caller-scoped lists, durable learned contacts, and validated directory results |
-| [ADR-068](architecture/adr/ADR-068-api-format-model-configuration.md) | Explicit endpoint/model configuration; vendor presets retired |
-| [ADR-066](architecture/adr/ADR-066-pure-workspace-tooling.md) | Pure workspace tooling: extension framework, capability gate, and registry client retired; principal gets all tools under trust-and-audit; packaging = runtime-local tar snapshot |
-| [ADR-080](architecture/adr/ADR-080-daily-memory-maintenance.md) | Daily memory maintenance: a `memory` job seeded once per principal turns each day's sessions into its `kb/`, reflects on how it worked into cold `kb/dreams/`, promotes lessons into `CONVENTIONS.md` only with owner sources, and waits for a quiet stretch (`when: quiet`) |
-| [ADR-081](architecture/adr/ADR-081-actor-identity-ownership-and-single-online-copy.md) | Actor identity: immutable keys with runtime-qualified local and Hub routes, one owner, principal-owned contacts surviving snapshots, one online copy per principal |
-| [ADR-082](architecture/adr/ADR-082-explicit-channel-bindings-and-principal-group-management.md) | Explicit channel kind, runtime-written bindings with a per-binding wake policy; a `Channel` tool lets principals create, invite, leave, mute, and inspect groups under owner-only authority |
-| [ADR-083](architecture/adr/ADR-083-quiet-ticks.md) | Cron message jobs can wait for attention (`when: attention`): a due fire with nothing waiting is a quiet tick with no model call, at most an hour apart; the seeded keepalive waits for attention |
-| [ADR-084](architecture/adr/ADR-084-goals-as-plans-and-check-ins.md) | Plan steps carry `checkAt`: snoozed until then, a due check-in wakes the attention-gated heartbeat once; goals are kept as plans by the genesis and nightly briefs |
-| [ADR-085](architecture/adr/ADR-085-memory-claims-reviewed-against-their-sources.md) | A reviewer model checks each sourced hot-memory or conventions line against excerpts of its sources before a scheduled run writes it (fail closed); `ToolLog` `turns` gives per-turn evidence from the ledger |
-| [ADR-093](architecture/adr/ADR-093-suggested-replies.md) | A peko may offer 2–4 suggested replies on a post (`ChannelSend.options`, `Suggest` for its reply); a tap is just the person's message; owner decisions stay runtime-created and separate |
-| [ADR-094](architecture/adr/ADR-094-attachments-cross-runtimes.md) | Attachments cross runtimes: posts name files by SHA-256, the receiver pulls 256 KiB chunks through PekoHub and checks the digest; 10 MB a file, 25 MB a message; the Hub relays within byte caps and stores nothing |
-| [ADR-095](architecture/adr/ADR-095-symmetric-dms-that-follow-devices-and-moves.md) | Proposed: a DM has no host; every runtime in it keeps the whole conversation and serves it to the other member; snapshots carry DM logs so a moved peko keeps its DMs; a new device lists its account's DMs from the person's other runtimes; people DM people with message requests and blocking |
-
----
-
-## Contributing to Documentation
-
-- Keep user-facing docs aligned with the actual `peko` CLI — run `peko <cmd> --help` and copy-paste real output.
-- ADR numbers are permanent; once an ADR is merged its file name and number do not change. If a later ADR supersedes it, link forward in the new ADR rather than renaming.
-- When you delete or rename code, search the docs for the old name in the same commit and update them.
+- [Contributing](../CONTRIBUTING.md): build, test, and send a change
+- [CI tests](development/CI.md): the test tiers and what each needs
+- [On-disk formats](reference/DATA_MODEL.md): files, logs and wire shapes
+- [Rust API](reference/API_SURFACE.md): the crates' public surface
+- [Changelog](../CHANGELOG.md)

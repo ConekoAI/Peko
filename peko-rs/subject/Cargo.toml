@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["Peko <peko@coneko.ai>"]
 description = "Canonical actor type and identifier newtypes (ADR-041) — pure value layer"
 license = "MIT"
-repository = "https://github.com/ConekoAI/peko-runtime"
+repository = "https://github.com/ConekoAI/Peko"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }

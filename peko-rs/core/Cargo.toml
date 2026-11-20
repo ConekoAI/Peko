@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["Peko <peko@coneko.ai>"]
 description = "Lightweight multi-agent runtime with optional Coneko network"
 license = "MIT"
-repository = "https://github.com/ConekoAI/peko-runtime"
+repository = "https://github.com/ConekoAI/Peko"
 
 # Phase 0.Z-A: lib name diverged from `package.name` so the workspace
 # root lib matches the codex convention `peko_core` (mirrors

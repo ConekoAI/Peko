@@ -1,7 +1,7 @@
 # Tutorial: shaping your first peko
 
 This tutorial picks up where [Getting Started](GETTING_STARTED.md) ends. You
-have Peko installed, a model added, the daemon running and a peko called
+have Peko installed, a model added, the engine running and a peko called
 `my-peko`. In about fifteen minutes you will:
 
 1. [Give it a persona](#1-give-it-a-persona)
@@ -120,7 +120,7 @@ peko log my-peko --limit 3
 — Mochi
 ```
 
-The daemon must be running for a reminder to fire. Peko does not send
+The engine must be running for a reminder to fire. Peko does not send
 notifications outside the conversation yet.
 
 ---
@@ -156,7 +156,7 @@ green tea warms my quiet hands,
 morning slows to rest.
 ```
 
-See [Skills](../architecture/SKILLS.md) for the file format.
+See [Skills](../reference/SKILLS.md) for the file format.
 
 ---
 
@@ -175,7 +175,7 @@ Exported peko 'my-peko' to /home/sam/my-peko.peko
 
 The package is written to the directory you run the command from (`-o`
 picks another path). On another machine with Peko installed, a model added
-under the same id, and the daemon running, import it:
+under the same id, and the engine running, import it:
 
 ```bash
 peko import my-peko.peko
@@ -208,4 +208,4 @@ is refused.
 - [User's Guide](../user-guide/USERS_GUIDE.md): roles, memory, MCP servers,
   scheduling, sharing with other people, and limits
 - [CLI Reference](../user-guide/CLI_REFERENCE.md): every command
-- [Built-in tools](../architecture/builtin-tools.md): what your peko can do
+- [Built-in tools](../reference/BUILTIN_TOOLS.md): what your peko can do

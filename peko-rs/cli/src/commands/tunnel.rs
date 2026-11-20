@@ -41,7 +41,7 @@ pub async fn handle_tunnel(
                     }
                     Ok(other) => {
                         println!(
-                            "⚠️  Unexpected response from daemon: {}",
+                            "⚠️  Unexpected response from engine: {}",
                             other.variant_name()
                         );
                     }
@@ -50,7 +50,7 @@ pub async fn handle_tunnel(
                     }
                 },
                 Err(_) => {
-                    println!("🛑 No daemon running. Tunnel is not active.");
+                    println!("🛑 No engine running. Tunnel is not active.");
                 }
             }
             Ok(())
@@ -90,9 +90,9 @@ pub async fn handle_tunnel(
                                 println!("  Credential: ❌ Not found at {}", cred_path.display());
                             }
                             if daemon_running {
-                                println!("  Daemon:     ✅ Running");
+                                println!("  Engine:     ✅ Running");
                             } else {
-                                println!("  Daemon:     ❌ Not running");
+                                println!("  Engine:     ❌ Not running");
                             }
                             if connected {
                                 println!("  Tunnel:     ✅ Connected");
@@ -109,7 +109,7 @@ pub async fn handle_tunnel(
                                 }
                             }
                             println!();
-                            println!("  Start with: peko daemon start  (auto-starts tunnel if cred exists)");
+                            println!("  Start with: peko engine start  (auto-starts tunnel if cred exists)");
                         }
                     }
                     Ok(other) => {
@@ -124,8 +124,8 @@ pub async fn handle_tunnel(
                             println!("{}", serde_json::to_string_pretty(&output)?);
                         } else {
                             println!("📡 Tunnel Status:");
-                            println!("  Daemon:     ✅ Running");
-                            println!("  Warning:    Unexpected response from daemon");
+                            println!("  Engine:     ✅ Running");
+                            println!("  Warning:    Unexpected response from engine");
                         }
                     }
                     Err(e) => {
@@ -140,7 +140,7 @@ pub async fn handle_tunnel(
                             println!("{}", serde_json::to_string_pretty(&output)?);
                         } else {
                             println!("📡 Tunnel Status:");
-                            println!("  Daemon:     ✅ Running");
+                            println!("  Engine:     ✅ Running");
                             println!("  Error:      Failed to get status: {}", e);
                         }
                     }
@@ -161,11 +161,11 @@ pub async fn handle_tunnel(
                         } else {
                             println!("  Credential: ❌ Not found at {}", cred_path.display());
                         }
-                        println!("  Daemon:     ❌ Not running");
+                        println!("  Engine:     ❌ Not running");
                         println!("  Tunnel:     ❌ Not connected");
                         println!();
                         println!(
-                            "  Start with: peko daemon start  (auto-starts tunnel if cred exists)"
+                            "  Start with: peko engine start  (auto-starts tunnel if cred exists)"
                         );
                     }
                 }

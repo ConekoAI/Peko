@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # Peko Installer - Download from GitHub Releases
-# Usage: curl -fsSL https://raw.githubusercontent.com/ConekoAI/peko-runtime/main/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/ConekoAI/Peko/master/install.sh | bash
 #
 
 set -e
@@ -14,7 +14,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-GITHUB_REPO="ConekoAI/peko-runtime"
+GITHUB_REPO="ConekoAI/Peko"
 GITHUB_API="https://api.github.com/repos/${GITHUB_REPO}"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 PEKO_HOME_DIR="${PEKO_HOME:-$HOME/.peko}"
@@ -87,7 +87,7 @@ install_binary() {
         exit 1
     }
     
-    # The archive holds two binaries. `peko` starts the daemon from the
+    # The archive holds two binaries. `peko` starts the engine from the
     # `peko-daemon` beside it, so both must land in the same directory.
     local bin
     for bin in peko peko-daemon; do
@@ -134,14 +134,14 @@ install_systemd_service() {
     
     echo -e "${BLUE}Installing systemd service...${NC}"
     
-    # A template unit: `peko@<user>` runs the daemon as that user. The
-    # daemon stays in the foreground so systemd supervises the process
+    # A template unit: `peko@<user>` runs the engine as that user. The
+    # engine stays in the foreground so systemd supervises the process
     # itself rather than a launcher that exits at once.
     local unit
     unit=$(cat <<EOF
 [Unit]
 Description=Peko Agent Runtime (%i)
-Documentation=https://github.com/ConekoAI/peko-runtime
+Documentation=https://github.com/ConekoAI/Peko
 After=network-online.target
 Wants=network-online.target
 
@@ -214,7 +214,7 @@ print_post_install() {
     echo "     (<format>: anthropic_messages | openai_completions | openai_responses;"
     echo "      use --no-key for local endpoints — see \`peko model add --help\`)"
     echo ""
-    echo "  2. Start the daemon:"
+    echo "  2. Start the engine:"
     echo "     peko daemon start"
     echo ""
     echo "  3. Create your first peko and talk to it:"
@@ -232,7 +232,7 @@ print_post_install() {
         echo ""
     fi
     echo -e "${BLUE}Documentation:${NC}"
-    echo "  https://github.com/ConekoAI/peko-runtime#readme"
+    echo "  https://github.com/ConekoAI/Peko#readme"
     echo ""
 }
 
@@ -240,7 +240,7 @@ print_post_install() {
 main() {
     echo -e "${BLUE}═══════════════════════════════════════════════════${NC}"
     echo -e "${BLUE}  Peko Installer${NC}"
-    echo -e "${BLUE}  github.com/ConekoAI/peko-runtime${NC}"
+    echo -e "${BLUE}  github.com/ConekoAI/Peko${NC}"
     echo -e "${BLUE}═══════════════════════════════════════════════════${NC}"
     echo ""
     

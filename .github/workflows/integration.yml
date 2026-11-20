@@ -1,6 +1,6 @@
 name: Integration Tests
 
-# Tiered CI per docs/testing/CI.md:
+# Tiered CI per docs/development/CI.md:
 #
 # Tier        Trigger                               Wall-clock (warm)  Notes
 # ──────────── ──────────────────────────────────── ─────────────────── ─────────────────────
@@ -265,7 +265,7 @@ jobs:
         run: make test-native
 
   # ── Tier 0d: Windows tests, every PR ─────────────────────────────────
-  # Windows is in MVP scope (docs/MVP_GATE.md gate 0), so the Windows
+  # Windows is in MVP scope, so the Windows
   # tiers run whenever the Linux ones do and a failure fails the workflow.
   # They used to be gated on a list of Windows-specific paths (or a
   # `[windows]` tag the gate could not see on a PR), so a change to shared

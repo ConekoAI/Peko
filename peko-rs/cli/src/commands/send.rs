@@ -175,7 +175,7 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths) -> Result<()> {
 }
 
 /// The local visitor `--as` names, when it has the `visitor:<id>` shape.
-/// The daemon validates it; this only selects the thread to wait on.
+/// The engine validates it; this only selects the thread to wait on.
 fn visitor_subject(actor: &str) -> Option<peko_auth::ActorRef> {
     let id = actor.strip_prefix("visitor:")?;
     let id = id.strip_prefix("local:").unwrap_or(id);
@@ -184,18 +184,18 @@ fn visitor_subject(actor: &str) -> Option<peko_auth::ActorRef> {
 
 /// `peko send group:<slug>` (ADR-049 Phase 2, D7): post `message` to
 /// the group channel as `user:<user>`. Daemon-first via `ChannelPost`
-/// (the daemon IPC accepts `user:<id>` senders and the store's
+/// (the engine IPC accepts `user:<id>` senders and the store's
 /// ActorRef membership authorizes the write); falls back to an
-/// in-process `ChannelStore` when the daemon is unreachable, mirroring
+/// in-process `ChannelStore` when the engine is unreachable, mirroring
 /// the `peko channel` dual-path so manual smoke tests work without a
-/// live daemon.
+/// live engine.
 /// `peko send group:<slug>` (ADR-049 Phase 2, D7, amended by
 /// ADR-057): post `message` to the group channel as the caller's own
-/// derived identity (`sender_name: None` — the daemon attributes it).
+/// derived identity (`sender_name: None` — the engine attributes it).
 /// Daemon-first via `ChannelPost`; falls back to an in-process
-/// `ChannelStore` when the daemon is unreachable, mirroring the
+/// `ChannelStore` when the engine is unreachable, mirroring the
 /// `peko channel` dual-path so manual smoke tests work without a
-/// live daemon. The fallback path speaks as the CLI's derived
+/// live engine. The fallback path speaks as the CLI's derived
 /// identity (current Hub account when logged in, else `user:local`).
 async fn post_to_group(
     paths: &GlobalPaths,
@@ -234,7 +234,7 @@ async fn post_to_group(
 
     // ADR-094: files go through the daemon, which keeps their copies.
     if attached {
-        anyhow::bail!("attachments need the daemon running (`peko daemon start`)");
+        anyhow::bail!("attachments need the engine running (`peko engine start`)");
     }
     let ch = ChannelId::parse(channel).with_context(|| format!("invalid ChannelId: {channel}"))?;
     let port: Arc<dyn peko_channel::ChannelPort> = Arc::new(ChannelStore::new(ChannelConfig {
@@ -254,7 +254,7 @@ async fn post_to_group(
     Ok(())
 }
 
-/// `--attach` paths made absolute: the daemon reads attachments by
+/// `--attach` paths made absolute: the engine reads attachments by
 /// absolute path (ADR-088, ADR-094).
 pub(crate) fn absolute_attachments(paths: &[String]) -> Result<Vec<String>> {
     paths
@@ -271,8 +271,8 @@ pub(crate) fn absolute_attachments(paths: &[String]) -> Result<Vec<String>> {
 ///
 /// Races the response loop against `tokio::signal::ctrl_c()`
 /// so the user can stop a long-running stream from the same
-/// terminal. On Ctrl-C, sends a `PrincipalStop` to the daemon and
-/// returns once the daemon's own `Done`/`Error`
+/// terminal. On Ctrl-C, sends a `PrincipalStop` to the engine and
+/// returns once the engine's own `Done`/`Error`
 /// closes the stream naturally (the loop will fall through with the
 /// "stopped by user" error message).
 async fn process_response_stream(
@@ -542,7 +542,7 @@ async fn wait_for_queued_reply(
 
 /// Race `stream.next()` against a Ctrl-C signal. On the first Ctrl-C,
 /// sends a `PrincipalStop` for this send's (principal, peer) thread to
-/// the daemon and continues reading the stream (the daemon will
+/// the engine and continues reading the stream (the engine will
 /// eventually emit its own `Done` with `error: Some("stopped by
 /// user")` and close it). Returns the next packet or `None` when the
 /// stream is fully closed.
@@ -566,12 +566,12 @@ async fn next_or_stop(
             packet = stream.next() => return Ok(packet),
             () = &mut notified, if !*stop_sent => {
                 *stop_sent = true;
-                eprintln!("\n[peko] Ctrl-C received — sending stop to daemon...");
+                eprintln!("\n[peko] Ctrl-C received — sending stop to engine...");
                 if let Err(e) = client
                     .principal_stop(args.principal.clone(), Some(peer.clone()))
                     .await
                 {
-                    eprintln!("[peko] failed to send stop to daemon: {e}");
+                    eprintln!("[peko] failed to send stop to engine: {e}");
                 }
                 // Loop back and let the stream's next packet be the
                 // daemon's `Done { success: false, error: "stopped by user" }`.

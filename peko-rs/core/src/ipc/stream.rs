@@ -172,7 +172,7 @@ pub(crate) fn spawn_receiver_with_timeout(
                     for (request_id, tx) in streams.iter() {
                         let _ = tx.send(ResponsePacket::Error {
                             request_id: *request_id,
-                            message: format!("Daemon connection lost: {e}"),
+                            message: format!("Engine connection lost: {e}"),
                         });
                     }
                     break;

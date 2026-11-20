@@ -94,7 +94,7 @@ impl QuotaHandler {
         let Some(registry) = self.host.peer_registry() else {
             return ResponsePacket::Error {
                 request_id,
-                message: "peer attribution not configured on this daemon".to_string(),
+                message: "peer attribution not configured on this engine".to_string(),
             };
         };
         let peer = match registry.get_or_create(peer_id, chrono::Utc::now()).await {
@@ -162,7 +162,7 @@ impl RequestHandler for QuotaHandler {
                     let Some(registry) = self.host.peer_registry() else {
                         let response = ResponsePacket::Error {
                             request_id,
-                            message: "peer attribution not configured on this daemon".to_string(),
+                            message: "peer attribution not configured on this engine".to_string(),
                         };
                         return send_response(sink, response).await;
                     };
@@ -227,7 +227,7 @@ impl RequestHandler for QuotaHandler {
                     let Some(registry) = self.host.peer_registry() else {
                         let response = ResponsePacket::Error {
                             request_id,
-                            message: "peer attribution not configured on this daemon".to_string(),
+                            message: "peer attribution not configured on this engine".to_string(),
                         };
                         return send_response(sink, response).await;
                     };

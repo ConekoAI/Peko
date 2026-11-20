@@ -12,7 +12,7 @@
 //! Windows named pipe on Windows (ADR-038). This file used to be
 //! `#![cfg(unix)]`; the gate was dropped when the Windows transport
 //! landed so the same tests run on both platforms. See
-//! `docs/architecture/adr/ADR-038-named-pipes-on-windows.md` for the
+//! ADR-038 for the
 //! Windows side of the story.
 //!
 //! Requires `MOCK_LLM_URL` to be set (CI sets it via docker-compose; locally

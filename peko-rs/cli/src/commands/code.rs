@@ -22,7 +22,7 @@ pub struct CodeArgs {
 pub async fn handle_code(args: CodeArgs, _paths: &GlobalPaths, json: bool) -> anyhow::Result<()> {
     let client = DaemonClient::connect()
         .await
-        .map_err(|_| anyhow::anyhow!("Peko is not running. Start it with `peko daemon start`."))?;
+        .map_err(|_| anyhow::anyhow!("Peko is not running. Start it with `peko engine start`."))?;
     let of = args.who.unwrap_or_else(|| "account".to_string());
     match client.identity_code(&of).await? {
         ResponsePacket::IdentityCodeResult { of, name, code, .. } => {
@@ -71,6 +71,6 @@ pub async fn handle_code(args: CodeArgs, _paths: &GlobalPaths, json: bool) -> an
                 .trim_start_matches(|c| c != ']')
                 .trim_start_matches("] ")
         )),
-        other => Err(anyhow::anyhow!("Unexpected daemon response: {other:?}")),
+        other => Err(anyhow::anyhow!("Unexpected engine response: {other:?}")),
     }
 }

@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["Peko <peko@coneko.ai>"]
 description = "Observability hub — audit log + metrics + tracing (Phase 14 entry point of the post-migration cleanup). Replaces root src/observability/. Depends only on peko-auth (for Subject caller attribution) plus chrono/serde/tokio/anyhow. No runtime deps on session/agent/daemon."
 license = "MIT"
-repository = "https://github.com/ConekoAI/peko-runtime"
+repository = "https://github.com/ConekoAI/Peko"
 
 [dependencies]
 # Caller attribution on audit events (issues #17 + #26). Subject is the

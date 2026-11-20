@@ -45,7 +45,7 @@ use std::path::PathBuf;
 #[command(about = "Peko: persistent AI agents (pekos) you own")]
 #[command(propagate_version = true)]
 #[command(after_help = "Examples:
-  peko daemon start                          # Start the daemon
+  peko engine start                          # Start the engine
   peko create my-peko                        # Create a new peko
   peko export my-peko -o my-peko.peko        # Export a peko package
   peko send my-peko \"Hello\"                  # Send message to a peko
@@ -138,8 +138,8 @@ pub enum Commands {
     #[command(subcommand)]
     System(system::SystemCommands),
 
-    /// Daemon management (the background process that runs your pekos)
-    #[command(subcommand)]
+    /// Start, stop and check the engine (the background process that runs your pekos)
+    #[command(subcommand, name = "engine", alias = "daemon")]
     Daemon(daemon::DaemonCommands),
 
     /// Direct messages and group chats with people and pekos
@@ -225,7 +225,7 @@ pub enum Commands {
     ///   peko audit tail [--since 1h] [--peko NAME] [--limit N] [--follow]
     ///     Read the audit log files (kept across restarts).
     ///   peko audit list [--peko NAME]
-    ///     Recent events since the daemon started.
+    ///     Recent events since the engine started.
     ///   peko audit ledger NAME / peko audit verify NAME
     ///     Every tool call a peko made, and a check that none was altered.
     ///

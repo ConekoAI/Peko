@@ -83,7 +83,7 @@ pub async fn handle_device(
 ) -> anyhow::Result<()> {
     let client = DaemonClient::connect()
         .await
-        .map_err(|_| anyhow::anyhow!("Peko is not running. Start it with `peko daemon start`."))?;
+        .map_err(|_| anyhow::anyhow!("Peko is not running. Start it with `peko engine start`."))?;
     match cmd {
         DeviceCommands::Add => match client.device_add().await? {
             ResponsePacket::DeviceCodeShown {

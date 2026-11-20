@@ -498,7 +498,7 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                 if let Ok(s) = ActorRef::from_str(&sender) {
                     if matches!(s, ActorRef::User(_)) {
                         anyhow::bail!(
-                            "user identities cannot be specified — the daemon derives yours \
+                            "user identities cannot be specified — the engine derives yours \
                              from the connection. Use `me` to post as yourself, or the \
                              name of one of your pekos to post as it."
                         );
@@ -873,7 +873,7 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
         ChannelCommands::Invitations { .. } => {
             let client = DaemonClient::connect()
                 .await
-                .context("Group invitations need the daemon: start it with `peko daemon start`")?;
+                .context("Group invitations need the engine: start it with `peko engine start`")?;
             let resp = client
                 .request_response(RequestPacket::ChannelInvitations { request_id: 0 })
                 .await?;
@@ -980,7 +980,7 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
         } => {
             let client = DaemonClient::connect()
                 .await
-                .context("The board needs the daemon: start it with `peko daemon start`")?;
+                .context("The board needs the engine: start it with `peko engine start`")?;
             let resp = client
                 .request_response(RequestPacket::ChannelBoard {
                     request_id: 0,
@@ -1148,11 +1148,11 @@ fn print_blocked(resp: ResponsePacket, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// Send a group request to the daemon (ADR-092 D5), failing on its error.
-/// One request to the daemon for a DM with a remote peko.
+/// Send a group request to the engine (ADR-092 D5), failing on its error.
+/// One request to the engine for a DM with a remote peko.
 async fn dm_request(packet: RequestPacket) -> Result<ResponsePacket> {
     let client = DaemonClient::connect().await.context(
-        "DMs with pekos on other computers need the daemon: start it with `peko daemon start`",
+        "DMs with pekos on other computers need the engine: start it with `peko engine start`",
     )?;
     let resp = client.request_response(packet).await?;
     if let ResponsePacket::Error { message, .. } = resp {
@@ -1161,9 +1161,9 @@ async fn dm_request(packet: RequestPacket) -> Result<ResponsePacket> {
     Ok(resp)
 }
 
-/// How the daemon is asked for the peko `target` names: its PekoHub ID
+/// How the engine is asked for the peko `target` names: its PekoHub ID
 /// from `peko:hub:<UUID>` (or the wire spelling `principal:hub:<UUID>`) or
-/// a bare UUID, else `@owner/name` as given. The daemon looks a handle up
+/// a bare UUID, else `@owner/name` as given. The engine looks a handle up
 /// on PekoHub as this runtime's person, so it finds public pekos and your
 /// own private ones.
 fn remote_peko_target(target: &str) -> Result<String> {
@@ -1219,7 +1219,7 @@ fn board_line(item: &serde_json::Value) -> String {
 async fn group_request(packet: RequestPacket) -> Result<ResponsePacket> {
     let client = DaemonClient::connect()
         .await
-        .context("Groups on PekoHub need the daemon: start it with `peko daemon start`")?;
+        .context("Groups on PekoHub need the engine: start it with `peko engine start`")?;
     let resp = client.request_response(packet).await?;
     if let ResponsePacket::Error { message, .. } = resp {
         anyhow::bail!("{message}");
@@ -1227,11 +1227,11 @@ async fn group_request(packet: RequestPacket) -> Result<ResponsePacket> {
     Ok(resp)
 }
 
-/// Accept or decline a group's invitation through the daemon (ADR-092 D2).
+/// Accept or decline a group's invitation through the engine (ADR-092 D2).
 async fn answer_invitation(channel: &str, accept: bool, json: bool) -> Result<()> {
     let client = DaemonClient::connect()
         .await
-        .context("Group invitations need the daemon: start it with `peko daemon start`")?;
+        .context("Group invitations need the engine: start it with `peko engine start`")?;
     let resp = client
         .request_response(RequestPacket::ChannelInvitationAnswer {
             request_id: 0,
@@ -1257,8 +1257,8 @@ async fn answer_invitation(channel: &str, accept: bool, json: bool) -> Result<()
     Ok(())
 }
 
-/// Use the daemon when reachable, otherwise the in-process router. Once a
-/// request reaches the daemon, errors must not repeat a mutation locally.
+/// Use the engine when reachable, otherwise the in-process router. Once a
+/// request reaches the engine, errors must not repeat a mutation locally.
 async fn run_daemon_or<'a, T, F>(
     paths: &'a GlobalPaths,
     packet: RequestPacket,
@@ -1449,7 +1449,7 @@ mod response_tests {
     }
 
     /// `peko channel dm` names a peko by its PekoHub ID in either form, or
-    /// as `@owner/name` (looked up by the daemon).
+    /// as `@owner/name` (looked up by the engine).
     #[test]
     fn a_dm_target_is_a_hub_id_or_an_owner_and_name() {
         let id = "704f080d-1453-408d-8349-f8657364c6f5";

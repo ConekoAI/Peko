@@ -32,7 +32,7 @@ format, hosted or local.
 |---|---|
 | **Yours** | Each peko is a directory of plain files you can read, edit, back up and move to another machine (`peko export` / `peko import`) |
 | **Persistent** | Its memory lives in `kb/` as Markdown, kept up to date by a nightly maintenance run |
-| **Background work** | A daemon runs scheduled jobs and checks in on open work, and calls no model when nothing is waiting |
+| **Background work** | An engine runs scheduled jobs and checks in on open work, and calls no model when nothing is waiting |
 | **Any model** | Bring any endpoint in a supported wire format; each peko is pinned to one configured model |
 | **Accountable** | Every tool call is recorded in a per-peko ledger (`peko audit ledger`) |
 | **Multi-party** | Pekos and people talk in channels; other people only see their own conversation |
@@ -42,7 +42,7 @@ format, hosted or local.
 ## Installation
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ConekoAI/peko-runtime/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ConekoAI/Peko/master/install.sh | bash
 ```
 
 Supported platforms are macOS (Apple silicon or Intel), Linux (x86_64
@@ -51,7 +51,7 @@ or 11 (x64; Windows on Arm runs it emulated). On Windows, install from
 PowerShell instead, per user and without administrator rights:
 
 ```powershell
-irm https://raw.githubusercontent.com/ConekoAI/peko-runtime/master/install.ps1 | iex
+irm https://raw.githubusercontent.com/ConekoAI/Peko/master/install.ps1 | iex
 ```
 
 It puts `peko.exe` and `peko-daemon.exe` in `%LOCALAPPDATA%\Programs\peko\bin`
@@ -153,9 +153,9 @@ it removes the content and keeps a dated `Retracted` line in `MEMORY.md`, so
 the nightly pass does not learn it again. The original messages stay in its
 conversation history, its channel logs and its tool ledger.
 
-### The daemon and background work
+### The engine and background work
 
-The daemon (`peko daemon start`) runs your pekos in the background.
+The engine (`peko engine start`) runs your pekos in the background.
 
 Every peko starts with two scheduled jobs:
 - **`keepalive`**, every 10 minutes. It runs a turn only when something
@@ -317,7 +317,7 @@ Steps that already work are only checked. `peko setup my-peko --status`
 shows how each step stands without running anything.
 
 Leave `id`, `did`, `actor_key` and `[owner]` alone: they are the peko's
-identity: the daemon keeps their loaded values until it restarts. Other
+identity: the engine keeps their loaded values until it restarts. Other
 edits apply to the peko's next turn.
 
 ### `POLICY.md`
@@ -442,8 +442,8 @@ in a plain file, and are never read from environment variables. Use
 
 The vault uses the OS keychain when one is available. Without one, set
 `PEKO_MASTER_PASSPHRASE` before the first `peko model add`, and keep it set
-for the daemon. To move an existing vault between the two,
-stop the daemon and run `peko vault migrate --to passphrase` (or
+for the engine. To move an existing vault between the two,
+stop the engine and run `peko vault migrate --to passphrase` (or
 `--to keychain`).
 
 ---
@@ -458,7 +458,7 @@ Every peko has the same 26 built-in tools: files and shell (`Read`, `Write`,
 and tasks,
 scheduling (`Cron`), background work (`Async`), models (`ModelList`,
 `ModelCall`), workflows, MCP and its tool ledger (`ToolLog`). See
-[builtin-tools.md](../architecture/builtin-tools.md) for each tool's
+[Built-in tools](../reference/BUILTIN_TOOLS.md) for each tool's
 contract.
 
 `Fetch` is a plain web request, not a browser. It reads documentation,
@@ -472,7 +472,7 @@ command: add a file to add a capability, delete it to remove one.
 | Directory | Holds |
 |---|---|
 | `roles/<name>.md` | Roles (see [Roles and agents](#roles-and-agents)) |
-| `skills/<id>/SKILL.md` | Skills: instructions the peko loads when a task calls for them ([format](../architecture/SKILLS.md)) |
+| `skills/<id>/SKILL.md` | Skills: instructions the peko loads when a task calls for them ([format](../reference/SKILLS.md)) |
 | `mcp/<id>/server.json` | MCP servers |
 | `hooks/<id>/hook.toml` | Hooks that run before or after tool calls and turns |
 | `workflows/` | Scripts the peko writes for the `Workflow` tool |
@@ -526,7 +526,7 @@ Cron {
 }
 ```
 
-Jobs are saved per peko and survive daemon restarts. `Cron` with
+Jobs are saved per peko and survive engine restarts. `Cron` with
 `action: "history"` shows a job's recent runs.
 
 ---
@@ -607,23 +607,25 @@ A peko using `Bash` runs as your user. It could rewrite the ledger, the global
 audit log and the checkpoints together, and nothing outside your account
 anchors the chain yet.
 
-**PekoHub can read relayed messages.** Messages between runtimes are signed
-by the peko that sent them, so the hub cannot forge or alter them. They are
-not encrypted end to end, though. The hub terminates TLS, so it could read
-messages between runtimes.
+**PekoHub sees who talks to whom.** Messages, files and approvals that
+cross PekoHub are signed by their sender and encrypted to the one computer
+they are for, so PekoHub cannot read, forge or alter them. It does see who
+sends, to whom, in which conversation, and when. Chat a visitor types into
+PekoHub's website is readable by PekoHub. See the
+[security model](../SECURITY_MODEL.md).
 
 **Background tasks do not survive a restart.** A task started with `Async`
-that is still running when the daemon stops is lost. Cron jobs are saved to
+that is still running when the engine stops is lost. Cron jobs are saved to
 disk and resume after a restart, so use a cron job for work that must
 survive one.
 
 **The UDP fallback trusts any local process.** The CLI normally reaches the
-daemon over a Unix socket in a `0700` directory with `0600` permissions. On
-Linux the daemon also rejects messages from a different user id.
+engine over a Unix socket in a `0700` directory with `0600` permissions. On
+Linux the engine also rejects messages from a different user id.
 
-If the socket cannot be created, the daemon falls back to UDP on
+If the socket cannot be created, the engine falls back to UDP on
 `127.0.0.1:11435`, and it logs `falling back to UDP` when it does. Any
-process on the machine can reach the daemon on that port. On a shared
+process on the machine can reach the engine on that port. On a shared
 machine, fix the socket problem instead of running on the fallback.
 
 ---
@@ -632,12 +634,12 @@ machine, fix the socket problem instead of running on the fallback.
 
 ### The peko doesn't respond
 
-- The daemon is running: `peko daemon status` (start it with
-  `peko daemon start`).
+- The engine is running: `peko engine status` (start it with
+  `peko engine start`).
 - The peko exists: `peko list`.
 - It has a model: `peko show <peko>` prints `Model:`.
 - The model and its key work: `peko model test <model-id>`.
-- The daemon log, `~/.peko/logs/daemon.log`, says what went wrong.
+- The engine log, `~/.peko/logs/daemon.log`, says what went wrong.
 
 ### Key errors
 
@@ -659,10 +661,10 @@ no restart. If one doesn't:
 - A turn that is already running keeps the role it started with. Send the
   next message after it finishes.
 - When `peko.toml` no longer parses, or a role file can't be read,
-  the peko keeps what it had and the daemon log, `~/.peko/logs/daemon.log`,
+  the peko keeps what it had and the engine log, `~/.peko/logs/daemon.log`,
   says why.
 - `name`, `id`, `did`, `actor_key` and `[owner]` keep their loaded values
-  until `peko daemon restart`.
+  until `peko engine restart`.
 
 New files under `roles/` and `skills/` show up in the peko's catalogs on its
 next turn too.
@@ -681,4 +683,4 @@ peko <command> --help
 - [Tutorial: shaping your first peko](../getting-started/TUTORIAL_FIRST_PEKO.md)
 - [CLI Reference](CLI_REFERENCE.md): every command
 - [MCP quick start](../mcp/QUICK_START.md): give a peko outside tools
-- [Built-in tools](../architecture/builtin-tools.md): what each tool does
+- [Built-in tools](../reference/BUILTIN_TOOLS.md): what each tool does

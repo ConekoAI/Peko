@@ -71,10 +71,10 @@ async fn sign_in(hub: &str, json: bool) -> anyhow::Result<String> {
 }
 
 /// Sign this computer, and you as its user, in to PekoHub (`peko auth
-/// login`; `peko runtime register` is the older name). With the daemon
-/// running it registers through the daemon, which connects at once and
+/// login`; `peko runtime register` is the older name). With the engine
+/// running it registers through the engine, which connects at once and
 /// puts your private pekos online; otherwise it registers here and the
-/// daemon connects when it starts.
+/// engine connects when it starts.
 pub(crate) async fn register(
     paths: &GlobalPaths,
     hub: &str,
@@ -104,7 +104,7 @@ pub(crate) async fn register(
                 account,
                 ..
             } => (hub, runtime_did, account, true),
-            other => anyhow::bail!("Unexpected daemon response: {other:?}"),
+            other => anyhow::bail!("Unexpected engine response: {other:?}"),
         },
         None => {
             let vault = std::sync::Arc::new(peko_core::common::vault::Vault::load(
@@ -142,7 +142,7 @@ pub(crate) async fn register(
         if connected {
             println!("  Connected: your private pekos go online now.");
         } else {
-            println!("  The daemon connects when it starts: peko daemon start");
+            println!("  The engine connects when it starts: peko engine start");
         }
     }
     Ok(())

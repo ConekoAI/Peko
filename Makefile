@@ -1,4 +1,4 @@
-# Peko Test Targets — see docs/testing/CI.md
+# Peko Test Targets — see docs/development/CI.md
 #
 # Test targets:
 #   test                  — fast unit tests, no Docker, no LLM
@@ -56,7 +56,7 @@ export PEKOHUB_URL
 export MOCK_LLM_URL
 
 help:
-	@echo "Peko Test Targets (see docs/testing/CI.md)"
+	@echo "Peko Test Targets (see docs/development/CI.md)"
 	@echo ""
 	@echo "  test                      Fast unit tests (cargo test --lib, no Docker, no LLM)"
 	@echo "  test-native               Offline integration tests (no Docker)"
