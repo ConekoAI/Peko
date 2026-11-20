@@ -4,6 +4,8 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-20
+
 ### Security
 
 - **One patched TLS library.** Peko now ships a single rustls (0.23.46 or
@@ -13,6 +15,12 @@ All notable changes to Peko.
   PekoHub tunnel to tokio-tungstenite 0.30 and tokio-rustls 0.26. Nothing
   to change on your side: `[tls]` settings (custom CA, client certificate,
   `pinned_cert_sha256`) work as before.
+
+### Changed
+
+- **Dependencies are current.** `toml` moves to 1.1, the scheduler's
+  `cron` parser to 0.17, and 29 other crates to their latest compatible
+  versions. The installers now say `peko engine`.
 
 ### Fixed
 
