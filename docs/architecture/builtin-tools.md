@@ -111,7 +111,7 @@ Read text with inline line numbers, binary content as base64, or images, audio, 
 | `limit` | integer | no | ≥ 1 |
 | `encoding` | utf8 \| base64 | no | — |
 
-Offset is 1-based. Limit defaults to 2000 lines, and returned text is capped at 256 KiB (cut at a line boundary; a single longer line is cut and marked). A bounded read returns `truncated: true` and `next_offset`. Encoding defaults to utf8; binary content is detected automatically, and binary files over 256 KiB are refused. There is no PDF pages selector.
+A folder is refused with a hint to list it with `Glob`. Offset is 1-based. Limit defaults to 2000 lines, and returned text is capped at 256 KiB (cut at a line boundary; a single longer line is cut and marked). A bounded read returns `truncated: true` and `next_offset`. Encoding defaults to utf8; binary content is detected automatically, and binary files over 256 KiB are refused. There is no PDF pages selector.
 
 Media (ADR-088 D6): an image (PNG, JPEG, GIF, WebP), audio (WAV, MP3, FLAC, M4A, OGG), or video (MP4, MOV, AVI, WMV, WebM) file returns `content` (a line describing it), `mime`, `size_bytes`, and `media: {kind, mime, path}`. The engine attaches the file to the tool result as an image / audio / video block when the run's model spec takes that kind and the file is within the block limit (5 MB images, 20 MB audio/video); otherwise the model reads a note that it cannot take it. Only `Read` may point the engine at a file this way. `encoding: "base64"` returns a media file's bytes as base64 text instead.
 
@@ -161,6 +161,8 @@ Find files and optionally directories by glob pattern.
 | `limit` | integer | no | default 1000, ≥ 1, ≤ 10000 |
 
 path defaults to the calling workspace. An explicit path overrides workspace injection. A pattern with `**` searches from the directory before its first `**` and matches the remainder against each path below it (`**/tests/*.py`); without `**`, the last segment matches names in one directory. Results are in path order with paths relative to the base directory. Like ripgrep, hidden names and files excluded by `.gitignore` / `.ignore` (and git's exclude/global lists) are skipped — in or out of a git repository — unless include_hidden / include_ignored.
+
+A visitor's search (ADR-113) from a folder above what it may reach, such as the workspace itself, is not refused: the dispatcher limits the walk to the reachable paths under it (the conversation's own folder and the `read` / `write` paths of its `ACCESS.toml` section) and the folders leading to them. Nothing else is listed or opened, other conversations' folders included. A search from a folder with nothing reachable in it is refused as before. The limit travels as `__visitor_scope`, which only the dispatcher sets; a model's own value is dropped. Grep searches the same way.
 
 ### Grep
 
@@ -288,7 +290,7 @@ action is required. Both Agent and Session reject unknown fields, explicit nulls
 
 | Action | Purpose | Required fields besides action | Optional fields / runtime defaults |
 |---|---|---|---|
-| status | Metadata and usage | — | path, timezone |
+| status | Metadata and usage; `this_run` says whom the calling run acts for (`acting_for`, `name`, `trust`, `conversation`) and what it reaches (`everything` for the owner; for a visitor, its files, own folder, tools, MCP servers and whether requests go to the owner) | — | path, timezone |
 | list | List/filter sessions | — | path, peer, agent_name, active_minutes, limit=50 |
 | history | Messages | — | path, limit=100, include_tools=true |
 | find | Transcript search | query | path, peer, limit=50 |

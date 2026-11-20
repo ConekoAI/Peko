@@ -71,6 +71,10 @@ pub struct GrepArgs {
     /// map of match counts per file.
     #[serde(default = "default_output_mode")]
     pub output_mode: String,
+    /// Set by the dispatcher on a visitor's search (ADR-113): the only
+    /// paths the walk may enter. Never from the model.
+    #[serde(default, rename = "__visitor_scope", skip_serializing)]
+    pub visitor_scope: Option<Vec<std::path::PathBuf>>,
 }
 
 fn default_output_mode() -> String {
@@ -223,6 +227,7 @@ impl GrepTool {
                 effective_after,
                 include_hidden,
                 include_ignored,
+                args.visitor_scope.clone(),
                 &mut matches,
                 &mut files_searched,
                 &mut files_with_matches,
@@ -378,11 +383,12 @@ impl GrepTool {
         context_after: usize,
         include_hidden: bool,
         include_ignored: bool,
+        scope: Option<Vec<PathBuf>>,
         matches: &mut Vec<serde_json::Value>,
         files_searched: &mut usize,
         files_with_matches: &mut usize,
     ) -> Result<()> {
-        let found = super::walk(dir.clone(), None, include_hidden, include_ignored).await?;
+        let found = super::walk(dir.clone(), None, include_hidden, include_ignored, scope).await?;
         for found in found {
             if matches.len() >= limit {
                 return Ok(());

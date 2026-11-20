@@ -37,6 +37,7 @@ pub(crate) async fn walk(
     max_depth: Option<usize>,
     include_hidden: bool,
     include_ignored: bool,
+    scope: Option<Vec<std::path::PathBuf>>,
 ) -> anyhow::Result<Vec<WalkEntry>> {
     use anyhow::Context as _;
     std::fs::read_dir(&root)
@@ -54,6 +55,26 @@ pub(crate) async fn walk(
             .follow_links(false)
             .max_depth(max_depth)
             .sort_by_file_path(|a, b| a.cmp(b))
+            // A visitor's search walks only what it may reach and the
+            // folders leading there (ADR-113); nothing else is listed or
+            // opened.
+            .filter_entry({
+                // Scope roots are resolved paths (`/private/var/…` on
+                // macOS); entries are compared in the same form, below the
+                // walk's own resolved start.
+                let start = root.clone();
+                let resolved_start = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
+                move |entry| match &scope {
+                    None => true,
+                    Some(scope) => {
+                        let path = entry.path().strip_prefix(&start).map_or_else(
+                            |_| entry.path().to_path_buf(),
+                            |rel| resolved_start.join(rel),
+                        );
+                        in_scope(scope, &path, entry.depth() == 0)
+                    }
+                }
+            })
             .build();
         walker
             .filter_map(Result::ok)
@@ -69,4 +90,70 @@ pub(crate) async fn walk(
     })
     .await
     .context("directory walk panicked")
+}
+
+/// Whether a walk limited to `scope` goes through `path`: it lies in a
+/// scope root, or is a folder on the way to one. `is_root` is the walk's
+/// own start, always entered.
+fn in_scope(scope: &[std::path::PathBuf], path: &std::path::Path, is_root: bool) -> bool {
+    is_root
+        || scope
+            .iter()
+            .any(|root| path.starts_with(root) || root.starts_with(path))
+}
+
+/// The parameter the dispatcher sets on a visitor's `Glob` / `Grep` to
+/// limit the walk (see [`walk`]): resolved paths. Never taken from the
+/// model.
+pub(crate) const VISITOR_SCOPE_PARAM: &str = "__visitor_scope";
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+
+    /// A walk limited to `public/` and one conversation's folder lists
+    /// those and the folders leading to them, and nothing else.
+    #[tokio::test]
+    async fn a_scoped_walk_lists_only_what_is_in_scope() {
+        let ws = tempfile::tempdir().unwrap();
+        let root = ws.path();
+        for (path, body) in [
+            ("public/faq.md", "hours"),
+            ("kb/MEMORY.md", "secret"),
+            ("contacts/dm_a/notes.md", "mine"),
+            ("contacts/dm_b/notes.md", "theirs"),
+            ("top.md", "x"),
+        ] {
+            let full = root.join(path);
+            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+            std::fs::write(full, body).unwrap();
+        }
+        // Scope roots come resolved, as the dispatcher sends them.
+        let resolved = std::fs::canonicalize(root).unwrap();
+        let scope = vec![resolved.join("public"), resolved.join("contacts/dm_a")];
+        let found = walk(root.to_path_buf(), None, false, false, Some(scope))
+            .await
+            .unwrap();
+        let mut names: Vec<String> = found
+            .iter()
+            .map(|e| {
+                e.path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                "contacts",
+                "contacts/dm_a",
+                "contacts/dm_a/notes.md",
+                "public",
+                "public/faq.md"
+            ]
+        );
+    }
 }

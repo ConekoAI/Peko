@@ -31,6 +31,10 @@ pub struct GlobArgs {
     /// Limit number of results (default: 1000)
     #[serde(default = "default_limit")]
     pub limit: usize,
+    /// Set by the dispatcher on a visitor's search (ADR-113): the only
+    /// paths the walk may enter. Never from the model.
+    #[serde(default, rename = "__visitor_scope", skip_serializing)]
+    pub visitor_scope: Option<Vec<std::path::PathBuf>>,
 }
 
 fn default_limit() -> usize {
@@ -87,6 +91,7 @@ impl GlobTool {
         include_ignored: bool,
         include_dirs: bool,
         limit: usize,
+        scope: Option<Vec<PathBuf>>,
     ) -> Result<serde_json::Value> {
         let base_dir = self.resolve_directory(path);
 
@@ -137,6 +142,7 @@ impl GlobTool {
             if recursive { None } else { Some(1) },
             include_hidden,
             include_ignored,
+            scope,
         )
         .await?;
 
@@ -280,6 +286,7 @@ Returns `{entries, total_matched, returned, truncated}` in path order; each entr
             args.include_ignored,
             args.include_dirs,
             args.limit,
+            args.visitor_scope,
         )
         .await
     }

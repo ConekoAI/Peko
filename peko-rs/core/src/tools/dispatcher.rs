@@ -734,6 +734,11 @@ impl ToolDispatcher {
             });
 
         let mut params = call.params.clone();
+        // Only the dispatcher limits a search (below); a model's own value
+        // is dropped.
+        if let Some(obj) = params.as_object_mut() {
+            obj.remove(crate::tools::builtin::fs::VISITOR_SCOPE_PARAM);
+        }
         apply_workspace_injection(&mut params, &tool_name, call_workspace.as_deref());
         let workspace = principal_workspace;
         if !stamp.is_owner() {
@@ -900,6 +905,32 @@ impl ToolDispatcher {
                 write,
                 reach.as_ref(),
             );
+            // ADR-113: a visitor's search from a folder above what it
+            // reaches (the workspace itself, say) runs, but walks only its
+            // own folder and the listed paths under it, instead of being
+            // refused and leaving the model to guess where to look.
+            if matches!(tool_name.as_str(), "Glob" | "Grep")
+                && decision != crate::security::floor::PathDecision::Allow
+            {
+                if let (Some(reach), Some(ws)) = (reach.as_ref(), workspace.as_deref()) {
+                    let scope = reach.search_scope(
+                        &crate::security::floor::resolve(ws),
+                        &crate::security::floor::resolve(&target),
+                    );
+                    if !scope.is_empty() {
+                        if let Some(obj) = params.as_object_mut() {
+                            obj.insert(
+                                crate::tools::builtin::fs::VISITOR_SCOPE_PARAM.into(),
+                                serde_json::json!(scope
+                                    .iter()
+                                    .map(|p| p.to_string_lossy().into_owned())
+                                    .collect::<Vec<_>>()),
+                            );
+                        }
+                        decision = crate::security::floor::PathDecision::Allow;
+                    }
+                }
+            }
             listed_file_call =
                 reach.is_some() && decision == crate::security::floor::PathDecision::Allow;
             // ADR-113 D4, D10: a path the owner's file does not list is

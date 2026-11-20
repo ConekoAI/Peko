@@ -263,14 +263,30 @@ async fn untrusted_runs_cannot_reach_outside_the_workspace() {
     let out = h.call_as(&caller, "Read", json!({"file_path": own})).await;
     assert!(out.success, "{}", out.display);
     h.write("contacts/dm_y/notes.md", "someone else's");
+    let out = h
+        .call_as(
+            &caller,
+            "Read",
+            json!({"file_path": "contacts/dm_y/notes.md"}),
+        )
+        .await;
+    assert!(!out.success, "{}", out.display);
+    // A search over the conversations' folders, or the whole workspace,
+    // runs but sees only this conversation's own folder (and what is
+    // shared), never another's.
     for (tool, params) in [
-        ("Read", json!({"file_path": "contacts/dm_y/notes.md"})),
         ("Glob", json!({"pattern": "**/*.md", "path": "contacts"})),
         ("Grep", json!({"pattern": "else", "path": "contacts"})),
         ("Glob", json!({"pattern": "**/*.md"})),
     ] {
         let out = h.call_as(&caller, tool, params).await;
-        assert!(!out.success, "{tool}: {}", out.display);
+        assert!(out.success, "{tool}: {}", out.display);
+        assert!(!out.display.contains("dm_y"), "{tool}: {}", out.display);
+        assert!(
+            !out.display.contains("someone else"),
+            "{tool}: {}",
+            out.display
+        );
     }
     let _ = std::fs::remove_file(outside);
 }
@@ -1142,7 +1158,6 @@ async fn an_unlisted_call_asks_the_owner_where_the_rule_says_so() {
         ("Bash", json!({"command": "echo hi"})),
         ("Read", json!({"file_path": "contacts/dm_y/notes.md"})),
         ("Read", json!({"file_path": "/etc/hosts"})),
-        ("Glob", json!({"pattern": "**/*"})),
     ] {
         let out = h.call_as(&caller, tool, params).await;
         assert!(
@@ -1151,6 +1166,11 @@ async fn an_unlisted_call_asks_the_owner_where_the_rule_says_so() {
             out.display
         );
     }
+    // A search from the top is limited to what the visitor reaches,
+    // never put to the owner.
+    let out = h.call_as(&caller, "Glob", json!({"pattern": "**/*"})).await;
+    assert!(out.value["pending_approval"].is_null(), "{}", out.display);
+    assert!(!out.display.contains("dm_y"), "{}", out.display);
     assert_eq!(gate.asked.lock().unwrap().len(), 2);
 
     // The approved call replays as the requester and now runs; a replay
@@ -1278,4 +1298,76 @@ async fn a_visitor_whose_rule_does_not_ask_never_reaches_the_owner() {
         )
         .await;
     assert_eq!(out.value["pending_approval"], "apr_test", "{}", out.value);
+}
+
+/// ADR-113: a visitor's search from the top of the workspace runs, and
+/// finds only what the visitor reaches: the shared files and its own
+/// conversation's folder, never the owner's memory or another
+/// conversation's notes. A search from a folder with nothing reachable in
+/// it is still refused, and the model cannot widen a scope itself.
+#[tokio::test]
+async fn a_visitors_search_from_the_top_finds_only_what_it_reaches() {
+    let h = ToolHarness::new().await;
+    let gate = FakeGate::new(Verdict::Allow);
+    h.tooling.dispatcher().set_policy_gate(gate.clone());
+    h.write(
+        "ACCESS.toml",
+        ASKING
+            .replace("ask_owner = true", "ask_owner = false")
+            .as_str(),
+    );
+    h.write("public/faq.md", "We open at 9:30.");
+    h.write(
+        "kb/MEMORY.md",
+        "We open at 9:30 for the owner's secret meeting.",
+    );
+    h.write(
+        "contacts/dm_x/notes.md",
+        "Prefers mornings. We open at 9:30.",
+    );
+    h.write(
+        "contacts/dm_other/notes.md",
+        "Someone else. We open at 9:30.",
+    );
+    let caller = Caller::acting_for(guest(Trust::Untrusted));
+
+    let out = h
+        .call_as(&caller, "Glob", json!({"pattern": "**/*.md"}))
+        .await;
+    assert!(out.success, "{}", out.display);
+    assert!(out.display.contains("public/faq.md"), "{}", out.display);
+    assert!(
+        out.display.contains("contacts/dm_x/notes.md"),
+        "{}",
+        out.display
+    );
+    assert!(!out.display.contains("MEMORY"), "{}", out.display);
+    assert!(!out.display.contains("dm_other"), "{}", out.display);
+
+    let out = h.call_as(&caller, "Grep", json!({"pattern": "9:30"})).await;
+    assert!(out.success, "{}", out.display);
+    assert!(out.display.contains("faq.md"), "{}", out.display);
+    assert!(!out.display.contains("secret"), "{}", out.display);
+    assert!(!out.display.contains("dm_other"), "{}", out.display);
+
+    // A model's own scope is dropped: the dispatcher sets it.
+    let out = h
+        .call_as(
+            &caller,
+            "Glob",
+            json!({"pattern": "**/*.md", "__visitor_scope": [h.workspace().join("kb").display().to_string()]}),
+        )
+        .await;
+    assert!(out.success, "{}", out.display);
+    assert!(!out.display.contains("MEMORY"), "{}", out.display);
+
+    // Nothing reachable under `kb/`: still refused.
+    let out = h
+        .call_as(&caller, "Glob", json!({"pattern": "*", "path": "kb"}))
+        .await;
+    assert!(!out.success, "{}", out.display);
+
+    // The owner's search is not limited.
+    let out = h.call("Glob", json!({"pattern": "**/*.md"})).await;
+    assert!(out.display.contains("MEMORY"), "{}", out.display);
 }

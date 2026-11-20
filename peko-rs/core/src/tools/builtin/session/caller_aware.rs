@@ -207,6 +207,7 @@ impl Tool for CallerAwareSessionTool {
                     })?
                     .tooling()
                     .task_registry_for(&principal.id);
+                let is_status = params["action"].as_str() == Some("status");
                 let tool = Self::per_call_tool(
                     &principal,
                     inbox_registry,
@@ -215,7 +216,12 @@ impl Tool for CallerAwareSessionTool {
                     ctx.acting_for(),
                 )
                 .await;
-                tool.execute(params).await
+                let mut out = tool.execute(params).await?;
+                if is_status {
+                    let port = principals.upgrade().and_then(|m| m.channel_port());
+                    out["this_run"] = this_run(&principal.workspace_path, port, &ctx.acting_for());
+                }
+                Ok(out)
             }
             SessionCallerMode::Agent { runtime } => {
                 // ADR-078 D4: every call sees only what its stamp reaches.
@@ -242,6 +248,48 @@ impl Tool for CallerAwareSessionTool {
             }
         }
     }
+}
+
+/// Whom the calling run acts for and what it may reach, for `Session
+/// status` (ADR-078, ADR-113): a peko checks this instead of trying a
+/// call to find out.
+fn this_run(
+    workspace: &std::path::Path,
+    port: Option<Arc<dyn peko_channel::ChannelPort>>,
+    stamp: &peko_tools_core::ActingFor,
+) -> Value {
+    let mut run = serde_json::json!({
+        "acting_for": stamp.actor,
+        "name": stamp.name,
+        "trust": stamp.trust.as_str(),
+        "conversation": stamp.compartment.channel(),
+    });
+    if stamp.is_owner() {
+        run["reaches"] = Value::String("everything: this run acts for the owner".into());
+    } else {
+        let reach = match &port {
+            Some(port) => crate::security::access::reach_by_keys(
+                workspace,
+                stamp,
+                &peko_channel::PortKeys(port.as_ref()),
+            ),
+            None => crate::security::access::reach_by_keys(
+                workspace,
+                stamp,
+                &peko_subject::CanonicalKeys,
+            ),
+        };
+        if let Some(reach) = reach {
+            run["reaches"] = serde_json::json!({
+                "files": reach.reachable(),
+                "own_folder": reach.own_dir,
+                "tools": reach.rule.tools,
+                "mcp_servers": reach.rule.mcp,
+                "requests_go_to_owner": reach.rule.ask_owner,
+            });
+        }
+    }
+    run
 }
 
 #[cfg(test)]
@@ -391,5 +439,58 @@ mod tests {
         );
         assert_eq!(daemon.name(), "Session");
         assert_eq!(daemon.parameters(), stock.parameters());
+    }
+}
+
+#[cfg(test)]
+mod this_run_tests {
+    use super::this_run;
+    use peko_tools_core::{ActingFor, Compartment, Origin, Trust};
+
+    /// `Session status` tells a visitor's run whom it acts for and what
+    /// the owner's `ACCESS.toml` gives it; an owner run reaches everything.
+    #[test]
+    fn this_run_names_the_stamp_and_its_reach() {
+        let ws = tempfile::tempdir().unwrap();
+        std::fs::write(
+            ws.path().join("ACCESS.toml"),
+            "[visitors]\ntools = [\"Read\", \"Glob\"]\nread = [\"public/\"]\n\
+             own = \"contacts/{conversation}/\"\nask_owner = true\n",
+        )
+        .unwrap();
+        let visitor = ActingFor {
+            actor: "visitor:local:mila".into(),
+            name: Some("Mila".into()),
+            trust: Trust::Untrusted,
+            compartment: Compartment::Conversation {
+                channel: "dm_x".into(),
+            },
+            origin: Origin::Ingress { channel: None },
+            owner_request: false,
+        };
+        let run = this_run(ws.path(), None, &visitor);
+        assert_eq!(run["acting_for"], "visitor:local:mila");
+        assert_eq!(run["trust"], "untrusted");
+        assert_eq!(run["conversation"], "dm_x");
+        assert!(
+            run["reaches"]["files"]
+                .as_str()
+                .unwrap()
+                .contains("`public`"),
+            "{run}"
+        );
+        assert_eq!(run["reaches"]["own_folder"], "contacts/dm_x");
+        assert_eq!(run["reaches"]["tools"], serde_json::json!(["Read", "Glob"]));
+        assert_eq!(run["reaches"]["requests_go_to_owner"], true);
+
+        let owner = ActingFor {
+            trust: Trust::Owner,
+            ..visitor
+        };
+        let run = this_run(ws.path(), None, &owner);
+        assert!(
+            run["reaches"].as_str().unwrap().starts_with("everything"),
+            "{run}"
+        );
     }
 }

@@ -62,7 +62,7 @@ impl SessionTool {
         r#"Inspect and manage your principal's stored sessions with 10 actions. Storage only: no model runs here; to run work in a session use Agent.
 
 `path` and `target` are absolute slug paths such as `sess:/user-bob/writer-1` (the `path` field from `list`); raw ids and relative slugs are refused. `sess:/` is your trunk: readable and usable as a list or find scope, never moved or removed. Actions on one session default to your current one.
-- status: one session's metadata and token usage.
+- status: one session's metadata and token usage, and (`this_run`) whom this run acts for and what it may reach: files, tools, MCP servers, whether requests go to the owner.
 - list: sessions, optionally under `path` and filtered by `peer`, `agent_name`, or `active_minutes`.
 - history: a session's messages.
 - find: case-insensitive search of transcripts for `query`.
