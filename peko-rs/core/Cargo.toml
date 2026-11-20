@@ -220,7 +220,7 @@ cron = "0.17"
 uuid = { version = "1.7", features = ["v4", "v5", "v7", "serde"] }
 
 # Directories
-dirs = "5.0"
+dirs = "7.0"
 
 # URL encoding
 url = "2.5"
