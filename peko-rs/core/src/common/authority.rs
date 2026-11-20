@@ -626,7 +626,7 @@ impl RuntimeAuthority {
             .shared
             .config_file;
         let contents = std::fs::read_to_string(config_path).ok()?;
-        let value: toml::Value = contents.parse().ok()?;
+        let value: toml::Value = toml::from_str(&contents).ok()?;
         value
             .get("did")
             .and_then(|v| v.as_str())

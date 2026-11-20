@@ -690,7 +690,7 @@ impl PathResolver {
                 Ok(c) => c,
                 Err(_) => continue,
             };
-            let value: toml::Value = match contents.parse() {
+            let value: toml::Value = match toml::from_str(&contents) {
                 Ok(v) => v,
                 Err(_) => continue,
             };
@@ -742,7 +742,7 @@ impl PathResolver {
                     Ok(c) => c,
                     Err(_) => continue,
                 };
-                let value: toml::Value = match contents.parse() {
+                let value: toml::Value = match toml::from_str(&contents) {
                     Ok(v) => v,
                     Err(_) => continue,
                 };
@@ -753,7 +753,7 @@ impl PathResolver {
             }
             let config_path = peko_config_path(&path);
             let contents = std::fs::read_to_string(&config_path).ok()?;
-            let value: toml::Value = contents.parse().ok()?;
+            let value: toml::Value = toml::from_str(&contents).ok()?;
             let did = value.get("did").and_then(|v| v.as_str()).unwrap_or("");
             return Some(peko_subject::PrincipalId(did.to_string()));
         }

@@ -29,7 +29,7 @@ tokio = { version = "1.35", features = ["sync", "time", "rt", "macros", "rt-mult
 dirs = "5.0"
 # `toml` is used by `load_compaction_config` + `MetadataDiscrepancy` config
 # diffing.
-toml = "0.8"
+toml = "1.1"
 # `scopeguard` is used by `BackgroundCompactor` to release in-flight
 # tracking on early return / panic.
 scopeguard = "1.2"

@@ -14,3 +14,4 @@ AGENTS.md
 /.workbuddy-ai
 .workbuddy/
 .claude/
+.DS_Store
