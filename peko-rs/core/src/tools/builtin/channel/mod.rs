@@ -18,12 +18,14 @@
 //! ADR-066 P2: no capability gate — the membership check at the
 //! port call site is the boundary; these tools do not gate further.
 
+pub mod ask;
 pub mod attach;
 pub mod channel_read;
 pub mod channel_send;
 pub mod channel_tool;
 pub mod contacts;
 pub mod suggest;
+pub use ask::{AskTool, ASK_TOOL_NAME};
 pub use attach::{AttachTool, ATTACH_TOOL_NAME};
 pub use channel_read::ChannelReadTool;
 pub use channel_send::{

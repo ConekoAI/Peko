@@ -212,6 +212,7 @@ async fn post_to_group(
         parent: None,
         attachments,
         model: None,
+        answers: None,
     };
     if let Ok(client) = DaemonClient::connect().await {
         if let Ok(resp) = client.request_response(packet).await {
@@ -309,6 +310,8 @@ async fn process_response_stream(
     // Suggested replies posted with the answer (ADR-093), shown as a
     // hint on stderr so stdout stays the assistant text alone.
     let mut options: Vec<String> = Vec::new();
+    // Questions asked with the answer (ADR-114), shown the same way.
+    let mut asked: Option<peko_protocol::channel::Ask> = None;
     while let Some(packet) = next_or_stop(
         &mut stream,
         &ctrl_c_signal,
@@ -337,9 +340,11 @@ async fn process_response_stream(
             ResponsePacket::PrincipalSentDone {
                 content,
                 options: offered,
+                ask,
                 ..
             } => {
                 options = offered;
+                asked = ask;
                 if !has_started_line && !content.is_empty() {
                     print!("\n{}: {}", args.principal, content);
                     std::io::stdout().flush()?;
@@ -406,6 +411,9 @@ async fn process_response_stream(
                 if let Some(hint) = crate::commands::log::options_hint(&options) {
                     eprintln!("{hint}");
                 }
+                if let Some(hint) = crate::commands::log::ask_hint(asked.as_ref()) {
+                    eprintln!("{hint}");
+                }
                 if success {
                     if let Some(ref s) = summary {
                         eprintln!("{}", s.format_footer());
@@ -458,6 +466,11 @@ async fn wait_for_queued_reply(
                                 println!("{}: {}", args.principal, message.text);
                                 if let Some(hint) =
                                     crate::commands::log::options_hint(&message.options)
+                                {
+                                    eprintln!("{hint}");
+                                }
+                                if let Some(hint) =
+                                    crate::commands::log::ask_hint(message.ask.as_ref())
                                 {
                                     eprintln!("{hint}");
                                 }

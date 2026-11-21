@@ -19,7 +19,7 @@ use peko_protocol::ipc::HEARTBEAT_INTERVAL_SECS;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 
-use super::{map_posted_to_log_message, LogSelf, PrincipalHost};
+use super::{map_posted_to_log_message, LogSelf, PostCard, PrincipalHost};
 use crate::ipc::packet::ResponsePacket;
 use crate::ipc::response_sink::ResponseSink;
 use crate::ipc::send_response::send_response;
@@ -304,18 +304,25 @@ fn appended(
         attachments,
         options,
         msg_id,
+        ask,
+        answers,
         ..
     } = event
     else {
         return None;
     };
     let message = map_posted_to_log_message(
-        msg_id.unwrap_or(fallback_id),
+        msg_id.clone().unwrap_or(fallback_id),
         &author,
         &at,
         text,
         attachments,
-        options,
+        PostCard {
+            options,
+            msg_id,
+            ask,
+            answers,
+        },
         &conversation.me,
     );
     Some(ResponsePacket::PrincipalSentAppended {

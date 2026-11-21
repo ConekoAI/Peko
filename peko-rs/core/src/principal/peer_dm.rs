@@ -209,11 +209,11 @@ pub(crate) async fn post_peer_dm_inbound(
     author: &str,
     text: &str,
 ) -> Result<()> {
-    post_peer_dm_inbound_attached(port, principal, channel, author, text, Vec::new()).await
+    post_peer_dm_inbound_attached(port, principal, channel, author, text, Vec::new(), None).await
 }
 
 /// [`post_peer_dm_inbound`] with the files the peer attached
-/// (ADR-088 D3).
+/// (ADR-088 D3) and the answers it gives (ADR-114 D1).
 pub(crate) async fn post_peer_dm_inbound_attached(
     port: &Arc<dyn ChannelPort>,
     principal: &PrincipalId,
@@ -221,12 +221,15 @@ pub(crate) async fn post_peer_dm_inbound_attached(
     author: &str,
     text: &str,
     attachments: Vec<peko_protocol::channel::Attachment>,
+    answers: Option<peko_protocol::channel::Answers>,
 ) -> Result<()> {
     port.post_attributed(
         channel,
         &ActorRef::from(principal),
         author,
-        PostMsg::root(text).with_attachments(attachments),
+        PostMsg::root(text)
+            .with_attachments(attachments)
+            .with_answers(answers),
     )
     .await?;
     Ok(())
@@ -255,16 +258,18 @@ pub(crate) async fn post_peer_dm_reply(
     principal: &PrincipalId,
     channel: &ChannelId,
     text: &str,
-) -> Vec<String> {
-    // Suggested replies the run staged with `Suggest` (ADR-093 D3) go on
-    // this post; a run without a reply drops them.
-    let options = super::reply_options::take(port.as_ref(), channel, principal).await;
+) -> super::reply_options::ReplyExtras {
+    use super::reply_options::ReplyExtras;
+    // Suggested replies the run staged with `Suggest` (ADR-093 D3) and
+    // questions it staged with `Ask` (ADR-114 D2) go on this post; a run
+    // without a reply drops them.
+    let extras = super::reply_options::take(port.as_ref(), channel, principal).await;
     let group = matches!(
         port.conversation_kind(channel).await,
         Ok(peko_channel::ConversationKind::Group)
     );
     let Some(text) = super::quiet_reply::postable(text, group) else {
-        return Vec::new();
+        return ReplyExtras::default();
     };
     let via = port
         .binding_for(channel, principal)
@@ -274,16 +279,35 @@ pub(crate) async fn post_peer_dm_reply(
         .map(|b| b.session)
         .filter(|session| session.starts_with('/'))
         .map(|session| format!("{}{}", peko_session::path::SCHEME_PREFIX, session));
-    let mut msg = PostMsg::root(text).with_options(options.clone());
-    msg.via = via;
+    let mut msg = PostMsg::root(text)
+        .with_options(extras.options.clone())
+        .with_ask(extras.ask.clone());
+    msg.via = via.clone();
+    let plain = extras != ReplyExtras::default();
     match port.post(channel, &ActorRef::from(principal), msg).await {
-        Ok(_) => options,
+        Ok(_) => extras,
+        // The reply matters more than what rides on it: post it plain.
+        Err(e) if plain => {
+            warn!(
+                channel = %channel,
+                "reply options or questions refused ({e}); posting the reply without them"
+            );
+            let mut msg = PostMsg::root(text);
+            msg.via = via;
+            if let Err(e) = port.post(channel, &ActorRef::from(principal), msg).await {
+                warn!(
+                    channel = %channel,
+                    "peer DM reply projection failed (reply already delivered): {e}"
+                );
+            }
+            ReplyExtras::default()
+        }
         Err(e) => {
             warn!(
                 channel = %channel,
                 "peer DM reply projection failed (reply already delivered): {e}"
             );
-            Vec::new()
+            ReplyExtras::default()
         }
     }
 }
@@ -629,13 +653,14 @@ mod tests {
         let two = vec!["Ship it".to_string(), "Hold off".into()];
         reply_options::stage(port.as_ref(), &channel, &principal_id(), two.clone()).await;
         let sent = post_peer_dm_reply(&port, &principal_id(), &channel, "Ship today?").await;
-        assert_eq!(sent, two);
+        assert_eq!(sent.options, two);
         reply_options::stage(port.as_ref(), &channel, &principal_id(), two.clone()).await;
         assert!(post_peer_dm_reply(&port, &principal_id(), &channel, " ")
             .await
+            .options
             .is_empty());
         let later = post_peer_dm_reply(&port, &principal_id(), &channel, "Done.").await;
-        assert!(later.is_empty(), "dropped, not kept: {later:?}");
+        assert!(later.options.is_empty(), "dropped, not kept: {later:?}");
 
         let options: Vec<(String, Vec<String>)> = store
             .peek(&channel, &peko_channel::Checkpoint::default())

@@ -289,6 +289,56 @@ pub struct Attachment {
     pub sha256: Option<String>,
 }
 
+/// Questions a peko asks with its post (ADR-114 D1): a card that stays
+/// open until someone answers it or the peko posts again. Carries no
+/// authority — an answer is an ordinary post by whoever sends it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ask {
+    /// The member the card is for (an actor address on the roster), in
+    /// a group; `None` is anyone in the conversation. Clients show the
+    /// answer controls only to them; the store does not refuse others.
+    #[serde(rename = "for", default, skip_serializing_if = "Option::is_none")]
+    pub for_actor: Option<String>,
+    /// 1–4 questions, answered together.
+    pub questions: Vec<Question>,
+}
+
+/// One question on an [`Ask`] card.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Question {
+    /// The question, at most 300 characters.
+    pub text: String,
+    /// None (a free-text question) or 2–4 choices of one line each.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
+    /// Whether more than one option may be chosen.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub multi: bool,
+}
+
+/// A person's answers to an [`Ask`] card (ADR-114 D1). The post's
+/// `text` is a readable rendering of them, so every reader that ignores
+/// this field still reads the whole answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Answers {
+    /// The `msg_id` of the post whose questions these answer.
+    pub to: String,
+    /// One pick per question, in order.
+    pub picks: Vec<Pick>,
+}
+
+/// The answer to one [`Question`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pick {
+    /// Options of the question that were chosen; at most one unless the
+    /// question is `multi`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chosen: Vec<String>,
+    /// The person's own words, beside or instead of a choice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub other: Option<String>,
+}
+
 /// What a board item is doing (ADR-101 D1). An item a `release` reopens
 /// has no claimant; `open` is never set by an `update`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -453,6 +503,15 @@ pub enum ChannelEvent {
         /// before.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         board: Option<BoardOp>,
+        /// ADR-114: questions a peko asks with this post. Only a
+        /// principal's post carries them. Omitted when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ask: Option<Ask>,
+        /// ADR-114: a person's answers to a post's questions. Only a
+        /// person's post carries them; the post's `text` reads the same
+        /// answers. Omitted when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        answers: Option<Answers>,
     },
     /// A principal was invited / joined the channel. Append-only — a
     /// subsequent `MemberLeft` carries the inverse.
@@ -694,6 +753,8 @@ mod tests {
             options: Vec::new(),
             model: None,
             board: None,
+            ask: None,
+            answers: None,
         };
         let expected = r#"{"kind":"posted","channel":"chan_abcdefgh","author":"prin_alice","parent":null,"text":"hello","at":"2026-08-05T12:01:00Z"}"#;
         assert_eq!(serde_json::to_string(&ev).unwrap(), expected);
@@ -715,6 +776,8 @@ mod tests {
             options: Vec::new(),
             model: None,
             board: None,
+            ask: None,
+            answers: None,
         };
         let expected = r#"{"kind":"posted","channel":"chan_abcdefgh","author":"prin_bob","parent":"node_xyz12345","text":"reply","at":"2026-08-05T12:02:00Z"}"#;
         assert_eq!(serde_json::to_string(&ev).unwrap(), expected);
@@ -740,6 +803,8 @@ mod tests {
             options: Vec::new(),
             model: None,
             board: None,
+            ask: None,
+            answers: None,
         };
         let expected = r#"{"kind":"posted","channel":"chan_abcdefgh","author":"prin_alice","parent":null,"text":"hello","at":"2026-08-05T12:01:00Z","via":"/user-a/reminder"}"#;
         assert_eq!(serde_json::to_string(&ev).unwrap(), expected);
@@ -804,6 +869,8 @@ mod tests {
                     options: Vec::new(),
                     model: None,
                     board: None,
+                    ask: None,
+                    answers: None,
                 },
                 "posted",
             ),

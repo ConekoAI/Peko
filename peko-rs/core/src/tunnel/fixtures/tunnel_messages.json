@@ -187,6 +187,24 @@
   {
     "channelId": "group:research",
     "recipientRuntimeId": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+    "requestId": "evt-posted",
+    "sealed": "hpke-sealed-body",
+    "sourcePrincipalDid": "did:key:z6MkPrincipal",
+    "sourceRuntimeId": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+    "type": "tunnel_channel_event"
+  },
+  {
+    "channelId": "group:research",
+    "recipientRuntimeId": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+    "requestId": "evt-posted",
+    "sealed": "hpke-sealed-body",
+    "sourcePrincipalDid": "did:key:z6MkPrincipal",
+    "sourceRuntimeId": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+    "type": "tunnel_channel_event"
+  },
+  {
+    "channelId": "group:research",
+    "recipientRuntimeId": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
     "requestId": "evt-member_joined",
     "sealed": "hpke-sealed-body",
     "sourcePrincipalDid": "did:key:z6MkPrincipal",

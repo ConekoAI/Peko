@@ -37,25 +37,35 @@ impl SuggestTool {
         principal: &PrincipalId,
         ctx: &ToolContext,
     ) -> anyhow::Result<()> {
-        let binding = self.port.binding_for(channel, principal).await?;
-        let bound = match (binding, ctx.session_id.as_deref()) {
-            (Some(binding), Some(session)) if binding.session == session => true,
-            (Some(binding), Some(_)) => {
-                let via = super::channel_send::via_for_ctx(ctx).await;
-                via.as_deref()
-                    .and_then(|v| v.strip_prefix(peko_session::path::SCHEME_PREFIX))
-                    == Some(binding.session.as_str())
-            }
-            _ => false,
-        };
         anyhow::ensure!(
-            bound,
+            is_conversation_session(self.port.as_ref(), channel, principal, ctx).await?,
             "Suggest: only the conversation's own reply can carry suggested replies; \
              this run reports back to the one that started it — include the choices in \
              your result instead"
         );
         Ok(())
     }
+}
+
+/// Whether the calling run is `channel`'s own bound session — the one
+/// whose final text is the conversation's reply.
+pub(super) async fn is_conversation_session(
+    port: &dyn ChannelPort,
+    channel: &ChannelId,
+    principal: &PrincipalId,
+    ctx: &ToolContext,
+) -> anyhow::Result<bool> {
+    let binding = port.binding_for(channel, principal).await?;
+    Ok(match (binding, ctx.session_id.as_deref()) {
+        (Some(binding), Some(session)) if binding.session == session => true,
+        (Some(binding), Some(_)) => {
+            let via = super::channel_send::via_for_ctx(ctx).await;
+            via.as_deref()
+                .and_then(|v| v.strip_prefix(peko_session::path::SCHEME_PREFIX))
+                == Some(binding.session.as_str())
+        }
+        _ => false,
+    })
 }
 
 #[async_trait]
@@ -217,7 +227,7 @@ mod tests {
             &PrincipalId(PRINCIPAL.into()),
         )
         .await;
-        assert_eq!(staged, ["Ship it", "Hold off"]);
+        assert_eq!(staged.options, ["Ship it", "Hold off"]);
     }
 
     #[tokio::test]
@@ -237,7 +247,7 @@ mod tests {
             &PrincipalId(PRINCIPAL.into()),
         )
         .await;
-        assert!(staged.is_empty());
+        assert!(staged.options.is_empty());
     }
 
     #[tokio::test]

@@ -4,9 +4,10 @@
 
 use crate::common::paths::PathResolver;
 use crate::tools::builtin::{
-    channel, messaging, AgentCatalogTool, AsyncTool, AttachTool, BashTool, CallerAwareSessionTool,
-    ChannelReadTool, EditTool, FetchTool, GlobTool, GrepTool, ModelCallTool, ModelListTool,
-    PlanTool, ReadTool, SkillTool, SuggestTool, TaskTool, ToolLogTool, WorkflowTool, WriteTool,
+    channel, messaging, AgentCatalogTool, AskTool, AsyncTool, AttachTool, BashTool,
+    CallerAwareSessionTool, ChannelReadTool, EditTool, FetchTool, GlobTool, GrepTool,
+    ModelCallTool, ModelListTool, PlanTool, ReadTool, SkillTool, SuggestTool, TaskTool,
+    ToolLogTool, WorkflowTool, WriteTool,
 };
 use crate::tools::catalog::ToolCatalog;
 use crate::tools::metadata::ToolSource;
@@ -54,7 +55,7 @@ macro_rules! builtin_manifest {
 builtin_manifest! {
     RUNTIME_TOOL_NAMES: Runtime, Runtime, false => [
         "Bash", "Read", "Write", "Edit", "Glob", "Grep",
-        "Cron", "ChannelRead", "Attach", "Suggest", "Fetch"
+        "Cron", "ChannelRead", "Attach", "Suggest", "Ask", "Fetch"
     ];
     DAEMON_TOOL_NAMES: Runtime, Daemon, false => ["ModelCall", "Workflow"];
     DAEMON_CALLER_TOOL_NAMES: Runtime, Daemon, true => ["Session", "Agent"];
@@ -144,6 +145,8 @@ pub async fn install_runtime(
         Arc::new(AttachTool::new(channel_port.clone())),
         // ADR-093 D3 — suggested replies go with the conversation's reply.
         Arc::new(SuggestTool::new(channel_port.clone())),
+        // ADR-114 D2 — questions that wait for an answer.
+        Arc::new(AskTool::new(channel_port.clone())),
         // ADR-103 — one public web page or text file by URL.
         Arc::new(FetchTool::new()),
     ];

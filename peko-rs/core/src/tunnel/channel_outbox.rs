@@ -576,6 +576,8 @@ mod tests {
                 options: Vec::new(),
                 model: None,
                 board: None,
+                ask: None,
+                answers: None,
             },
             source: "prin_a".into(),
         }

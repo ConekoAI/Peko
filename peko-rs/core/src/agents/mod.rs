@@ -30,6 +30,7 @@ pub mod agent_config;
 pub mod run_limits;
 
 // Subagent support
+pub mod delegated_asks;
 pub mod subagent_announce;
 pub mod subagent_error;
 pub mod subagent_executor;

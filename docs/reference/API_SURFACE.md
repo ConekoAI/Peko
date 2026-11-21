@@ -785,6 +785,21 @@ it on every local post). `ResponsePacket::PrincipalSentDone` gains
 `options` (serde default empty). The `Suggest` built-in
 (`tools::builtin::SuggestTool`) stages replies for the conversation's reply.
 
+ADR-114: `peko_protocol::channel` gains `Ask`, `Question`, `Answers`, and
+`Pick`; `ChannelEvent::Posted` gains `ask: Option<Ask>` and
+`answers: Option<Answers>`, and `PostMsg` gains `with_ask` / `with_answers`.
+`peko_channel::validate_ask`, `validate_answers`, and `render_answers` check
+and render them (`MAX_QUESTIONS`, `MAX_QUESTION_CHARS`, `MAX_ANSWER_CHARS`);
+`ChannelStore::asked_card` reads a post's questions.
+`ChannelRouter::handle_post_attached` takes `answers`.
+`ResponsePacket::PrincipalSentDone` gains `ask`; `PrincipalLogMessage` gains
+`msg_id`, `ask`, and `answers`; `RequestPacket::PrincipalSend`,
+`PrincipalSendStream`, and `ChannelPost` gain `answers` (all serde default).
+The `Ask` built-in (`tools::builtin::AskTool`) stages questions for the
+conversation's reply or, in a delegated run, for its result
+(`agents::delegated_asks`); `SubagentResult` gains `ask`, and `Agent` results
+gain `needs_input` / `questions` when it is set.
+
 ### IPC: `RequestPacket::PrincipalLog` / `ResponsePacket::PrincipalLog`
 
 `RequestPacket::PrincipalLog` carries `name`, `peer`,

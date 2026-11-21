@@ -24,6 +24,10 @@ pub const EXEMPT_TOOLS: &[&str] = &[
     // Stages suggested replies for the run's own reply (ADR-093): text
     // the person may choose to send, no reach beyond the conversation.
     "Suggest",
+    // Stages questions for the run's reply, or for the run that
+    // delegated it (ADR-114 D2): they ride a reply that is reviewed
+    // already, and an answer carries no authority.
+    "Ask",
 ];
 
 /// Most argument text the reviewer sees per call.

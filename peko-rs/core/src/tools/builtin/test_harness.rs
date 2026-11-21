@@ -198,6 +198,7 @@ pub(crate) fn builtin_tools(backends: &Backends, fakes: &Fakes) -> Vec<Arc<dyn T
         Arc::new(ChannelReadTool::new(backends.channels.clone())),
         Arc::new(AttachTool::new(backends.channels.clone())),
         Arc::new(SuggestTool::new(backends.channels.clone())),
+        Arc::new(AskTool::new(backends.channels.clone())),
         Arc::new(FetchTool::new()),
         Arc::new(channel::contacts::ContactsTool::new(
             backends.channels.clone(),
@@ -563,6 +564,11 @@ mod tests {
                 "Suggest",
                 json!({"replies":["Yes", "Not yet"]}),
                 "not in a conversation",
+            ),
+            (
+                "Ask",
+                json!({"questions":[{"text":"Which day?"}]}),
+                "no one to ask",
             ),
             (
                 "Fetch",

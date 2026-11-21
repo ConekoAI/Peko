@@ -476,6 +476,7 @@ impl DaemonClient {
             override_model,
             attachments: Vec::new(),
             send_as: None,
+            answers: None,
         };
         self.send_request(packet).await
     }
@@ -513,6 +514,7 @@ impl DaemonClient {
             override_model,
             attachments,
             send_as,
+            answers: None,
         };
         self.send_request(packet).await
     }

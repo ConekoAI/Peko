@@ -502,6 +502,20 @@ impl GroupWakeResponder {
     /// A human-authored (user or visitor) root post — what a
     /// [`WakePolicy::Human`] binding wakes on. Principal posts and
     /// replies never qualify, whatever the policy (ADR-072).
+    /// Whether this channel's post `msg_id` is this principal's.
+    async fn asked_by_me(&self, msg_id: &str) -> bool {
+        let Ok(Some((_, ChannelEvent::Posted { author, .. }))) =
+            self.inner.port.find_post(&self.inner.channel, msg_id).await
+        else {
+            return false;
+        };
+        let me = ActorRef::from(&self.inner.principal);
+        author == self.inner.principal.0
+            || author
+                .parse::<ActorRef>()
+                .is_ok_and(|a| self.inner.port.key_of(&a) == self.inner.port.key_of(&me))
+    }
+
     fn human_root_post(event: &ChannelEvent) -> Option<(&str, &str)> {
         match event {
             ChannelEvent::Posted {
@@ -561,6 +575,22 @@ impl ChannelResponder for GroupWakeResponder {
                 return Ok(());
             }
             WakePolicy::Mention => {}
+        }
+        // ADR-114 D5: an answer to this peko's questions counts as
+        // mentioning it.
+        let answered = match &ctx.event {
+            ChannelEvent::Posted {
+                answers: Some(answers),
+                ..
+            } if Self::human_root_post(&ctx.event).is_some() => self.asked_by_me(&answers.to).await,
+            _ => false,
+        };
+        if answered {
+            if let Some((author, text)) = Self::human_root_post(&ctx.event) {
+                let input = format!("{author}: {text}");
+                spawn_turn(Arc::clone(&self.inner), ctx, input);
+            }
+            return Ok(());
         }
         let me = self
             .inner
@@ -1365,6 +1395,8 @@ mod tests {
             options: Vec::new(),
             model: None,
             board: None,
+            ask: None,
+            answers: None,
         }
     }
 
@@ -1382,6 +1414,8 @@ mod tests {
             options: Vec::new(),
             model: None,
             board: None,
+            ask: None,
+            answers: None,
         }
     }
 
@@ -2610,6 +2644,78 @@ mod tests {
                 "4",
                 board_post("user:local:alice", Some("principal:local:prin_self")),
             ))
+            .await
+            .unwrap();
+        assert!(eventually(|| async { !calls.lock().unwrap().is_empty() }).await);
+    }
+
+    /// ADR-114 D5: under the default `Mention` policy, a person's answer
+    /// to this peko's questions wakes it; answers naming anything else
+    /// do not.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn answers_to_my_questions_wake_me() {
+        let (store, _tmp) = test_store("answer-wake");
+        let principal = pid("prin_self");
+        let channel = store
+            .create(&principal, CreateOpts::runtime("group"))
+            .await
+            .unwrap();
+        store.bind(&channel, &principal, "session-1").await.unwrap();
+        let (driver, calls) = StubDriver::new("r");
+        let responder = select_responder(
+            channel.clone(),
+            principal.clone(),
+            Arc::clone(&store) as Arc<dyn ChannelPort>,
+            ConversationKind::Group,
+            Some(stub_drivers(driver, "session-1")),
+        );
+        let card = peko_protocol::channel::Ask {
+            for_actor: None,
+            questions: vec![peko_protocol::channel::Question {
+                text: "Which day?".into(),
+                options: vec!["Tue".into(), "Thu".into()],
+                multi: false,
+            }],
+        };
+        let (_, asked) = store
+            .post_with_event(
+                &channel,
+                &ActorRef::from(&principal),
+                PostMsg::root("When?").with_ask(Some(card)),
+            )
+            .await
+            .unwrap();
+        let ChannelEvent::Posted {
+            msg_id: Some(card_id),
+            ..
+        } = asked
+        else {
+            panic!("the card has an id");
+        };
+        let answer = |to: &str| {
+            let mut ev = posted("user:local:alice", "Which day? → Tue");
+            if let ChannelEvent::Posted { answers, .. } = &mut ev {
+                *answers = Some(peko_protocol::channel::Answers {
+                    to: to.to_string(),
+                    picks: vec![peko_protocol::channel::Pick {
+                        chosen: vec!["Tue".into()],
+                        other: None,
+                    }],
+                });
+            }
+            ev
+        };
+        responder
+            .consider_response(respond_ctx(&principal, &channel, "5", answer("msg_other")))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "answers to someone else's post do not wake"
+        );
+        responder
+            .consider_response(respond_ctx(&principal, &channel, "6", answer(&card_id)))
             .await
             .unwrap();
         assert!(eventually(|| async { !calls.lock().unwrap().is_empty() }).await);

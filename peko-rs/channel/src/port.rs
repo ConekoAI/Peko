@@ -1072,6 +1072,8 @@ pub fn portable_post(event: ChannelEvent, author: String) -> ChannelEvent {
             options,
             model,
             board,
+            ask,
+            answers,
             ..
         } => ChannelEvent::Posted {
             channel,
@@ -1093,6 +1095,9 @@ pub fn portable_post(event: ChannelEvent, author: String) -> ChannelEvent {
             model,
             // ADR-101: a copy caught up from history folds the same board.
             board,
+            // ADR-114: a card and its answers read the same everywhere.
+            ask,
+            answers,
         },
         other => other,
     }
@@ -1144,6 +1149,14 @@ pub struct PostMsg {
     /// ADR-101: the board change this post makes; `None` for most
     /// posts. The store refuses an op that breaks [`crate::board::validate_op`].
     pub board: Option<peko_protocol::channel::BoardOp>,
+    /// ADR-114: questions the posting peko asks; `None` for most posts.
+    /// The store refuses a card that breaks [`validate_ask`], and one on
+    /// a post that is not a principal's.
+    pub ask: Option<peko_protocol::channel::Ask>,
+    /// ADR-114: a person's answers to a post's questions; `None` for
+    /// most posts. The store refuses answers that do not fit the card
+    /// they name, and answers on a principal's post.
+    pub answers: Option<peko_protocol::channel::Answers>,
 }
 
 impl PostMsg {
@@ -1158,6 +1171,8 @@ impl PostMsg {
             options: Vec::new(),
             model: None,
             board: None,
+            ask: None,
+            answers: None,
         }
     }
 
@@ -1172,6 +1187,8 @@ impl PostMsg {
             options: Vec::new(),
             model: None,
             board: None,
+            ask: None,
+            answers: None,
         }
     }
 
@@ -1196,6 +1213,20 @@ impl PostMsg {
     #[must_use]
     pub fn with_options(mut self, options: Vec<String>) -> Self {
         self.options = options;
+        self
+    }
+
+    /// Ask questions with the post (ADR-114).
+    #[must_use]
+    pub fn with_ask(mut self, ask: Option<peko_protocol::channel::Ask>) -> Self {
+        self.ask = ask;
+        self
+    }
+
+    /// Answer a post's questions (ADR-114).
+    #[must_use]
+    pub fn with_answers(mut self, answers: Option<peko_protocol::channel::Answers>) -> Self {
+        self.answers = answers;
         self
     }
 
@@ -1266,6 +1297,152 @@ pub fn validate_options(options: &[String]) -> std::result::Result<Vec<String>, 
         out.push(option.to_string());
     }
     Ok(out)
+}
+
+/// Most questions one card asks (ADR-114 D1).
+pub const MAX_QUESTIONS: usize = 4;
+/// Longest question, in characters (ADR-114 D1).
+pub const MAX_QUESTION_CHARS: usize = 300;
+/// Longest free-text answer to one question, in characters (ADR-114 D1).
+pub const MAX_ANSWER_CHARS: usize = 2_000;
+
+/// Check a question card (ADR-114 D1): 1–4 questions of 1–300
+/// characters, each with no options or 2–4 options as
+/// [`validate_options`] checks them. Returns the card trimmed.
+///
+/// # Errors
+/// A message naming the broken limit, written for the model that asked.
+pub fn validate_ask(
+    ask: &peko_protocol::channel::Ask,
+) -> std::result::Result<peko_protocol::channel::Ask, String> {
+    use peko_protocol::channel::{Ask, Question};
+    if ask.questions.is_empty() || ask.questions.len() > MAX_QUESTIONS {
+        return Err(format!(
+            "ask 1 to {MAX_QUESTIONS} questions, not {}",
+            ask.questions.len()
+        ));
+    }
+    let mut questions = Vec::with_capacity(ask.questions.len());
+    for (i, q) in ask.questions.iter().enumerate() {
+        let n = i + 1;
+        let text = q.text.trim();
+        if text.is_empty() {
+            return Err(format!("question {n} is empty"));
+        }
+        if text.chars().count() > MAX_QUESTION_CHARS {
+            return Err(format!(
+                "question {n} is longer than {MAX_QUESTION_CHARS} characters"
+            ));
+        }
+        let options = validate_options(&q.options).map_err(|e| format!("question {n}: {e}"))?;
+        if q.multi && options.is_empty() {
+            return Err(format!(
+                "question {n} allows several choices but offers none"
+            ));
+        }
+        questions.push(Question {
+            text: text.to_string(),
+            options,
+            multi: q.multi,
+        });
+    }
+    let for_actor = ask
+        .for_actor
+        .as_deref()
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+        .map(str::to_string);
+    Ok(Ask {
+        for_actor,
+        questions,
+    })
+}
+
+/// Check answers against the card they name (ADR-114 D1): one pick per
+/// question, chosen options from that question (at most one unless it
+/// is `multi`), free text within [`MAX_ANSWER_CHARS`], and something in
+/// every pick. Returns the answers trimmed.
+///
+/// # Errors
+/// A message naming the broken rule.
+pub fn validate_answers(
+    answers: &peko_protocol::channel::Answers,
+    ask: &peko_protocol::channel::Ask,
+) -> std::result::Result<peko_protocol::channel::Answers, String> {
+    use peko_protocol::channel::{Answers, Pick};
+    if answers.picks.len() != ask.questions.len() {
+        return Err(format!(
+            "the card asks {} questions; {} answers given",
+            ask.questions.len(),
+            answers.picks.len()
+        ));
+    }
+    let mut picks = Vec::with_capacity(answers.picks.len());
+    for (i, (pick, q)) in answers.picks.iter().zip(&ask.questions).enumerate() {
+        let n = i + 1;
+        let mut chosen: Vec<String> = Vec::with_capacity(pick.chosen.len());
+        for c in &pick.chosen {
+            let c = c.trim();
+            if !q.options.iter().any(|o| o == c) {
+                return Err(format!("answer {n}: {c:?} is not one of the options"));
+            }
+            if !chosen.iter().any(|x| x == c) {
+                chosen.push(c.to_string());
+            }
+        }
+        if chosen.len() > 1 && !q.multi {
+            return Err(format!("answer {n}: the question takes one choice"));
+        }
+        let other = pick
+            .other
+            .as_deref()
+            .map(str::trim)
+            .filter(|o| !o.is_empty())
+            .map(str::to_string);
+        if other
+            .as_ref()
+            .is_some_and(|o| o.chars().count() > MAX_ANSWER_CHARS)
+        {
+            return Err(format!(
+                "answer {n} is longer than {MAX_ANSWER_CHARS} characters"
+            ));
+        }
+        if chosen.is_empty() && other.is_none() {
+            return Err(format!("answer {n} is empty"));
+        }
+        picks.push(Pick { chosen, other });
+    }
+    let to = answers.to.trim();
+    if to.is_empty() {
+        return Err("answers name no post".to_string());
+    }
+    Ok(Answers {
+        to: to.to_string(),
+        picks,
+    })
+}
+
+/// The readable text of an answer post (ADR-114 D1): one line per
+/// question, `question → answer`. Clients write it; the runtime uses it
+/// when a client sends answers with no text.
+pub fn render_answers(
+    answers: &peko_protocol::channel::Answers,
+    ask: &peko_protocol::channel::Ask,
+) -> String {
+    ask.questions
+        .iter()
+        .zip(&answers.picks)
+        .map(|(q, pick)| {
+            let chosen = pick.chosen.join(", ");
+            let answer = match pick.other.as_deref() {
+                Some(other) if chosen.is_empty() => other.to_string(),
+                Some(other) => format!("{chosen} — {other}"),
+                None => chosen,
+            };
+            format!("{} → {answer}", q.text)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Options for [`ChannelPort::create`].

@@ -1898,6 +1898,92 @@ async fn agent_tool_runs_new_and_compact_through_the_production_runtime() {
     );
 }
 
+/// ADR-114 D4: a delegated run that calls `Ask` ends normally, and its
+/// questions come back on the `Agent` result as `needs_input`; the next
+/// run in the same session asks nothing unless it calls `Ask` again.
+#[tokio::test]
+async fn a_worker_that_asks_returns_needs_input() {
+    use crate::agents::subagent_runtime_impl::SubagentExecutorRuntime;
+    use crate::tools::builtin::messaging::AgentTool;
+    use crate::tools::builtin::AskTool;
+    use peko_tools_core::{ActingFor, Compartment, Origin, Tool, Trust};
+
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(workspace.path().join("roles")).unwrap();
+    std::fs::write(
+        workspace.path().join("roles/worker.md"),
+        "---\ndescription: \"worker\"\n---\n\nYou are a worker.\n",
+    )
+    .unwrap();
+    let tooling = crate::tools::runtime::ToolingRuntime::standalone();
+    tooling
+        .catalog()
+        .register_system(
+            Arc::new(AskTool::new(Arc::new(peko_channel::NoopChannelPort))),
+            crate::tools::metadata::ToolSource::BuiltIn,
+        )
+        .await;
+
+    let (provider, mock) = mock_provider();
+    mock.queue_tool_call(
+        "call_1",
+        "Ask",
+        serde_json::json!({ "questions": [
+            { "text": "Keep which file?", "options": ["a.txt", "b.txt"] }
+        ]}),
+    );
+    mock.queue_text("Blocked: I need to know which file to keep.");
+    let executor = SubagentExecutor::with_registry(
+        registry,
+        session_manager.clone(),
+        agent_name,
+        peko_subject::PrincipalId::generate(),
+        tooling,
+    )
+    .with_provider(provider)
+    .with_principal_workspace(workspace.path().to_path_buf());
+    let tool = AgentTool::new(Arc::new(SubagentExecutorRuntime::new(Arc::new(executor))));
+    let ctx = peko_tools_core::ToolContext::for_hook_run("run", "call", "Agent")
+        .with_session_id(sid("root-sess"))
+        .with_workspace(workspace.path().to_string_lossy())
+        .with_acting_for(ActingFor {
+            actor: "user:local:local".into(),
+            name: None,
+            trust: Trust::Owner,
+            compartment: Compartment::Internal,
+            origin: Origin::Ingress { channel: None },
+            owner_request: false,
+        });
+
+    let asked = tool
+        .execute_with_context(
+            serde_json::json!({ "action": "new", "path": "tidy", "prompt": "tidy the folder" }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    assert_eq!(asked["success"], true, "{asked}");
+    assert_eq!(asked["needs_input"], true, "{asked}");
+    assert_eq!(asked["questions"][0]["text"], "Keep which file?", "{asked}");
+    assert_eq!(
+        asked["output"], "Blocked: I need to know which file to keep.",
+        "{asked}"
+    );
+
+    mock.queue_text("Kept a.txt.");
+    let answered = tool
+        .execute_with_context(
+            serde_json::json!({ "action": "new", "path": "tidy", "prompt": "Keep a.txt." }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    assert_eq!(answered["output"], "Kept a.txt.", "{answered}");
+    assert!(answered.get("needs_input").is_none(), "{answered}");
+}
+
 #[tokio::test]
 async fn validate_context_parent_resolves_path() {
     let (session_manager, registry, agent_name) = create_test_components().await;

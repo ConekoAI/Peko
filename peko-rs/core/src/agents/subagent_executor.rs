@@ -2221,6 +2221,13 @@ impl SubagentExecutor {
         // remains the hard cap; the agent meter accumulates audit
         // counters readable via `agent_meter_usage()`.
         let agent_meter_clone = Arc::clone(&self.agent_meter);
+        // ADR-114 D4: a delegated run may ask the run that delegated it;
+        // what it asks travels back with its result. A conversation turn
+        // replies in its conversation instead, so it is not marked.
+        let asks_session = (!conversation_for_closure).then(|| child_session_id.clone());
+        if let Some(session) = asks_session.as_deref() {
+            crate::agents::delegated_asks::expect_report(session);
+        }
 
         self.unified_executor
             .execute_with_metadata(
@@ -2378,6 +2385,10 @@ impl SubagentExecutor {
                         }
                     };
 
+                    let asked = asks_session
+                        .as_deref()
+                        .and_then(crate::agents::delegated_asks::finish);
+
                     // Peer-bound delivery: the completed turn's reply
                     // posts to the peer's DM channel so non-ingress
                     // drivers (Agent-tool resume, cron attach) reach the
@@ -2417,6 +2428,7 @@ impl SubagentExecutor {
                                     error: error.clone(),
                                     token_usage,
                                     completed_at: Utc::now(),
+                                    ask: asked.clone(),
                                 });
                             }
                         }
@@ -2433,12 +2445,19 @@ impl SubagentExecutor {
                     // Spawn sessions are now always kept (`Keep` is the
                     // only production-reachable policy).
 
-                    // Return async task result as opaque Value
-                    Ok(serde_json::json!({
+                    // Return async task result as opaque Value. A run that
+                    // asked something says so (ADR-114 D4): the caller
+                    // answers by continuing the session.
+                    let mut result = serde_json::json!({
                         "output": output,
                         "error": error,
                         "token_usage": token_usage,
-                    }))
+                    });
+                    if let Some(ask) = asked {
+                        result["needs_input"] = serde_json::json!(true);
+                        result["questions"] = serde_json::json!(ask.questions);
+                    }
+                    Ok(result)
                 },
             )
             .await?;

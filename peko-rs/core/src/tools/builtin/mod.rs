@@ -27,7 +27,7 @@ pub mod workflow;
 // Public domain tools and runtime ports.
 pub use async_control::{AsyncRuntime, AsyncTool, SharedAsyncRuntime};
 pub use bash::BashTool;
-pub use channel::{AttachTool, ChannelReadTool, ChannelSendTool, SuggestTool};
+pub use channel::{AskTool, AttachTool, ChannelReadTool, ChannelSendTool, SuggestTool};
 pub use fetch::{FetchTool, FETCH_TOOL_NAME};
 pub use fs::{EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
 pub use messaging::{

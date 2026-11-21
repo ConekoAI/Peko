@@ -551,6 +551,11 @@ pub enum RequestPacket {
         /// own message.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         send_as: Option<SendAs>,
+        /// ADR-114 D1: the message answers the questions of the post
+        /// `answers.to`; `message` is their readable text and must not be
+        /// empty.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        answers: Option<peko_protocol::channel::Answers>,
     },
 
     /// Streaming principal send. The daemon emits a sequence of
@@ -577,6 +582,11 @@ pub enum RequestPacket {
         /// own message.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         send_as: Option<SendAs>,
+        /// ADR-114 D1: the message answers the questions of the post
+        /// `answers.to`; `message` is their readable text and must not be
+        /// empty.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        answers: Option<peko_protocol::channel::Answers>,
     },
 
     /// Soft-stop the run bound to a (principal, peer) thread.
@@ -920,6 +930,10 @@ pub enum RequestPacket {
         /// owner.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<String>,
+        /// ADR-114 D1, D5: the post answers the questions of the post
+        /// `answers.to` (a root post: `parent` is refused with it).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        answers: Option<peko_protocol::channel::Answers>,
     },
 
     /// List events for `channel` since `since` (None = from start).
@@ -1612,6 +1626,19 @@ pub struct PrincipalLogMessage {
     /// message; a tap sends the option's text as an ordinary message.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub options: Vec<String>,
+    /// The post's stable id (`msg_id`), the one a client names when it
+    /// answers the post's questions (ADR-114). `None` on old lines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub msg_id: Option<String>,
+    /// ADR-114: questions the sender asks with the message. A client
+    /// shows the card open until an answer names it or the sender posts
+    /// again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask: Option<peko_protocol::channel::Ask>,
+    /// ADR-114: the person's answers to an earlier message's questions;
+    /// `text` reads the same answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answers: Option<peko_protocol::channel::Answers>,
 }
 
 impl PrincipalLogMessage {
@@ -1631,6 +1658,9 @@ impl PrincipalLogMessage {
             sender_name: None,
             attachments: Vec::new(),
             options: Vec::new(),
+            msg_id: None,
+            ask: None,
+            answers: None,
         }
     }
 }
@@ -2596,14 +2626,16 @@ pub enum ResponsePacket {
     /// full final answer (same content the non-streaming `PrincipalSent`
     /// would have returned) so the frontend can confirm the response
     /// and persist it. Always followed by a `Done` packet. `options`
-    /// are the suggested replies posted with the answer (ADR-093),
-    /// omitted when none.
+    /// are the suggested replies posted with the answer (ADR-093) and
+    /// `ask` the questions it asks (ADR-114), each omitted when none.
     #[serde(rename = "principal_sent_done")]
     PrincipalSentDone {
         request_id: u64,
         content: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         options: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ask: Option<peko_protocol::channel::Ask>,
     },
 
     /// Run-summary packet emitted by the daemon at the end of a
@@ -3737,6 +3769,7 @@ mod tests {
             override_model: Some("gpt-4o".to_string()),
             attachments: Vec::new(),
             send_as: None,
+            answers: None,
         };
 
         let bytes = req.to_bytes().unwrap();
@@ -5570,6 +5603,7 @@ mod tests {
             override_model: Some("gpt-4o".to_string()),
             attachments: Vec::new(),
             send_as: None,
+            answers: None,
         };
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
@@ -5602,6 +5636,7 @@ mod tests {
             override_model: Some("claude-haiku-4-5".to_string()),
             attachments: Vec::new(),
             send_as: None,
+            answers: None,
         };
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
@@ -5683,6 +5718,7 @@ mod tests {
             request_id: 5100,
             content: "Hello, world!".to_string(),
             options: Vec::new(),
+            ask: None,
         };
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
@@ -5691,10 +5727,12 @@ mod tests {
                 request_id,
                 content,
                 options,
+                ask,
             } => {
                 assert_eq!(request_id, 5100);
                 assert_eq!(content, "Hello, world!");
                 assert!(options.is_empty());
+                assert!(ask.is_none());
             }
             _ => panic!("Wrong variant"),
         }
@@ -5707,6 +5745,7 @@ mod tests {
             request_id: 5101,
             content: "Ship today?".to_string(),
             options: vec!["Ship it".into(), "Hold off".into()],
+            ask: None,
         };
         let decoded = ResponsePacket::from_bytes(&with_options.to_bytes().unwrap()).unwrap();
         let ResponsePacket::PrincipalSentDone { options, .. } = decoded else {
@@ -6185,6 +6224,7 @@ mod tests {
             override_model: None,
             attachments: Vec::new(),
             send_as: None,
+            answers: None,
         };
         assert_eq!(req_send.request_id(), 1);
 
@@ -6305,6 +6345,7 @@ mod tests {
             request_id: 1,
             content: "x".to_string(),
             options: Vec::new(),
+            ask: None,
         };
 
         let one_shot_json = String::from_utf8(one_shot.to_bytes().unwrap()).unwrap();

@@ -320,7 +320,7 @@ impl AgentTool {
 - as_owner: true (new only): hand the task to your owner when they asked for it in a conversation others share, and it needs their full access (the shell, their files). `prompt` is then the whole brief (at most 4000 characters): what to do, where, and what to report back, since the run sees nothing else. Your owner approves it on their computer; then it runs as them and its report reaches this conversation. In a group, name the board item it serves in `item`: if by then someone else has done or is doing that work, it doesn't run, and you hear why.
 - branch: copies the live context of `source` (default: your session) into `path`; the source is never changed. If `path` holds a spawned session, `overwrite: true` replaces its live context in place (its id, slug and children stay; the old transcript becomes a compaction page); without it the call is refused. For a recurring side task that needs a main session's context without adding to it.
 
-The call waits for the run and returns `{status, success, run_id, role, output | error}`. A run still going after 10 minutes returns a receipt with a `task_id` and keeps going; its result reaches your session when it ends (starting a turn if you are idle). Check it with Async `output` or `status`; cancel with Async `stop`.
+The call waits for the run and returns `{status, success, run_id, role, output | error}`. A run that needs an answer first returns `needs_input: true` and its `questions`: answer them yourself, or ask whoever you report to with `Ask`, then continue it with `new` on the same `path` and the answers as `prompt`. A run still going after 10 minutes returns a receipt with a `task_id` and keeps going; its result reaches your session when it ends (starting a turn if you are idle). Check it with Async `output` or `status`; cancel with Async `stop`.
 
 Refused: your own session or an ancestor, a session with an active run, and (resume) one that is missing or was not spawned. All your principal's live runs share one limit (default 20): at it the call fails at once with `error_type: "ConcurrentLimitExceeded"`, `current_concurrent` and `max_concurrent`; retry after a run ends instead of polling. Delegation depth is unlimited and idle sessions use no slots."#
             .to_string()
@@ -583,6 +583,12 @@ Refused: your own session or an ancestor, a session with an active run, and (res
                     if let Some(ref error) = subagent_result.error {
                         result["error"] = json!(error);
                     }
+                    // ADR-114 D4: the run asked something; answer by
+                    // continuing its session with `new` on the same path.
+                    if let Some(ref ask) = subagent_result.ask {
+                        result["needs_input"] = json!(true);
+                        result["questions"] = json!(ask.questions);
+                    }
                 }
 
                 Ok(result)
@@ -770,6 +776,12 @@ Refused: your own session or an ancestor, a session with an active run, and (res
                     if let Some(ref error) = subagent_result.error {
                         result["error"] = json!(error);
                     }
+                    // ADR-114 D4: the run asked something; answer by
+                    // continuing its session with `new` on the same path.
+                    if let Some(ref ask) = subagent_result.ask {
+                        result["needs_input"] = json!(true);
+                        result["questions"] = json!(ask.questions);
+                    }
                 }
 
                 Ok(result)
@@ -861,6 +873,12 @@ Refused: your own session or an ancestor, a session with an active run, and (res
                     }
                     if let Some(ref error) = subagent_result.error {
                         result["error"] = json!(error);
+                    }
+                    // ADR-114 D4: the run asked something; answer by
+                    // continuing its session with `new` on the same path.
+                    if let Some(ref ask) = subagent_result.ask {
+                        result["needs_input"] = json!(true);
+                        result["questions"] = json!(ask.questions);
                     }
                 }
 
@@ -1353,6 +1371,7 @@ impl SubagentRuntime for TestSubagentRuntime {
             cleanup: crate::tools::builtin::messaging::dto::SpawnCleanupPolicy::Keep,
             label: None,
             result: Some(crate::tools::builtin::messaging::dto::SubagentResult {
+                ask: None,
                 status: peko_tools_core::AsyncTaskStatus::Completed {
                     result: peko_tools_core::ToolResult::success(serde_json::json!("test")),
                 },
@@ -1404,6 +1423,7 @@ impl SubagentRuntime for TestSubagentRuntime {
             cleanup: crate::tools::builtin::messaging::dto::SpawnCleanupPolicy::Keep,
             label: None,
             result: Some(crate::tools::builtin::messaging::dto::SubagentResult {
+                ask: None,
                 status: peko_tools_core::AsyncTaskStatus::Completed {
                     result: peko_tools_core::ToolResult::success(serde_json::json!("test")),
                 },

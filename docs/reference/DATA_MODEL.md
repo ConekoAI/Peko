@@ -2500,6 +2500,55 @@ Suggested replies for a conversation's reply are staged in memory by the
 `Suggest` tool (per channel and principal, never persisted) and consumed by
 the reply post.
 
+### 5¾.2⅞⁻⁻ `posted` event `ask` and `answers` (2026-11-21, ADR-114)
+
+A peko's post may ask questions, and a person's post may answer them:
+
+```json
+"ask": {
+  "for": "user:hub:<uuid>",
+  "questions": [
+    { "text": "Which rooms?", "options": ["A", "B", "C"], "multi": true },
+    { "text": "Anything else?" }
+  ]
+}
+"answers": {
+  "to": "msg_…",
+  "picks": [ { "chosen": ["A", "C"] }, { "other": "bring snacks" } ]
+}
+```
+
+`ask` holds 1–4 questions of 1–300 characters, each with no `options` or
+2–4 checked like suggested replies; `multi` (omitted when false) needs
+options. `for` (optional) is a person on the roster, in canonical form.
+Only a principal's post carries `ask`, and a post with `ask` carries no
+`options`.
+
+`answers.to` is the `msg_id` of a post in the same channel that carries
+`ask`; `picks` has one entry per question, in order. `chosen` holds that
+question's options (at most one unless `multi`), `other` the person's own
+words (at most 2,000 characters), and every pick has one or the other. Only
+a person's (`user:` or `visitor:`) root post carries `answers`, and its
+`text` reads the same answers (`question → answer` per line; the store
+writes it when a post brings answers and no text).
+
+The writing store refuses a local post that breaks these rules and drops
+the field from a peer runtime's post (keeping its text). Both fields are
+absent when empty; older lines and readers are unaffected. They ride the
+signed event bytes of cross-runtime envelopes, served DM history, and
+snapshots. `PrincipalLogMessage` rows carry `msg_id`, `ask`, and `answers`;
+`principal_sent_done` carries `ask`.
+
+Questions for a conversation's reply are staged in memory by the `Ask` tool
+beside suggested replies; a delegated run's questions are staged per session
+and returned with its result (`needs_input`, `questions`). Neither is
+persisted.
+
+IPC: `principal_send` / `principal_send_stream` and `channel_post` gain
+optional `answers` (the message text must not be empty; `channel_post`
+refuses it with `parent`). The phone `post` device verb takes the same
+`answers` argument (ADR-108 verb table unchanged).
+
 ### 5¾.2⅞⁻⁻⁻ `posted` event `board` (2026-11-09, ADR-101)
 
 A post in a group may carry one change to the group's board:
@@ -3749,6 +3798,7 @@ Quick-reference table of all primitive types used across formats.
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 0.4.2+ | 2026-11-21 | ADR-114: `posted` events gain optional `ask` and `answers` (§5¾.2⅞⁻⁻ `ask`); `PrincipalLogMessage` gains `msg_id`, `ask`, `answers`; `principal_sent_done` gains `ask`; `principal_send(_stream)`, `channel_post`, and the phone `post` verb take `answers`. |
 | 0.1.0 | 2026-11-09 | IPC `channel_undelivered { channel }` → `channel_undelivered_result { channel, msg_ids }`: posts of a conversation still in the outbox for a member on another runtime, by `msg_id`, oldest first (members only). |
 | 0.1.0 | 2026-11-09 | ADR-101: `posted` events gain optional `board` (§5¾.2⅞⁻⁻⁻); channels keep `board_check_ins.json`; IPC `channel_board` / `channel_board_result`; group `meta.json` `history` retired (every member reads the whole group). |
 | 0.1.0 | 2026-11-04 | ADR-094: attachments gain optional `sha256`; channels keep crossing files in `<channel dir>/files/<sha256>/<safe name>`; `channel_post` gains `attachments`; tunnel gains `tunnel_attachment_request` / `tunnel_attachment_chunk`; `channel_delivery/wanted_files.json` (§5¾.2⅞⁻). |

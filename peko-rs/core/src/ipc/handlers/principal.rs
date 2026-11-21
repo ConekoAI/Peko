@@ -495,6 +495,7 @@ impl RequestHandler for PrincipalHandler {
                 override_model,
                 attachments,
                 send_as,
+                answers,
             } => {
                 run_principal_send(
                     request_id,
@@ -502,6 +503,7 @@ impl RequestHandler for PrincipalHandler {
                     &name,
                     message,
                     attachments,
+                    answers,
                     override_model,
                     send_as,
                     host,
@@ -518,6 +520,7 @@ impl RequestHandler for PrincipalHandler {
                 override_model,
                 attachments,
                 send_as,
+                answers,
             } => {
                 run_principal_send(
                     request_id,
@@ -525,6 +528,7 @@ impl RequestHandler for PrincipalHandler {
                     &name,
                     message,
                     attachments,
+                    answers,
                     override_model,
                     send_as,
                     host,
@@ -2420,6 +2424,7 @@ async fn run_principal_send(
     name: &str,
     message: String,
     attachment_paths: Vec<String>,
+    answers: Option<peko_protocol::channel::Answers>,
     override_model: Option<String>,
     send_as: Option<crate::ipc::packet::SendAs>,
     host: &dyn PrincipalHost,
@@ -2537,6 +2542,16 @@ async fn run_principal_send(
     // `drive_principal_ingress`. The IPC ingress differs from
     // `receive_streaming` only in how it formats the outcome — same
     // wire-format prefixes preserved below.
+    // ADR-114 D1: answers travel with their readable text, which is
+    // what the peko's turn reads.
+    if answers.is_some() && message.trim().is_empty() {
+        return refuse_send(
+            sink,
+            request_id,
+            "answers need their readable text as the message".to_string(),
+        )
+        .await;
+    }
     // ADR-088 D2: copy attachments into the workspace before anything
     // is posted; a refused file refuses the whole message.
     let attachments = if attachment_paths.is_empty() {
@@ -2564,6 +2579,7 @@ async fn run_principal_send(
             &peer,
             &message,
             &attachments,
+            answers.as_ref(),
             IngressMode::Interactive,
         )
         .await;
@@ -2964,7 +2980,7 @@ async fn run_principal_send(
                 ));
             // Phase 11: the reply's durable home is the peer's DM
             // channel (principal-authored).
-            let options = post_dm_reply(
+            let extras = post_dm_reply(
                 channel_port.as_ref(),
                 &principal,
                 dm_channel.as_ref(),
@@ -2986,7 +3002,8 @@ async fn run_principal_send(
                 PrincipalSendResponseKind::Streaming => ResponsePacket::PrincipalSentDone {
                     request_id,
                     content,
-                    options,
+                    options: extras.options,
+                    ask: extras.ask,
                 },
                 PrincipalSendResponseKind::OneShot => ResponsePacket::PrincipalSent {
                     request_id,
@@ -3340,17 +3357,17 @@ impl StreamSteps {
     }
 }
 
-/// Post the reply on the DM; returns the suggested replies that went
-/// with it (ADR-093).
+/// Post the reply on the DM; returns the suggested replies (ADR-093)
+/// and questions (ADR-114) that went with it.
 async fn post_dm_reply(
     port: Option<&Arc<dyn ChannelPort>>,
     principal: &Principal,
     dm_channel: Option<&ChannelId>,
     text: &str,
-) -> Vec<String> {
+) -> crate::principal::reply_options::ReplyExtras {
     match (port, dm_channel) {
         (Some(port), Some(dm)) => post_peer_dm_reply(port, &principal.id, dm, text).await,
-        _ => Vec::new(),
+        _ => Default::default(),
     }
 }
 
@@ -4329,7 +4346,7 @@ pub(super) fn map_posted_to_log_message(
     at: &str,
     text: String,
     attachments: Vec<peko_protocol::channel::Attachment>,
-    options: Vec<String>,
+    card: PostCard,
     me: &LogSelf,
 ) -> PrincipalLogMessage {
     let parsed_at = chrono::DateTime::parse_from_rfc3339(at)
@@ -4367,8 +4384,22 @@ pub(super) fn map_posted_to_log_message(
                 ..a
             })
             .collect(),
-        options,
+        options: card.options,
+        msg_id: card.msg_id,
+        ask: card.ask,
+        answers: card.answers,
     }
+}
+
+/// What a log row carries from its post besides text and files:
+/// suggested replies (ADR-093), questions and answers (ADR-114), and
+/// the stable id a client names when it answers.
+#[derive(Default)]
+pub(super) struct PostCard {
+    pub options: Vec<String>,
+    pub msg_id: Option<String>,
+    pub ask: Option<peko_protocol::channel::Ask>,
+    pub answers: Option<peko_protocol::channel::Answers>,
 }
 
 async fn read_principal_log(
@@ -4476,6 +4507,9 @@ async fn read_principal_log(
                 at,
                 attachments,
                 options,
+                msg_id,
+                ask,
+                answers,
                 ..
             } = event
             else {
@@ -4502,7 +4536,12 @@ async fn read_principal_log(
                 &at,
                 text,
                 attachments,
-                options,
+                PostCard {
+                    options,
+                    msg_id,
+                    ask,
+                    answers,
+                },
                 &me,
             );
             // The `since` cutoff admits unparseable timestamps (surfaced
@@ -4678,6 +4717,9 @@ async fn run_principal_log_watch(
             at,
             attachments,
             options,
+            msg_id,
+            ask,
+            answers,
             ..
         } = event
         else {
@@ -4696,7 +4738,12 @@ async fn run_principal_log_watch(
             &at,
             text,
             attachments,
-            options,
+            PostCard {
+                options,
+                msg_id,
+                ask,
+                answers,
+            },
             &me,
         );
         let packet = ResponsePacket::PrincipalLogAppended {
@@ -4719,7 +4766,7 @@ async fn run_principal_log_watch(
         tokio::select! {
             ev = rx.recv() => match ev {
                 Ok(ChannelEvent::Posted {
-                    author, text, at, attachments, options, ..
+                    author, text, at, attachments, options, msg_id, ask, answers, ..
                 }) => {
                     // Skip events already covered by the replay
                     // (subscribe→peek overlap window).
@@ -4739,7 +4786,12 @@ async fn run_principal_log_watch(
                         &at,
                         text,
                         attachments,
-                        options,
+                        PostCard {
+                            options,
+                            msg_id,
+                            ask,
+                            answers,
+                        },
                         &me,
                     );
                     let packet = ResponsePacket::PrincipalLogAppended { request_id, message };
@@ -4961,7 +5013,10 @@ mod tests {
                 size: 12,
                 sha256: None,
             }],
-            vec!["Yes".into(), "Not yet".into()],
+            PostCard {
+                options: vec!["Yes".into(), "Not yet".into()],
+                ..PostCard::default()
+            },
             &me,
         );
         assert_eq!(row.options, ["Yes", "Not yet"]);
@@ -5000,7 +5055,7 @@ mod tests {
                     size: 2,
                     sha256: Some(digest.clone()),
                 }],
-                Vec::new(),
+                PostCard::default(),
                 &me,
             )
         };
@@ -5030,7 +5085,7 @@ mod tests {
                 "2026-10-24T10:00:00Z",
                 "Hello!".into(),
                 Vec::new(),
-                Vec::new(),
+                PostCard::default(),
                 &me,
             )
         };
@@ -5692,6 +5747,8 @@ mod tests {
                 options: Vec::new(),
                 model: None,
                 board: None,
+                ask: None,
+                answers: None,
             };
             fx.store
                 .append_remote_event(&fx.channel, &old)
@@ -5731,6 +5788,8 @@ mod tests {
                 options: Vec::new(),
                 model: None,
                 board: None,
+                ask: None,
+                answers: None,
             };
             fx.store
                 .append_remote_event(&fx.channel, &mirrored)
