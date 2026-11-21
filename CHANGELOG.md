@@ -4,6 +4,8 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-11-21
+
 ### Changed
 
 - **Dependencies are current.** `hpke` (the sealing of what crosses
