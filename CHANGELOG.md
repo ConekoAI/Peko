@@ -13,7 +13,9 @@ All notable changes to Peko.
   or the peko posts again. Typing a reply still works as before. The answer
   is the person's own message: its text reads the answers, and it carries
   them as `answers`, so in a group it wakes the peko that asked, as a
-  mention does.
+  mention does. Answering in your own words works too: in a group, a
+  message from whom the card is for (anyone, if it names no one) wakes
+  the peko and closes the card, without a mention.
 - **A delegated task can ask the run that delegated it.** A worker that
   can't go on without an answer calls `Ask` and ends its turn. Its `Agent`
   result comes back with `needs_input: true` and the questions. The

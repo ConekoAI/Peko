@@ -499,9 +499,6 @@ impl GroupWakeResponder {
             .map(|(author, text)| format!("{author}: {text}"))
     }
 
-    /// A human-authored (user or visitor) root post — what a
-    /// [`WakePolicy::Human`] binding wakes on. Principal posts and
-    /// replies never qualify, whatever the policy (ADR-072).
     /// Whether this channel's post `msg_id` is this principal's.
     async fn asked_by_me(&self, msg_id: &str) -> bool {
         let Ok(Some((_, ChannelEvent::Posted { author, .. }))) =
@@ -509,6 +506,11 @@ impl GroupWakeResponder {
         else {
             return false;
         };
+        self.is_me(&author)
+    }
+
+    /// Whether `author` is this principal.
+    fn is_me(&self, author: &str) -> bool {
         let me = ActorRef::from(&self.inner.principal);
         author == self.inner.principal.0
             || author
@@ -516,6 +518,79 @@ impl GroupWakeResponder {
                 .is_ok_and(|a| self.inner.port.key_of(&a) == self.inner.port.key_of(&me))
     }
 
+    /// Whether `author` is whom a card is `for`: that person, or any
+    /// person when the card names no one.
+    fn is_addressee(&self, author: &str, for_actor: Option<&str>) -> bool {
+        let Ok(person) = author.parse::<ActorRef>() else {
+            return false;
+        };
+        if !matches!(person, ActorRef::User(_) | ActorRef::Visitor(_)) {
+            return false;
+        }
+        match for_actor.and_then(|f| f.parse::<ActorRef>().ok()) {
+            Some(wanted) => self.inner.port.key_of(&person) == self.inner.port.key_of(&wanted),
+            None => for_actor.is_none(),
+        }
+    }
+
+    /// ADR-114 D5: whether `event` answers this principal's open question
+    /// card in its own words — a root post by whom the card is for, while
+    /// the principal's newest card here is still open (not answered,
+    /// replaced, or already answered in words). Such a post wakes the
+    /// asker as an answer through the card does, and closes the card.
+    async fn answers_my_open_card(&self, event: &ChannelEvent, event_id: &str) -> bool {
+        let Some((author, _)) = Self::human_root_post(event) else {
+            return false;
+        };
+        let Ok(page) = self
+            .inner
+            .port
+            .peek_tail(
+                &self.inner.channel,
+                CARD_LOOKBACK,
+                Some(&event_id.to_string()),
+            )
+            .await
+        else {
+            return false;
+        };
+        // The open card, as (its msg_id, whom it is for).
+        let mut open: Option<(Option<String>, Option<String>)> = None;
+        for (_, earlier) in &page.events {
+            let ChannelEvent::Posted {
+                author: by,
+                msg_id,
+                ask,
+                answers,
+                ..
+            } = earlier
+            else {
+                continue;
+            };
+            if self.is_me(by) {
+                if let Some(ask) = ask {
+                    open = Some((msg_id.clone(), ask.for_actor.clone()));
+                }
+                continue;
+            }
+            let Some((card_id, for_actor)) = &open else {
+                continue;
+            };
+            let answered = answers
+                .as_ref()
+                .is_some_and(|a| card_id.as_deref() == Some(a.to.as_str()));
+            let in_words = Self::human_root_post(earlier).is_some()
+                && self.is_addressee(by, for_actor.as_deref());
+            if answered || in_words {
+                open = None;
+            }
+        }
+        open.is_some_and(|(_, for_actor)| self.is_addressee(author, for_actor.as_deref()))
+    }
+
+    /// A human-authored (user or visitor) root post — what a
+    /// [`WakePolicy::Human`] binding wakes on. Principal posts and
+    /// replies never qualify, whatever the policy (ADR-072).
     fn human_root_post(event: &ChannelEvent) -> Option<(&str, &str)> {
         match event {
             ChannelEvent::Posted {
@@ -585,6 +660,9 @@ impl ChannelResponder for GroupWakeResponder {
             } if Self::human_root_post(&ctx.event).is_some() => self.asked_by_me(&answers.to).await,
             _ => false,
         };
+        // ADR-114 D5: so does the addressee's own-words answer to a card
+        // that is still open.
+        let answered = answered || self.answers_my_open_card(&ctx.event, &ctx.event_id).await;
         if answered {
             if let Some((author, text)) = Self::human_root_post(&ctx.event) {
                 let input = format!("{author}: {text}");
@@ -622,6 +700,11 @@ impl ChannelResponder for GroupWakeResponder {
 
 /// Whether a board change asks `principal` for something: an item added
 /// for it (ADR-101 D2).
+/// How far back a group's log is read for this principal's open question
+/// card (ADR-114 D5). A card older than this no longer turns a plain post
+/// into its answer.
+const CARD_LOOKBACK: usize = 100;
+
 fn board_asks(
     port: &dyn ChannelPort,
     op: &peko_protocol::channel::BoardOp,
@@ -2669,8 +2752,10 @@ mod tests {
             ConversationKind::Group,
             Some(stub_drivers(driver, "session-1")),
         );
+        // For someone else, so Alice's post counts only by what it names
+        // (an own-words answer is the next test's).
         let card = peko_protocol::channel::Ask {
-            for_actor: None,
+            for_actor: Some("user:local:bob".into()),
             questions: vec![peko_protocol::channel::Question {
                 text: "Which day?".into(),
                 options: vec!["Tue".into(), "Thu".into()],
@@ -2719,6 +2804,102 @@ mod tests {
             .await
             .unwrap();
         assert!(eventually(|| async { !calls.lock().unwrap().is_empty() }).await);
+    }
+
+    /// ADR-114 D5: a person's plain post answers the peko's open card in
+    /// their own words — it wakes the asker without a mention and closes
+    /// the card, so their next plain post does not. A card `for` someone
+    /// waits for that person.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn own_words_answer_to_an_open_card_wakes_me_once() {
+        let (store, _tmp) = test_store("own-words-wake");
+        let principal = pid("prin_self");
+        let channel = store
+            .create(&principal, CreateOpts::runtime("group"))
+            .await
+            .unwrap();
+        store.bind(&channel, &principal, "session-1").await.unwrap();
+        let (driver, calls) = StubDriver::new("r");
+        let responder = select_responder(
+            channel.clone(),
+            principal.clone(),
+            Arc::clone(&store) as Arc<dyn ChannelPort>,
+            ConversationKind::Group,
+            Some(stub_drivers(driver, "session-1")),
+        );
+        let me = ActorRef::from(&principal);
+        let ask = |for_actor: Option<&str>| peko_protocol::channel::Ask {
+            for_actor: for_actor.map(str::to_string),
+            questions: vec![peko_protocol::channel::Question {
+                text: "Which day?".into(),
+                options: vec!["Tue".into(), "Thu".into()],
+                multi: false,
+            }],
+        };
+        // A person's plain post, written to the log and handed to the
+        // responder as the subscriber would.
+        let say = |who: &'static str, text: &'static str| {
+            let store = Arc::clone(&store);
+            let channel = channel.clone();
+            let me = me.clone();
+            async move {
+                store
+                    .post_attributed_with_event(&channel, &me, who, PostMsg::root(text))
+                    .await
+                    .unwrap()
+            }
+        };
+        let woke = || calls.lock().unwrap().len();
+
+        store
+            .post_with_event(
+                &channel,
+                &me,
+                PostMsg::root("When?").with_ask(Some(ask(None))),
+            )
+            .await
+            .unwrap();
+        let (line, ev) = say("user:local:alice", "Tuesday works").await;
+        responder
+            .consider_response(respond_ctx(&principal, &channel, &line, ev))
+            .await
+            .unwrap();
+        assert!(
+            eventually(|| async { woke() == 1 }).await,
+            "the answer in words wakes"
+        );
+        let (line, ev) = say("user:local:alice", "also, lunch was great").await;
+        responder
+            .consider_response(respond_ctx(&principal, &channel, &line, ev))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert_eq!(woke(), 1, "the card closed with the first answer");
+
+        store
+            .post_with_event(
+                &channel,
+                &me,
+                PostMsg::root("Bob?").with_ask(Some(ask(Some("user:local:bob")))),
+            )
+            .await
+            .unwrap();
+        let (line, ev) = say("user:local:alice", "I'd say Thursday").await;
+        responder
+            .consider_response(respond_ctx(&principal, &channel, &line, ev))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert_eq!(woke(), 1, "a card for Bob waits for Bob");
+        let (line, ev) = say("user:local:bob", "Thursday").await;
+        responder
+            .consider_response(respond_ctx(&principal, &channel, &line, ev))
+            .await
+            .unwrap();
+        assert!(
+            eventually(|| async { woke() == 2 }).await,
+            "Bob's words wake"
+        );
     }
 
     // -- real session store ---------------------------------------------------
