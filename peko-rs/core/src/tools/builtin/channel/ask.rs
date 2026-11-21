@@ -101,7 +101,7 @@ impl Tool for AskTool {
         format!(
             r#"Ask questions you need answered before you can go on. Nothing waits: call `Ask`, then end your turn with a short message that sets the questions in context (one line is enough; not `NO_REPLY`: the card goes with your reply). Don't repeat the questions in that message.
 
-- In a conversation, the questions go with your reply as one card the person answers together: pick from the options you give (one, or several when `multi`), or write their own words. The answer arrives as their next message. The card stays open until they answer it or you ask again.
+- In a conversation, the questions go with your reply as one card shown under it, which the person answers together: pick from the options you give (one, or several when `multi`), or write their own words. Every question already has a box for their own words, so don't add an "Other" option. The answer arrives as their next message. The card stays open until they answer it or you ask again.
 - In a task someone delegated to you, the questions go back to the run that delegated it with your result (`needs_input`). It answers by continuing this session; you then carry on.
 
 Use it when you cannot make a reasonable choice yourself, or the person must decide: several questions at once, a choice among a few, or a question that needs an answer. For one open question in a conversation, just ask it in your reply. Never to ask for permission: the runtime asks the owner itself, and an answer of "Approve" decides nothing.
