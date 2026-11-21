@@ -1,4 +1,5 @@
-//! Suggested replies staged for a conversation's reply (ADR-093 D3).
+//! Suggested replies (ADR-093 D3) and questions (ADR-114 D2) staged for
+//! a conversation's reply.
 //!
 //! A conversation's reply is the run's final text, posted after the run
 //! by [`super::peer_dm::post_peer_dm_reply`] on every reply path. The
@@ -17,6 +18,7 @@ use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
 use peko_channel::{ChannelEvent, ChannelId, ChannelPort};
+use peko_protocol::channel::Ask;
 use peko_subject::{ActorRef, PrincipalId};
 
 /// How far back the reply looks for other posts since staging. A
@@ -26,8 +28,20 @@ const LOOKBACK: usize = 50;
 
 struct Staged {
     options: Vec<String>,
-    /// The channel's newest line when staged; `None` for an empty log.
+    /// Questions the run asks with its reply (ADR-114 D2).
+    ask: Option<Ask>,
+    /// The channel's newest line when first staged; `None` for an empty
+    /// log.
     after: Option<u64>,
+}
+
+/// What a reply post carries besides its text.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ReplyExtras {
+    /// Suggested replies (ADR-093); empty when the reply asks questions.
+    pub options: Vec<String>,
+    /// Questions (ADR-114).
+    pub ask: Option<Ask>,
 }
 
 static STAGED: LazyLock<Mutex<HashMap<(String, String), Staged>>> =
@@ -44,22 +58,53 @@ async fn newest_line(port: &dyn ChannelPort, channel: &ChannelId) -> Option<u64>
 }
 
 /// Stage `options` for `principal`'s next reply on `channel`, replacing
-/// any staged before. Empty `options` clears.
+/// any staged before. Empty `options` clears them.
 pub(crate) async fn stage(
     port: &dyn ChannelPort,
     channel: &ChannelId,
     principal: &PrincipalId,
     options: Vec<String>,
 ) {
-    if options.is_empty() {
-        clear(channel, principal);
+    update(port, channel, principal, |staged| staged.options = options).await;
+}
+
+/// Stage questions for `principal`'s next reply on `channel` (ADR-114
+/// D2), replacing any staged before. `None` clears them.
+pub(crate) async fn stage_ask(
+    port: &dyn ChannelPort,
+    channel: &ChannelId,
+    principal: &PrincipalId,
+    ask: Option<Ask>,
+) {
+    update(port, channel, principal, |staged| staged.ask = ask).await;
+}
+
+async fn update(
+    port: &dyn ChannelPort,
+    channel: &ChannelId,
+    principal: &PrincipalId,
+    change: impl FnOnce(&mut Staged),
+) {
+    let existing = STAGED
+        .lock()
+        .expect("reply options mutex")
+        .remove(&key(channel, principal));
+    let mut staged = match existing {
+        Some(staged) => staged,
+        None => Staged {
+            options: Vec::new(),
+            ask: None,
+            after: newest_line(port, channel).await,
+        },
+    };
+    change(&mut staged);
+    if staged.options.is_empty() && staged.ask.is_none() {
         return;
     }
-    let after = newest_line(port, channel).await;
     STAGED
         .lock()
         .expect("reply options mutex")
-        .insert(key(channel, principal), Staged { options, after });
+        .insert(key(channel, principal), staged);
 }
 
 /// Drop what is staged for `principal`'s reply on `channel` (a withheld
@@ -72,22 +117,23 @@ pub(crate) fn clear(channel: &ChannelId, principal: &PrincipalId) {
 }
 
 /// Take what is staged for `principal`'s reply on `channel`: the options
-/// when nobody else has posted since they were staged, else none. The
-/// slot is cleared either way.
+/// and questions when nobody else has posted since they were staged,
+/// else nothing. Questions replace options (ADR-114 D2). The slot is
+/// cleared either way.
 pub(crate) async fn take(
     port: &dyn ChannelPort,
     channel: &ChannelId,
     principal: &PrincipalId,
-) -> Vec<String> {
+) -> ReplyExtras {
     let Some(staged) = STAGED
         .lock()
         .expect("reply options mutex")
         .remove(&key(channel, principal))
     else {
-        return Vec::new();
+        return ReplyExtras::default();
     };
     let Ok(page) = port.peek_tail(channel, LOOKBACK, None).await else {
-        return Vec::new();
+        return ReplyExtras::default();
     };
     let since: Vec<&ChannelEvent> = page
         .events
@@ -107,7 +153,7 @@ pub(crate) async fn take(
         .and_then(|(line, _)| line.parse::<u64>().ok())
         .is_some_and(|first| staged.after.is_none_or(|after| first > after + 1));
     if page.has_more && first_is_newer {
-        return Vec::new();
+        return ReplyExtras::default();
     }
     let me = ActorRef::from(principal);
     let my_address = port.actor_info(&me).await.address;
@@ -116,9 +162,17 @@ pub(crate) async fn take(
         _ => false,
     });
     if others_posted {
-        Vec::new()
+        ReplyExtras::default()
+    } else if staged.ask.is_some() {
+        ReplyExtras {
+            options: Vec::new(),
+            ask: staged.ask,
+        }
     } else {
-        staged.options
+        ReplyExtras {
+            options: staged.options,
+            ask: None,
+        }
     }
 }
 
@@ -152,8 +206,11 @@ mod tests {
             .post(&channel, &ActorRef::from(&peko), PostMsg::root("chart"))
             .await
             .unwrap();
-        assert_eq!(take(store.as_ref(), &channel, &peko).await, two());
-        assert!(take(store.as_ref(), &channel, &peko).await.is_empty());
+        assert_eq!(take(store.as_ref(), &channel, &peko).await.options, two());
+        assert!(take(store.as_ref(), &channel, &peko)
+            .await
+            .options
+            .is_empty());
     }
 
     #[tokio::test]
@@ -167,10 +224,13 @@ mod tests {
         )
         .await;
         stage(store.as_ref(), &channel, &peko, two()).await;
-        assert_eq!(take(store.as_ref(), &channel, &peko).await, two());
+        assert_eq!(take(store.as_ref(), &channel, &peko).await.options, two());
         stage(store.as_ref(), &channel, &peko, two()).await;
         stage(store.as_ref(), &channel, &peko, Vec::new()).await;
-        assert!(take(store.as_ref(), &channel, &peko).await.is_empty());
+        assert!(take(store.as_ref(), &channel, &peko)
+            .await
+            .options
+            .is_empty());
     }
 
     /// A run that staged options and never replied cannot hand them to
@@ -192,7 +252,10 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(take(store.as_ref(), &channel, &peko).await.is_empty());
+        assert!(take(store.as_ref(), &channel, &peko)
+            .await
+            .options
+            .is_empty());
     }
 
     #[tokio::test]
@@ -200,10 +263,39 @@ mod tests {
         let (_dir, store, peko, channel) = fixture().await;
         let other = store.create(&peko, CreateOpts::default()).await.unwrap();
         stage(store.as_ref(), &channel, &peko, two()).await;
-        assert!(take(store.as_ref(), &other, &peko).await.is_empty());
+        assert!(take(store.as_ref(), &other, &peko).await.options.is_empty());
         assert!(take(store.as_ref(), &channel, &PrincipalId::generate())
             .await
+            .options
             .is_empty());
-        assert_eq!(take(store.as_ref(), &channel, &peko).await, two());
+        assert_eq!(take(store.as_ref(), &channel, &peko).await.options, two());
+    }
+
+    /// ADR-114 D2: staged questions replace staged options on the
+    /// reply, and clearing the questions leaves the options.
+    #[tokio::test]
+    async fn questions_replace_options() {
+        let (_dir, store, peko, channel) = fixture().await;
+        let ask = Ask {
+            for_actor: None,
+            questions: vec![peko_protocol::channel::Question {
+                text: "Which day?".into(),
+                options: vec!["Tue".into(), "Thu".into()],
+                multi: false,
+            }],
+        };
+        stage(store.as_ref(), &channel, &peko, two()).await;
+        stage_ask(store.as_ref(), &channel, &peko, Some(ask.clone())).await;
+        assert_eq!(
+            take(store.as_ref(), &channel, &peko).await,
+            ReplyExtras {
+                options: Vec::new(),
+                ask: Some(ask.clone()),
+            }
+        );
+        stage(store.as_ref(), &channel, &peko, two()).await;
+        stage_ask(store.as_ref(), &channel, &peko, Some(ask)).await;
+        stage_ask(store.as_ref(), &channel, &peko, None).await;
+        assert_eq!(take(store.as_ref(), &channel, &peko).await.options, two());
     }
 }

@@ -736,7 +736,36 @@ fn format_chat_message(message: &PrincipalLogMessage) -> String {
     if let Some(hint) = options_hint(&message.options) {
         line.push_str(&format!("\n    {hint}"));
     }
+    if let Some(hint) = ask_hint(message.ask.as_ref()) {
+        for question in hint.lines() {
+            line.push_str(&format!("\n    {question}"));
+        }
+    }
     line
+}
+
+/// The questions a message asks (ADR-114), one line each:
+/// `? Which day?  Tue · Thu`, with `(any)` after a question that takes
+/// several choices. Answer with `peko send` and your own words. `None`
+/// when the message asks nothing.
+pub(crate) fn ask_hint(ask: Option<&peko_protocol::channel::Ask>) -> Option<String> {
+    let ask = ask.filter(|a| !a.questions.is_empty())?;
+    Some(
+        ask.questions
+            .iter()
+            .map(|q| {
+                let mut line = format!("? {}", q.text);
+                if !q.options.is_empty() {
+                    line.push_str(&format!("  {}", q.options.join(" · ")));
+                    if q.multi {
+                        line.push_str(" (any)");
+                    }
+                }
+                line
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
 }
 
 /// The suggested replies a message offers (ADR-093), as one hint line:
@@ -862,6 +891,37 @@ mod tests {
             "got {line}"
         );
         assert_eq!(options_hint(&[]), None);
+
+        // ADR-114: questions follow, one line each.
+        reply.options = Vec::new();
+        reply.ask = Some(peko_protocol::channel::Ask {
+            for_actor: None,
+            questions: vec![
+                peko_protocol::channel::Question {
+                    text: "Which day?".into(),
+                    options: vec!["Tue".into(), "Thu".into()],
+                    multi: false,
+                },
+                peko_protocol::channel::Question {
+                    text: "Which rooms?".into(),
+                    options: vec!["A".into(), "B".into()],
+                    multi: true,
+                },
+                peko_protocol::channel::Question {
+                    text: "Anything else?".into(),
+                    options: Vec::new(),
+                    multi: false,
+                },
+            ],
+        });
+        let line = format_chat_message(&reply);
+        assert!(
+            line.ends_with(
+                "] my-peko: Hello!\n    ? Which day?  Tue · Thu\n    ? Which rooms?  A · B (any)\n    ? Anything else?"
+            ),
+            "got {line}"
+        );
+        assert_eq!(ask_hint(None), None);
 
         // A long message (an invite link, a report) prints whole.
         let link = format!("http://hub/g/1?invite={}", "x".repeat(400));

@@ -97,6 +97,8 @@ pub struct SubagentResult {
     pub token_usage: Option<(usize, usize, usize)>,
     /// Completion timestamp
     pub completed_at: chrono::DateTime<chrono::Utc>,
+    /// Questions the run asked the run that delegated it (ADR-114 D4).
+    pub ask: Option<peko_protocol::channel::Ask>,
 }
 
 // ─── SubagentRunView (lifted from src/agents/subagent_types.rs) ────

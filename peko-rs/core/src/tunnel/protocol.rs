@@ -1752,6 +1752,8 @@ mod tests {
             options: Vec::new(),
             model: None,
             board: None,
+            ask: None,
+            answers: None,
         };
         let msg = TunnelMessage::TunnelChannelEvent {
             request_id: "chan-evt-1".to_string(),

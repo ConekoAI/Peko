@@ -1345,6 +1345,7 @@ impl PrincipalManager {
         peer: &ActorRef,
         message: &str,
         attachments: &[peko_protocol::channel::Attachment],
+        answers: Option<&peko_protocol::channel::Answers>,
         mode: IngressMode,
     ) -> Result<IngressOutcome, IngressError> {
         let turns = self
@@ -1371,6 +1372,7 @@ impl PrincipalManager {
                 &peer.to_string(),
                 message,
                 attachments.to_vec(),
+                answers.cloned(),
             )
             .await
             .map_err(|e| IngressError::Post(anyhow::anyhow!("{e:#}")))?;
@@ -1737,6 +1739,7 @@ impl PrincipalManager {
                 &peer,
                 &ctx.message,
                 &[],
+                None,
                 IngressMode::Interactive,
             )
             .await

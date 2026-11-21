@@ -1,6 +1,6 @@
 # Built-in Tools Catalog
 
-Peko exposes **26 built-in tool names**, all in PascalCase. Task, Plan, Cron, Async, Contacts, and Channel each require an explicit `action`; no former per-action tool names are aliases. Session also rejects fields irrelevant to the selected action. This reference
+Peko exposes **27 built-in tool names**, all in PascalCase. Task, Plan, Cron, Async, Contacts, and Channel each require an explicit `action`; no former per-action tool names are aliases. Session also rejects fields irrelevant to the selected action. This reference
 describes the compiled Tool implementations; the emitted descriptions and
 JSON Schemas in source are the executable contract. MCP and workspace tools
 have their own names and schemas and are outside this inventory.
@@ -35,11 +35,11 @@ values, and parameter names retain their existing spelling.
 ## Registration and lifetimes
 
 [installation.rs](../../peko-rs/core/src/tools/installation.rs) owns the factories,
-installation phases, and the 26-name inventory. The complete inventory derives from its manifest.
+installation phases, and the 27-name inventory. The complete inventory derives from its manifest.
 
 | Lifetime | Tools | Installation |
 |---|---|---|
-| Runtime defaults | Read/Write/Edit/Glob/Grep/Bash, Cron, ChannelRead, Attach, Suggest, Fetch | Runtime startup; fill missing defaults without replacing configured instances |
+| Runtime defaults | Read/Write/Edit/Glob/Grep/Bash, Cron, ChannelRead, Attach, Suggest, Ask, Fetch | Runtime startup; fill missing defaults without replacing configured instances |
 | Daemon services | ModelCall, Workflow, caller-aware Session and Agent | After PrincipalManager and daemon services exist |
 | Principal workspace | Skill, RoleCatalog | Once per principal; RoleCatalog scans current role files on invocation |
 | Principal services | Task, Plan, ChannelSend, Contacts, ModelList, Async, MCP, ToolLog | When their session storage, plan, caller identity/channel, or inbox bindings become available |
@@ -230,7 +230,7 @@ Run work in a new, resumed, compacted, or branched session.
 | `as_owner` | boolean | no | new only (ADR-100) |
 | `item` | string | no | with `as_owner`, in a group: the board item the task serves (ADR-100 D6) |
 
-All four actions require nonempty prompt and path. role names the template the run follows (a RoleCatalog id); omitted, it is `worker`, the seeded role for a delegated task. new is create-or-resume; new/branch accept a single relative slug or an absolute session address, while resume/compact use absolute addresses such as sess:/worker. source and overwrite are branch-only; source defaults to the calling session and overwrite defaults false. page_limit is new/branch-only, 0–10000 (0 clears the cap), omission preserves an existing cap (new sessions are unlimited); exceeding it permanently deletes the oldest closed pages. model is new/resume/branch-only and refused for compact. All live runs share the principal’s concurrency pool (default 20); delegation depth is unrestricted.
+A run that called `Ask` (ADR-114 D4) returns `needs_input: true` and its `questions` beside its `output`, on the foreground result and on the background completion; continue it with `new` on the same `path` and the answers as `prompt`. All four actions require nonempty prompt and path. role names the template the run follows (a RoleCatalog id); omitted, it is `worker`, the seeded role for a delegated task. new is create-or-resume; new/branch accept a single relative slug or an absolute session address, while resume/compact use absolute addresses such as sess:/worker. source and overwrite are branch-only; source defaults to the calling session and overwrite defaults false. page_limit is new/branch-only, 0–10000 (0 clears the cap), omission preserves an existing cap (new sessions are unlimited); exceeding it permanently deletes the oldest closed pages. model is new/resume/branch-only and refused for compact. All live runs share the principal’s concurrency pool (default 20); delegation depth is unrestricted.
 
 `as_owner: true` (ADR-100) hands the task to the owner. Only a run the owner's own post started in a conversation others share may use it (its stamp carries `owner_request`), and only with action new, a bare-slug `path`, and a `prompt` of at most 4,000 characters: the whole brief, since the run sees nothing else. The dispatcher refuses it to every other run. It never goes to the policy reviewer: it waits as an `owner_task` approval, which the owner approves once (never *always*). On approval the brief runs as the owner (owner trust, internal compartment, origin `approval`) at `sess:/<slug>` at the top of the owner's tree, outside the conversation's reach, and its report wakes the session that asked. In a group it first checks the board item it serves (`item`, else the one item the peko is working on): when someone else has done or is doing that work, or a twin waiting on its own approval was added first, it does not run, and the owner's reply, the peko's inbox and the item's note say why; otherwise the item turns `doing` (ADR-100 D6).
 
@@ -451,6 +451,27 @@ Offer suggested replies with the run's reply (ADR-093 D3) — a few short answer
 A conversation's reply is the run's final text, posted after the run, so `Suggest` posts nothing: it stages 2–4 replies (one line, at most 60 characters each, no duplicates, trimmed) for the run's conversation ([reply_options.rs](../../peko-rs/core/src/principal/reply_options.rs)), and the reply post carries them as `options`. A later call replaces the earlier one. The staged replies are dropped when the reply is empty or withheld by the policy reviewer, and when anyone else posted in the conversation after the call, so a run that never replied cannot hand them to a later reply. Returns `{success, channel, replies}`.
 
 Refused outside a conversation (cron, internal work) and for a run that is not the conversation's bound session (an `Agent` worker shares the compartment but reports back). Exempt from the policy reviewer: the replies are text the person may choose to send, and a tap carries no authority — no message decides an approval (ADR-078).
+
+### Ask
+
+Ask questions that wait for an answer (ADR-114 D2, D4) — in a conversation, a card the person answers together; in a delegated task, questions back to the run that delegated it.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/channel/ask.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `questions` | {text, options?, multi?}[] | yes | 1–4 items |
+| `for` | string | no | groups: a `user:` or `visitor:` member |
+
+Each question is at most 300 characters, with no options (free text) or 2–4 options checked like `Suggest` replies; `multi` allows several choices and needs options. Like `Suggest`, `Ask` posts nothing. The run's caller decides where the questions go:
+
+- **The conversation's bound session:** they are staged for the run's reply ([reply_options.rs](../../peko-rs/core/src/principal/reply_options.rs)) and the reply post carries them as `ask`, replacing any staged suggested replies. They are dropped with the reply the same way `Suggest` replies are. `for` names who should answer; it must be a person on the conversation's roster and is stored as their canonical address. The person's answer is a root post carrying `answers` (ADR-114 D1, D5); in a group, a plain root post by whom the open card is for (anyone, without `for`) also wakes the peko under `mention` and closes the card.
+- **A delegated run** (an `Agent` spawn that is not a conversation turn): they are staged for its result ([delegated_asks.rs](../../peko-rs/core/src/agents/delegated_asks.rs)). When the run ends, the `Agent` result — foreground, or the background completion after the 10-minute receipt — carries `needs_input: true` and `questions`. `for` is refused.
+- **Anything else** (the trunk, cron work): refused.
+
+A later call replaces the earlier one. A conversation turn that asked and then ends quietly (`NO_REPLY` or nothing) replies with the text it wrote beside the call; with none, the card is posted with text listing the questions. Returns `{success, to: "conversation" | "delegator", questions, note}`, plus `channel` in a conversation.
+
+Exempt from the policy reviewer: the questions ride a reply that is already reviewed, and an answer carries no authority. Visitors reach it when `ACCESS.toml` lists it (the seeded file does). Calls run alone (not parallel).
 
 ## Web
 

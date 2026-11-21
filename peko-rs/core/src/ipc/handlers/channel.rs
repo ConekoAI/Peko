@@ -1572,6 +1572,7 @@ impl RequestHandler for ChannelHandler {
                 parent,
                 attachments,
                 model,
+                answers,
             } => {
                 // ADR-057: user identities are never declared on the
                 // wire. The sender is either the caller's own derived
@@ -1607,6 +1608,16 @@ impl RequestHandler for ChannelHandler {
                         }
                     }
                 };
+                // ADR-114 D5: an answer is a root post, so it wakes the
+                // peko that asked.
+                if answers.is_some() && parent.is_some() {
+                    return error_reply(
+                        sink,
+                        request_id,
+                        "[invalid] answers are a root post, not a reply".into(),
+                    )
+                    .await;
+                }
                 // ADR-097 D2: only the runtime's operator picks a model.
                 let model = model.filter(|m| !m.trim().is_empty());
                 if model.is_some() && !caller.is_local() {
@@ -1619,7 +1630,7 @@ impl RequestHandler for ChannelHandler {
                 }
                 match self
                     .router()
-                    .handle_post_attached(&ch, &sender, &text, parent, files, model)
+                    .handle_post_attached(&ch, &sender, &text, parent, files, model, answers)
                     .await
                 {
                     Ok(resp) => {
@@ -2972,6 +2983,7 @@ mod tests {
                     parent: None,
                     attachments: Vec::new(),
                     model: Some("work-model".into()),
+                    answers: None,
                 },
                 jwt,
                 "[forbidden] only the local user may pick a model",
@@ -3045,6 +3057,7 @@ mod tests {
             parent: None,
             attachments: Vec::new(),
             model: None,
+            answers: None,
         };
         let (captured, sink) = capture_sink();
         handler
@@ -3093,6 +3106,7 @@ mod tests {
             parent: None,
             attachments: Vec::new(),
             model: None,
+            answers: None,
         };
         let (captured, sink) = capture_sink();
         handler
@@ -3115,6 +3129,7 @@ mod tests {
             parent: None,
             attachments: Vec::new(),
             model: None,
+            answers: None,
         };
         let (captured, sink) = capture_sink();
         handler
@@ -3149,6 +3164,7 @@ mod tests {
             parent: None,
             attachments: Vec::new(),
             model: None,
+            answers: None,
         };
         let (captured, sink) = capture_sink();
         handler
@@ -3197,6 +3213,7 @@ mod tests {
             parent: None,
             attachments: vec![file.display().to_string()],
             model: None,
+            answers: None,
         };
         let peer = PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback addr"));
 
@@ -3599,6 +3616,7 @@ mod tests {
             parent: None,
             attachments: Vec::new(),
             model: None,
+            answers: None,
         };
 
         // Member user posts as themselves (derived identity).
@@ -3700,6 +3718,7 @@ mod tests {
                     parent: None,
                     attachments: Vec::new(),
                     model: None,
+                    answers: None,
                 },
                 &apikey,
                 &sink,
@@ -3726,6 +3745,7 @@ mod tests {
                     parent: None,
                     attachments: Vec::new(),
                     model: None,
+                    answers: None,
                 },
                 &apikey,
                 &sink,
@@ -3962,6 +3982,8 @@ mod tests {
                 options: Vec::new(),
                 model: None,
                 board: None,
+                ask: None,
+                answers: None,
             },
         };
         let json = serde_json::to_string(&resp).expect("encode");

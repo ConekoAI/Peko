@@ -4829,6 +4829,8 @@ mod tests {
                         options: Vec::new(),
                         model: None,
                         board: Some(op),
+                        ask: None,
+                        answers: None,
                     },
                 )
                 .await

@@ -5115,6 +5115,7 @@ mod tests {
                 parent: None,
                 attachments: Vec::new(),
                 model: None,
+                answers: None,
             })
             .await;
         assert!(
@@ -5688,6 +5689,8 @@ mod tests {
             options: Vec::new(),
             model: None,
             board: None,
+            ask: None,
+            answers: None,
         };
         let (signature, event) = build_signed_tunnel_channel_event(
             &kp,
@@ -5748,6 +5751,8 @@ mod tests {
             options: Vec::new(),
             model: None,
             board: None,
+            ask: None,
+            answers: None,
         };
         let (signature, event) = build_signed_tunnel_channel_event(
             &kp_signer,
@@ -5804,6 +5809,8 @@ mod tests {
             options: Vec::new(),
             model: None,
             board: None,
+            ask: None,
+            answers: None,
         };
 
         let result = dispatcher
@@ -5866,6 +5873,8 @@ mod tests {
             options: Vec::new(),
             model: None,
             board: None,
+            ask: None,
+            answers: None,
         };
         let (signature, event) = build_signed_tunnel_channel_event(
             &kp,
@@ -6016,6 +6025,8 @@ mod tests {
             options: Vec::new(),
             model: None,
             board: None,
+            ask: None,
+            answers: None,
         };
         deliver("req-1", post.clone()).await.unwrap();
         deliver("req-1", post.clone()).await.unwrap();
@@ -6117,6 +6128,8 @@ mod tests {
             options: Vec::new(),
             model: None,
             board: None,
+            ask: None,
+            answers: None,
         };
         let (signature, event) = build_signed_tunnel_channel_event(
             &kp,
@@ -6216,6 +6229,8 @@ mod tests {
                 options: Vec::new(),
                 model: None,
                 board: None,
+                ask: None,
+                answers: None,
             };
             let event_bytes = serde_json::to_vec(&event).expect("event must serialize");
             let signed = crate::tunnel::ChannelSignedFields {
@@ -6553,6 +6568,8 @@ mod tests {
                 options: Vec::new(),
                 model: None,
                 board: None,
+                ask: None,
+                answers: None,
             };
             let bytes = serde_json::to_vec(&event).unwrap();
             let fields = crate::tunnel::ChannelSignedFields {
@@ -7144,6 +7161,7 @@ mod tests {
                 parent: None,
                 attachments: Vec::new(),
                 model: None,
+                answers: None,
             })
             .await;
         assert!(
@@ -7198,6 +7216,7 @@ mod tests {
                 parent: None,
                 attachments: vec![photo.display().to_string()],
                 model: None,
+                answers: None,
             })
             .await;
         assert!(
@@ -7585,6 +7604,7 @@ mod tests {
             parent: None,
             attachments: Vec::new(),
             model: None,
+            answers: None,
         })
         .await;
         relay(&mut a, &mut b).await;
@@ -8200,6 +8220,7 @@ mod tests {
             parent: None,
             attachments: Vec::new(),
             model: None,
+            answers: None,
         })
         .await;
         route(&mut [&mut h, &mut p, &mut p2]).await;
@@ -8923,6 +8944,7 @@ mod tests {
                 parent: None,
                 attachments: Vec::new(),
                 model: None,
+                answers: None,
             })
             .await;
         assert!(
@@ -9406,6 +9428,7 @@ mod tests {
             parent: None,
             attachments: Vec::new(),
             model: None,
+            answers: None,
         };
         let texts = |port: Arc<crate::tunnel::TunnelChannelPort>,
                      channel: peko_channel::ChannelId| async move {
@@ -10654,6 +10677,7 @@ mod tests {
             parent: None,
             attachments: Vec::new(),
             model: None,
+            answers: None,
         })
         .await;
         relay(&mut l2, &mut l1).await;
@@ -10997,6 +11021,7 @@ mod tests {
             parent: None,
             attachments: Vec::new(),
             model: Some("work-model".into()),
+            answers: None,
         })
         .await;
         let sent = desk.sent();

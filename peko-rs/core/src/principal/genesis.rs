@@ -670,10 +670,10 @@ pub fn seed_default_roles(workspace: &std::path::Path) -> Result<Vec<&'static st
 const CURRENT_ROOT_SEED: &str = "1da56bd3f034ade18a2628b1caedf7340b695713944183ff2c73f92d9604d914";
 #[cfg(test)]
 const CURRENT_CONVERSATION_SEED: &str =
-    "7a5840053f3c6f6259eada69e5e36aaacf5faca6b8919194325da6d92f5ad4a9";
+    "3e38f04ce0cf2c2e73050f24865abfad8675e8372adccc42c08c903ffef4c9ab";
 #[cfg(test)]
 const CURRENT_WORKER_SEED: &str =
-    "e52f6481ce051722c32602540e7a7dcfde449c44c541370d809e5cb90dab4dec";
+    "9c6c79e23786155bc4496bae3bbea473cae85b5f773b2f2453f0fa7bb0389615";
 const PREVIOUS_ROOT_SEEDS: &[&str] = &[
     "03d7e1bc59aff3318d60172fa77f33c4323389f614f1d9b6ffebe5f30f8dc79c",
     "089b6460434f123f50d1da68335e248758018bcf98414233bc5f17c4d1ec9d61",
@@ -707,6 +707,7 @@ const PREVIOUS_CONVERSATION_SEEDS: &[&str] = &[
     "5136ffd450c426d3042c03af8680242075a1f950b710c8076ab726c723519c13",
     "6ba9932bf553e171ca4edc124d71c4a6c8a79d650ed1b14b610351f98526a665",
     "775ffb635b6af13ec026f97881e890bb5575f1f75d7a0a8fcd0f3a6834b308e4",
+    "7a5840053f3c6f6259eada69e5e36aaacf5faca6b8919194325da6d92f5ad4a9",
     "8abe12e065789e7cfd71e29b3cbf55f6e3072ccb9066d27a184ac66505735cc1",
     "b80903f2dd5a1c895624aedb794ce681f67c82cca669702d3c86d679f4394bce",
     "e20a6531e91e4e79b9012820832bc22c94b07507a64a3ee361cde697273822eb",
@@ -714,6 +715,7 @@ const PREVIOUS_CONVERSATION_SEEDS: &[&str] = &[
 const PREVIOUS_WORKER_SEEDS: &[&str] = &[
     "52415ea266893572a6a3d83c6234f2af8d156b13d750ee0c09154b7c8a148826",
     "d0df2fcfa6fd894d5a47830365dcf95833eb6559fd1d26e85176318ff32c9f1c",
+    "e52f6481ce051722c32602540e7a7dcfde449c44c541370d809e5cb90dab4dec",
 ];
 
 /// Write `roles/<id>.md` unless `roles/<id>.md` or `roles/<id>/ROLE.md`

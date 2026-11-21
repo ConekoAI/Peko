@@ -4,6 +4,40 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Added
+
+- **A peko can ask questions that wait for an answer (ADR-114).** The new
+  `Ask` built-in (27 in all) puts 1–4 questions on one card with the
+  peko's reply. Each question has a few choices (one, or several), or none
+  for a free-text answer. The card stays open until the person answers it
+  or the peko posts again. Typing a reply still works as before. The answer
+  is the person's own message: its text reads the answers, and it carries
+  them as `answers`, so in a group it wakes the peko that asked, as a
+  mention does. Answering in your own words works too: in a group, a
+  message from whom the card is for (anyone, if it names no one) wakes
+  the peko and closes the card, without a mention.
+- **A delegated task can ask the run that delegated it.** A worker that
+  can't go on without an answer calls `Ask` and ends its turn. Its `Agent`
+  result comes back with `needs_input: true` and the questions. The
+  delegating run answers them itself, or asks the person, then continues
+  the worker on the same `path`. Nothing waits in the meantime.
+- `peko log` and `peko send` print a message's questions under it
+  (`? Which day?  Tue · Thu`). Answer with `peko send` in your own words.
+
+### Changed
+
+- **Wire and on-disk format:** `posted` events gain optional `ask` and
+  `answers`. `principal_send`, `principal_send_stream`, `channel_post` and
+  the phone's `post` verb take `answers`. `PrincipalLogMessage` gains
+  `msg_id`, `ask` and `answers`, and `principal_sent_done` gains `ask`.
+  Older lines are unchanged. This needs a minor version bump (ADR-102), and
+  PekoHub's tunnel types need the two new fields.
+- The seeded `ACCESS.toml` lists `Ask` for visitors. A peko created before
+  this change has its own `ACCESS.toml`; add `"Ask"` to `[visitors] tools`
+  there to let visitors' conversations use it. The seeded `conversation`
+  and `worker` roles say when to use it. An unedited seeded role is
+  updated on the next start; an edited one is left alone.
+
 ## [0.4.2] - 2026-11-21
 
 ### Changed

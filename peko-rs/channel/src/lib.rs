@@ -95,9 +95,10 @@ pub use port::{
     OwnerTaskItem, PortKeys, Registration, WakePolicy,
 };
 pub use port::{
-    global_channel_port, set_global_channel_port, validate_options, ChannelError, ChannelPort,
-    ChannelQuery, Checkpoint, CreateOpts, NoopChannelPort, PostMsg, RemoteMember, Result,
-    SearchPage, TailPage, Tier, MAX_OPTIONS, MAX_OPTION_CHARS, MIN_OPTIONS,
+    global_channel_port, render_answers, set_global_channel_port, validate_answers, validate_ask,
+    validate_options, ChannelError, ChannelPort, ChannelQuery, Checkpoint, CreateOpts,
+    NoopChannelPort, PostMsg, RemoteMember, Result, SearchPage, TailPage, Tier, MAX_ANSWER_CHARS,
+    MAX_OPTIONS, MAX_OPTION_CHARS, MAX_QUESTIONS, MAX_QUESTION_CHARS, MIN_OPTIONS,
 };
 pub use read_marks::ChannelReadMarks;
 pub use responder::{mentions, ChannelResponder, NoopChannelResponder, RespondCtx};

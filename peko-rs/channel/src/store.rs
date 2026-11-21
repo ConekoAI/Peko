@@ -736,6 +736,16 @@ pub fn member_row(subject: &ActorRef) -> String {
     subject.canonical_address()
 }
 
+/// Whether a post's `author` is a principal rather than a person
+/// (ADR-114 D9). A person is a user or visitor address; everything else
+/// (principal addresses, DIDs, legacy raw principal ids) is a principal.
+fn is_principal_author(author: &str) -> bool {
+    !matches!(
+        ActorRef::from_str(author),
+        Ok(ActorRef::User(_) | ActorRef::Visitor(_))
+    )
+}
+
 /// A `Posted` event's stable id, if it has one.
 fn posted_msg_id(ev: &ChannelEvent) -> Option<&str> {
     match ev {
@@ -3463,6 +3473,85 @@ impl ChannelStore {
             .map(|(line, _)| line))
     }
 
+    /// The questions `channel`'s post `msg_id` asks (ADR-114), when
+    /// this copy holds it and a principal wrote it.
+    pub async fn asked_card(
+        &self,
+        channel: &ChannelId,
+        msg_id: &str,
+    ) -> Result<Option<peko_protocol::channel::Ask>> {
+        Ok(match self.post_by_id(channel, msg_id).await? {
+            Some(ChannelEvent::Posted {
+                author,
+                ask: Some(ask),
+                ..
+            }) if is_principal_author(&author) => Some(ask),
+            _ => None,
+        })
+    }
+
+    /// A peer's post with the fields we don't keep removed (ADR-093 D2,
+    /// ADR-101, ADR-114 D1), or `None` when it is kept as it came.
+    async fn sanitize_remote_post(
+        &self,
+        channel: &ChannelId,
+        ev: &ChannelEvent,
+    ) -> Result<Option<ChannelEvent>> {
+        let ChannelEvent::Posted {
+            author,
+            options,
+            board,
+            ask,
+            answers,
+            ..
+        } = ev
+        else {
+            return Ok(None);
+        };
+        let principal = is_principal_author(author);
+        let bad_options = crate::port::validate_options(options).is_err();
+        let bad_board = board
+            .as_ref()
+            .is_some_and(|op| !crate::board::well_formed(op));
+        let bad_ask = ask.as_ref().is_some_and(|ask| {
+            !principal || crate::port::validate_ask(ask).is_err() || !options.is_empty()
+        });
+        let bad_answers = match answers {
+            None => false,
+            Some(_) if principal => true,
+            Some(answers) => match self.asked_card(channel, &answers.to).await? {
+                Some(card) => crate::port::validate_answers(answers, &card).is_err(),
+                None => true,
+            },
+        };
+        if !(bad_options || bad_board || bad_ask || bad_answers) {
+            return Ok(None);
+        }
+        let mut copy = ev.clone();
+        if let ChannelEvent::Posted {
+            options,
+            board,
+            ask,
+            answers,
+            ..
+        } = &mut copy
+        {
+            if bad_options {
+                options.clear();
+            }
+            if bad_board {
+                *board = None;
+            }
+            if bad_ask {
+                *ask = None;
+            }
+            if bad_answers {
+                *answers = None;
+            }
+        }
+        Ok(Some(copy))
+    }
+
     pub async fn append_remote_event(
         &self,
         channel: &ChannelId,
@@ -3507,32 +3596,10 @@ impl ChannelStore {
         // that break the limits (ADR-093 D2): another runtime cannot
         // hand our clients an arbitrary number of buttons.
         // A board change of a shape we don't keep (ADR-101) is dropped
-        // the same way; the post's readable line stays.
-        let sanitized;
-        let ev = match ev {
-            ChannelEvent::Posted { options, board, .. }
-                if crate::port::validate_options(options).is_err()
-                    || board
-                        .as_ref()
-                        .is_some_and(|op| !crate::board::well_formed(op)) =>
-            {
-                let mut copy = ev.clone();
-                if let ChannelEvent::Posted { options, board, .. } = &mut copy {
-                    if crate::port::validate_options(options).is_err() {
-                        options.clear();
-                    }
-                    if board
-                        .as_ref()
-                        .is_some_and(|op| !crate::board::well_formed(op))
-                    {
-                        *board = None;
-                    }
-                }
-                sanitized = copy;
-                &sanitized
-            }
-            _ => ev,
-        };
+        // the same way, and so are questions and answers that break
+        // ADR-114 D1; the post's readable line stays.
+        let sanitized = self.sanitize_remote_post(channel, ev).await?;
+        let ev = sanitized.as_ref().unwrap_or(ev);
         let line = self
             .append_event(tier, channel, ev, EventOrigin::VerifiedRemote)
             .await?;
@@ -3962,6 +4029,54 @@ impl ChannelStore {
             }
             None => (None, msg.text),
         };
+        // ADR-114 D1, D9: only a peko's post asks questions, and only a
+        // person's post answers them, against the card it names.
+        let principal_author = is_principal_author(&author);
+        let ask = match msg.ask.as_ref() {
+            None => None,
+            Some(_) if !principal_author => {
+                return Err(ChannelError::Adapter(
+                    "invalid questions: only a peko's post asks them".to_string(),
+                ))
+            }
+            Some(_) if !options.is_empty() => {
+                return Err(ChannelError::Adapter(
+                    "invalid questions: a post with questions takes no suggested replies"
+                        .to_string(),
+                ))
+            }
+            Some(ask) => Some(
+                crate::port::validate_ask(ask)
+                    .map_err(|e| ChannelError::Adapter(format!("invalid questions: {e}")))?,
+            ),
+        };
+        let (answers, text) = match msg.answers.as_ref() {
+            None => (None, text),
+            Some(_) if principal_author => {
+                return Err(ChannelError::Adapter(
+                    "invalid answers: a peko's post cannot answer questions".to_string(),
+                ))
+            }
+            Some(given) => {
+                let card = self
+                    .asked_card(channel, given.to.trim())
+                    .await?
+                    .ok_or_else(|| {
+                        ChannelError::Adapter(format!(
+                            "invalid answers: no questions at {} in this conversation",
+                            given.to
+                        ))
+                    })?;
+                let answers = crate::port::validate_answers(given, &card)
+                    .map_err(|e| ChannelError::Adapter(format!("invalid answers: {e}")))?;
+                let text = if text.trim().is_empty() {
+                    crate::port::render_answers(&answers, &card)
+                } else {
+                    text
+                };
+                (Some(answers), text)
+            }
+        };
 
         // Validate parent (if any) references an existing line in the
         // log. Line numbers are global across rotated pages and never
@@ -4008,6 +4123,8 @@ impl ChannelStore {
             options,
             model: msg.model,
             board,
+            ask,
+            answers,
         };
         let line = self
             .append_event(tier, channel, &ev, EventOrigin::Local)
@@ -5535,6 +5652,8 @@ mod tests {
             options: Vec::new(),
             model: None,
             board: None,
+            ask: None,
+            answers: None,
         };
         let mut line = serde_json::to_vec(&foreign).unwrap();
         line.push(b'\n');
@@ -6303,6 +6422,8 @@ mod tests {
             options: Vec::new(),
             model: None,
             board: None,
+            ask: None,
+            answers: None,
         }
     }
 
@@ -7203,6 +7324,8 @@ mod tests {
             options: Vec::new(),
             model: None,
             board: None,
+            ask: None,
+            answers: None,
         };
         let line = store
             .append_remote_event(&channel, &remote_event)
@@ -7248,6 +7371,8 @@ mod tests {
             options: Vec::new(),
             model: None,
             board: None,
+            ask: None,
+            answers: None,
         };
         let first = store
             .append_remote_event(&channel, &echo(Some("msg_same")))
@@ -7324,6 +7449,8 @@ mod tests {
             options,
             model: None,
             board: None,
+            ask: None,
+            answers: None,
         };
         let flood: Vec<String> = (0..50).map(|i| format!("option {i}")).collect();
         store
@@ -7356,6 +7483,237 @@ mod tests {
         );
         let plain = serde_json::to_string(&remote(Vec::new())).unwrap();
         assert!(!plain.contains("options"), "{plain}");
+    }
+
+    /// ADR-114 D1, D9: a peko's post asks questions and a person's post
+    /// answers them against the card it names, with the readable text
+    /// written when none is given; everything else is refused locally
+    /// and dropped (text kept) from a peer.
+    #[tokio::test]
+    async fn questions_and_answers_are_checked_on_both_paths() {
+        use peko_protocol::channel::{Answers, Ask, Pick, Question};
+        let store = ChannelStore::new(tmp_cfg("post-ask"));
+        let creator = pid("prin_alice");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+        let alice = ActorRef::from(&creator);
+        let maya = "user:local:maya";
+        let card = Ask {
+            for_actor: None,
+            questions: vec![
+                Question {
+                    text: " Which day? ".into(),
+                    options: vec!["Tue".into(), "Thu".into()],
+                    multi: false,
+                },
+                Question {
+                    text: "Which rooms?".into(),
+                    options: vec!["A".into(), "B".into(), "C".into()],
+                    multi: true,
+                },
+                Question {
+                    text: "Anything else?".into(),
+                    options: Vec::new(),
+                    multi: false,
+                },
+            ],
+        };
+        let err = |r: Result<(TaskId, ChannelEvent)>| match r {
+            Err(ChannelError::Adapter(e)) => e,
+            other => panic!("expected a refusal, got {other:?}"),
+        };
+
+        // A person cannot ask; a peko cannot ask with options too.
+        let refused = store
+            .post_attributed_with_event(
+                &channel,
+                &alice,
+                maya,
+                PostMsg::root("?").with_ask(Some(card.clone())),
+            )
+            .await;
+        assert!(err(refused).contains("only a peko"));
+        let refused = store
+            .post_with_event(
+                &channel,
+                &alice,
+                PostMsg::root("?")
+                    .with_ask(Some(card.clone()))
+                    .with_options(vec!["Yes".into(), "No".into()]),
+            )
+            .await;
+        assert!(err(refused).contains("no suggested replies"));
+        let (_, asked) = store
+            .post_with_event(
+                &channel,
+                &alice,
+                PostMsg::root("A few things:").with_ask(Some(card.clone())),
+            )
+            .await
+            .unwrap();
+        let ChannelEvent::Posted {
+            msg_id: Some(card_id),
+            ask: Some(kept),
+            ..
+        } = asked
+        else {
+            panic!("the card is kept");
+        };
+        assert_eq!(kept.questions[0].text, "Which day?", "trimmed");
+
+        let answers = |picks: Vec<Pick>| Answers {
+            to: card_id.clone(),
+            picks,
+        };
+        let good = answers(vec![
+            Pick {
+                chosen: vec!["Tue".into()],
+                other: None,
+            },
+            Pick {
+                chosen: vec!["A".into(), "C".into()],
+                other: None,
+            },
+            Pick {
+                chosen: Vec::new(),
+                other: Some("bring snacks".into()),
+            },
+        ]);
+        for (bad, why) in [
+            (answers(vec![Pick::default()]), "3 questions"),
+            (
+                answers(vec![
+                    Pick {
+                        chosen: vec!["Tue".into(), "Thu".into()],
+                        other: None,
+                    },
+                    good.picks[1].clone(),
+                    good.picks[2].clone(),
+                ]),
+                "one choice",
+            ),
+            (
+                answers(vec![
+                    Pick {
+                        chosen: vec!["Mon".into()],
+                        other: None,
+                    },
+                    good.picks[1].clone(),
+                    good.picks[2].clone(),
+                ]),
+                "not one of the options",
+            ),
+        ] {
+            let refused = store
+                .post_attributed_with_event(
+                    &channel,
+                    &alice,
+                    maya,
+                    PostMsg::root("").with_answers(Some(bad)),
+                )
+                .await;
+            assert!(err(refused).contains(why), "{why}");
+        }
+        let refused = store
+            .post_with_event(
+                &channel,
+                &alice,
+                PostMsg::root("x").with_answers(Some(good.clone())),
+            )
+            .await;
+        assert!(err(refused).contains("cannot answer"));
+        let mut elsewhere = good.clone();
+        elsewhere.to = "msg_nowhere".into();
+        let refused = store
+            .post_attributed_with_event(
+                &channel,
+                &alice,
+                maya,
+                PostMsg::root("x").with_answers(Some(elsewhere)),
+            )
+            .await;
+        assert!(err(refused).contains("no questions"));
+
+        let (_, answered) = store
+            .post_attributed_with_event(
+                &channel,
+                &alice,
+                maya,
+                PostMsg::root(" ").with_answers(Some(good.clone())),
+            )
+            .await
+            .unwrap();
+        let ChannelEvent::Posted {
+            text,
+            answers: Some(_),
+            ..
+        } = answered
+        else {
+            panic!("the answers are kept");
+        };
+        assert_eq!(
+            text,
+            "Which day? → Tue\nWhich rooms? → A, C\nAnything else? → bring snacks"
+        );
+
+        // From a peer: a person's card and a principal's answers are
+        // dropped, and so are answers that do not fit; the text stays.
+        let remote =
+            |author: &str, ask: Option<Ask>, answers: Option<Answers>| ChannelEvent::Posted {
+                channel: channel.clone(),
+                author: author.to_string(),
+                parent: None,
+                text: "from B".to_string(),
+                at: "2026-11-21T00:00:00Z".to_string(),
+                via: None,
+                msg_id: None,
+                reply_to: None,
+                attachments: Vec::new(),
+                options: Vec::new(),
+                model: None,
+                board: None,
+                ask,
+                answers,
+            };
+        let mut short = good.clone();
+        short.picks.pop();
+        for ev in [
+            remote("user:hub:bob", Some(card.clone()), None),
+            remote("principal:hub:rex", None, Some(good.clone())),
+            remote("user:hub:bob", None, Some(short)),
+            remote("user:hub:bob", None, Some(good.clone())),
+        ] {
+            store.append_remote_event(&channel, &ev).await.unwrap();
+        }
+        let tail: Vec<(String, bool, bool)> = store
+            .peek(&channel, &Checkpoint::default())
+            .await
+            .unwrap()
+            .into_iter()
+            .filter_map(|ev| match ev {
+                ChannelEvent::Posted {
+                    text, ask, answers, ..
+                } if text == "from B" => Some((text, ask.is_some(), answers.is_some())),
+                _ => None,
+            })
+            .collect();
+        let kept: Vec<(bool, bool)> = tail.into_iter().map(|(_, a, b)| (a, b)).collect();
+        assert_eq!(
+            kept,
+            vec![
+                (false, false),
+                (false, false),
+                (false, false),
+                (false, true)
+            ]
+        );
+        let plain = serde_json::to_string(&remote("user:hub:bob", None, None)).unwrap();
+        assert!(
+            !plain.contains("ask") && !plain.contains("answers"),
+            "{plain}"
+        );
     }
 
     /// ADR-058 D7: provenance envelope round-trip. NEW lines are
@@ -7397,6 +7755,8 @@ mod tests {
             options: Vec::new(),
             model: None,
             board: None,
+            ask: None,
+            answers: None,
         };
         store
             .append_remote_event(&channel, &remote_event)
@@ -7418,6 +7778,8 @@ mod tests {
             options: Vec::new(),
             model: None,
             board: None,
+            ask: None,
+            answers: None,
         };
         let mut line = serde_json::to_vec(&legacy).unwrap();
         line.push(b'\n');
@@ -7509,6 +7871,8 @@ mod tests {
             options: Vec::new(),
             model: None,
             board: None,
+            ask: None,
+            answers: None,
         };
         store
             .append_remote_event(&channel, &remote_event)
@@ -7540,6 +7904,8 @@ mod tests {
             options: Vec::new(),
             model: None,
             board: None,
+            ask: None,
+            answers: None,
         };
         let result = store.append_remote_event(&bogus, &ev).await;
         assert!(
@@ -7758,6 +8124,8 @@ mod tests {
             options: Vec::new(),
             model: None,
             board: None,
+            ask: None,
+            answers: None,
         };
         store
             .append_remote_event(&channel, &remote_event)

@@ -14,7 +14,7 @@
 tools = [
   "Read", "Write", "Edit", "Glob", "Grep", "Fetch",
   "Agent", "RoleCatalog", "Skill", "Session", "Task", "Async",
-  "Contacts", "ChannelSend", "ChannelRead", "Channel", "Attach", "Suggest",
+  "Contacts", "ChannelSend", "ChannelRead", "Channel", "Attach", "Suggest", "Ask",
   "ModelList", "ModelCall", "Workflow", "Cron", "ToolLog",
 ]
 # MCP servers (by id, the folder name under mcp/) a visitor may use.

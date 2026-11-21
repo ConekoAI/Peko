@@ -247,6 +247,8 @@ mod tests {
             options: Vec::new(),
             model: None,
             board: None,
+            ask: None,
+            answers: None,
         })
         .unwrap()
     }

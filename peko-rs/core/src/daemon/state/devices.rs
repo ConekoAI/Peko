@@ -733,6 +733,20 @@ impl AppState {
             self.drop_uploads(device, named).await;
             return Ok(json!({ "channel": channel.as_str(), "msg_id": msg_id, "repeated": true }));
         }
+        // ADR-114 D8: answers to a post's questions, checked by the
+        // store against the card they name. An answer is a root post.
+        let answers = match args.get("answers") {
+            None | Some(Value::Null) => None,
+            Some(value) => {
+                if args.get("reply_to").is_some() {
+                    return Err("[bad_request] answers are a root post, not a reply".into());
+                }
+                Some(
+                    serde_json::from_value::<peko_protocol::channel::Answers>(value.clone())
+                        .map_err(|e| format!("[bad_request] `answers`: {e}"))?,
+                )
+            }
+        };
         let files = self.uploaded_files(device, &channel, named).await?;
         let mut msg = match args.get("reply_to").and_then(Value::as_str) {
             Some(parent) => {
@@ -747,6 +761,7 @@ impl AppState {
         };
         msg.msg_id = Some(msg_id.clone());
         msg.attachments = files.clone();
+        msg.answers = answers;
         let me = me();
         self.channel_port
             .post(&channel, &me, msg)
@@ -1709,6 +1724,63 @@ mod tests {
                 other => panic!("{other:?}"),
             }
         }
+    }
+
+    /// ADR-114 D8: a phone answers a peko's questions through `post`;
+    /// answers that do not fit the card, or that reply to a post, are
+    /// refused.
+    #[tokio::test]
+    async fn a_phone_answers_a_pekos_questions() {
+        let mut rig = Rig::new().await;
+        let (group, peko) = rig.group().await;
+        let card = peko_protocol::channel::Ask {
+            for_actor: None,
+            questions: vec![peko_protocol::channel::Question {
+                text: "Which city?".into(),
+                options: vec!["Lisbon".into(), "Porto".into()],
+                multi: false,
+            }],
+        };
+        let (_, event) = rig
+            .app
+            .store()
+            .post_with_event(&group, &peko, PostMsg::root("Where?").with_ask(Some(card)))
+            .await
+            .unwrap();
+        let ChannelEvent::Posted {
+            msg_id: Some(card_id),
+            ..
+        } = event
+        else {
+            panic!("the card has an id");
+        };
+        let answer = |chosen: &str, n: u32| {
+            json!({
+                "channel": group.as_str(),
+                "text": format!("Which city? → {chosen}"),
+                "client_msg_id": format!("a-{n}"),
+                "answers": { "to": card_id, "picks": [{ "chosen": [chosen] }] },
+            })
+        };
+        let refused = rig.ask("post", answer("Madrid", 1)).await.unwrap_err();
+        assert!(refused.contains("not one of the options"), "{refused}");
+        let mut threaded = answer("Lisbon", 2);
+        threaded["reply_to"] = json!(card_id);
+        let refused = rig.ask("post", threaded).await.unwrap_err();
+        assert!(refused.contains("root post"), "{refused}");
+
+        let posted = rig.ask("post", answer("Lisbon", 3)).await.unwrap();
+        let page = rig
+            .ask(
+                "read",
+                json!({ "channel": group.as_str(), "after": card_id }),
+            )
+            .await
+            .unwrap();
+        let events = page["events"].as_array().unwrap();
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0]["msg_id"], posted["msg_id"]);
+        assert_eq!(events[0]["answers"]["picks"][0]["chosen"][0], "Lisbon");
     }
 
     #[tokio::test]

@@ -436,6 +436,8 @@ pub(crate) async fn posted_from_here(
             author,
             via,
             board: None,
+            ask: None,
+            answers: None,
             ..
         } = ev
         else {
@@ -477,6 +479,8 @@ pub(crate) async fn own_posts_from_elsewhere(
             via,
             msg_id,
             board: None,
+            ask: None,
+            answers: None,
             ..
         } = ev
         else {
@@ -1264,6 +1268,8 @@ mod tests {
             options: Vec::new(),
             model: None,
             board: None,
+            ask: None,
+            answers: None,
         }
     }
 
