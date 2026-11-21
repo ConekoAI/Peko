@@ -253,6 +253,22 @@ pub(crate) async fn post_peer_dm_inbound_attached(
 /// A reply that posts nothing (empty, `NO_REPLY`, or in a group only
 /// saying nothing is needed: [`super::quiet_reply`]) is skipped, as in the
 /// group responder.
+/// The readable text of a card posted without a reply: one line per
+/// question, its choices after it (ADR-114 D2).
+fn questions_text(ask: &peko_protocol::channel::Ask) -> String {
+    ask.questions
+        .iter()
+        .map(|q| {
+            if q.options.is_empty() {
+                q.text.clone()
+            } else {
+                format!("{} ({})", q.text, q.options.join(" / "))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub(crate) async fn post_peer_dm_reply(
     port: &Arc<dyn ChannelPort>,
     principal: &PrincipalId,
@@ -268,9 +284,17 @@ pub(crate) async fn post_peer_dm_reply(
         port.conversation_kind(channel).await,
         Ok(peko_channel::ConversationKind::Group)
     );
-    let Some(text) = super::quiet_reply::postable(text, group) else {
-        return ReplyExtras::default();
+    // A run that asked questions and said nothing else still asks
+    // (ADR-114 D2): the card goes out, its text listing the questions.
+    let text = match (
+        super::quiet_reply::postable(text, group),
+        extras.ask.as_ref(),
+    ) {
+        (Some(text), _) => text.to_string(),
+        (None, Some(ask)) => questions_text(ask),
+        (None, None) => return ReplyExtras::default(),
     };
+    let text = text.as_str();
     let via = port
         .binding_for(channel, principal)
         .await
@@ -629,6 +653,70 @@ mod tests {
                 .iter()
                 .all(|ev| !matches!(ev, peko_channel::ChannelEvent::Posted { .. })),
             "a whitespace or NO_REPLY reply must not land in the channel log"
+        );
+    }
+
+    /// ADR-114 D2: a run that asked and then said nothing (`NO_REPLY`, or
+    /// an empty reply) still posts its card, its text listing the
+    /// questions; with a reply, the card rides the reply.
+    #[tokio::test]
+    async fn questions_go_out_even_without_a_reply() {
+        use crate::principal::reply_options;
+        let (_dir, manager, store, port, lock) = fixture().await;
+        let peer = ActorRef::User("alice".into());
+        let child_id = ensure_peer_child("root", &peer, &manager).await.unwrap();
+        let channel =
+            ensure_peer_dm_channel(&port, &principal_id(), &peer, &child_id, &manager, &lock)
+                .await
+                .unwrap()
+                .channel;
+        post_peer_dm_inbound(
+            &port,
+            &principal_id(),
+            &channel,
+            &peer.to_string(),
+            "plan it",
+        )
+        .await
+        .unwrap();
+        let ask = peko_protocol::channel::Ask {
+            for_actor: None,
+            questions: vec![
+                peko_protocol::channel::Question {
+                    text: "Which day?".into(),
+                    options: vec!["Tue".into(), "Thu".into()],
+                    multi: false,
+                },
+                peko_protocol::channel::Question {
+                    text: "Anything else?".into(),
+                    options: Vec::new(),
+                    multi: false,
+                },
+            ],
+        };
+        reply_options::stage_ask(port.as_ref(), &channel, &principal_id(), Some(ask.clone())).await;
+        let sent = post_peer_dm_reply(&port, &principal_id(), &channel, "NO_REPLY").await;
+        assert_eq!(sent.ask.as_ref(), Some(&ask));
+        reply_options::stage_ask(port.as_ref(), &channel, &principal_id(), Some(ask.clone())).await;
+        post_peer_dm_reply(&port, &principal_id(), &channel, "A couple of things:").await;
+
+        let posts: Vec<(String, bool)> = store
+            .peek(&channel, &peko_channel::Checkpoint::default())
+            .await
+            .unwrap()
+            .into_iter()
+            .filter_map(|ev| match ev {
+                peko_channel::ChannelEvent::Posted { text, ask, .. } => Some((text, ask.is_some())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            posts,
+            vec![
+                ("plan it".to_string(), false),
+                ("Which day? (Tue / Thu)\nAnything else?".to_string(), true),
+                ("A couple of things:".to_string(), true),
+            ]
         );
     }
 

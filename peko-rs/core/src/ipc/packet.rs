@@ -1631,8 +1631,8 @@ pub struct PrincipalLogMessage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub msg_id: Option<String>,
     /// ADR-114: questions the sender asks with the message. A client
-    /// shows the card open until an answer names it or the sender posts
-    /// again.
+    /// shows the card open until an answer names it or the sender asks a
+    /// newer card; in a DM, also until the person posts again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ask: Option<peko_protocol::channel::Ask>,
     /// ADR-114: the person's answers to an earlier message's questions;

@@ -17,6 +17,12 @@ use serde_json::json;
 /// Wire name registered with the ToolingRuntime.
 pub const SUGGEST_TOOL_NAME: &str = "Suggest";
 
+/// What the run reads right before it writes its reply: models that
+/// wrote the reply beside the call then answer `NO_REPLY`, and only the
+/// final message is posted.
+pub(super) const NOTE: &str = "Your reply is the message you write next, after this call; \
+     text you wrote beside the call is not shown. Write the reply now (not NO_REPLY).";
+
 /// Stage suggested replies for the calling run's reply.
 pub struct SuggestTool {
     port: Arc<dyn ChannelPort>,
@@ -163,6 +169,7 @@ Use it only when your reply asks something the person will most likely answer wi
             "success": true,
             "channel": channel.as_str(),
             "replies": replies,
+            "note": NOTE,
         }))
     }
 }

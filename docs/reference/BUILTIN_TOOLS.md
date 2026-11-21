@@ -469,7 +469,7 @@ Each question is at most 300 characters, with no options (free text) or 2–4 op
 - **A delegated run** (an `Agent` spawn that is not a conversation turn): they are staged for its result ([delegated_asks.rs](../../peko-rs/core/src/agents/delegated_asks.rs)). When the run ends, the `Agent` result — foreground, or the background completion after the 10-minute receipt — carries `needs_input: true` and `questions`. `for` is refused.
 - **Anything else** (the trunk, cron work): refused.
 
-A later call replaces the earlier one. Returns `{success, to: "conversation" | "delegator", questions}`, plus `channel` in a conversation.
+A later call replaces the earlier one. A conversation turn that asked and then ends quietly (`NO_REPLY` or nothing) replies with the text it wrote beside the call; with none, the card is posted with text listing the questions. Returns `{success, to: "conversation" | "delegator", questions, note}`, plus `channel` in a conversation.
 
 Exempt from the policy reviewer: the questions ride a reply that is already reviewed, and an answer carries no authority. Visitors reach it when `ACCESS.toml` lists it (the seeded file does). Calls run alone (not parallel).
 

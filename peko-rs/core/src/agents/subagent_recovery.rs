@@ -15,6 +15,16 @@ use peko_providers::MessageRole;
 /// Service for recovering meaningful output from subagent session history.
 pub struct ResultRecovery;
 
+/// Whether a turn's final text says nothing: empty, or the `NO_REPLY`
+/// marker (bare or in light markup).
+pub fn is_quiet(text: &str) -> bool {
+    let text = text
+        .trim()
+        .trim_matches(|c: char| matches!(c, '`' | '*' | '_' | '.' | '"' | '\'' | '(' | ')'))
+        .trim();
+    text.is_empty() || text.eq_ignore_ascii_case("NO_REPLY")
+}
+
 impl ResultRecovery {
     /// Attempt to recover a non-empty answer from session history,
     /// looking only at messages from index `since` on (the run's own).
@@ -30,6 +40,43 @@ impl ResultRecovery {
                 None
             }
         }
+    }
+
+    /// The reply a conversation turn wrote beside its `Ask` or `Suggest`
+    /// call (ADR-114 D2), from messages at index `since` on. Those tools
+    /// stage what goes with the reply, and some models write the reply in
+    /// the same message as the call, then end with `NO_REPLY`; only the
+    /// final message would be posted. `None` when the run made no such
+    /// call with text beside it.
+    pub async fn reply_beside_reply_tools(
+        session: &Arc<RwLock<peko_session::Session>>,
+        since: usize,
+    ) -> Option<String> {
+        let history = session.read().await.load_history().await.ok()?;
+        Self::reply_beside_in(&history, since)
+    }
+
+    fn reply_beside_in(history: &[LlmMessage], since: usize) -> Option<String> {
+        history
+            .get(since..)
+            .unwrap_or_default()
+            .iter()
+            .rev()
+            .filter(|msg| matches!(msg.role, MessageRole::Assistant))
+            .find_map(|msg| {
+                let calls_reply_tool = msg.content.iter().any(|c| {
+                    matches!(c, ContentBlock::ToolCall { name, .. } if name == "Ask" || name == "Suggest")
+                });
+                let text: String = msg
+                    .content
+                    .iter()
+                    .filter_map(|c| match c {
+                        ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                (calls_reply_tool && !is_quiet(&text)).then(|| text.trim().to_string())
+            })
     }
 
     /// [`Self::recover_from_session`] over a loaded history.
@@ -157,6 +204,52 @@ impl ResultRecovery {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assistant(text: &str, tool: Option<&str>) -> LlmMessage {
+        let mut content = vec![ContentBlock::Text { text: text.into() }];
+        if let Some(name) = tool {
+            content.push(ContentBlock::ToolCall {
+                id: "t1".into(),
+                name: name.into(),
+                arguments: serde_json::json!({}),
+            });
+        }
+        LlmMessage {
+            role: MessageRole::Assistant,
+            content,
+            timestamp: chrono::Utc::now(),
+            metadata: std::collections::HashMap::new(),
+            tool_call_id: None,
+            usage: None,
+        }
+    }
+
+    /// ADR-114 D2: the text beside this run's `Ask`/`Suggest` call is its
+    /// reply; narration beside other tools and earlier runs' text are not.
+    #[test]
+    fn the_reply_beside_ask_or_suggest_is_recovered() {
+        let history = vec![
+            assistant("An earlier turn's reply.", Some("Ask")),
+            assistant("Let me look.", Some("Read")),
+            assistant("The merge is done. Two things conflict:", Some("Ask")),
+            assistant("NO_REPLY", None),
+        ];
+        assert_eq!(
+            ResultRecovery::reply_beside_in(&history, 1).as_deref(),
+            Some("The merge is done. Two things conflict:")
+        );
+        let narration_only = vec![
+            assistant("Let me look.", Some("Read")),
+            assistant("NO_REPLY", None),
+        ];
+        assert_eq!(ResultRecovery::reply_beside_in(&narration_only, 0), None);
+        assert_eq!(
+            ResultRecovery::reply_beside_in(&history, 3),
+            None,
+            "earlier runs are not this one"
+        );
+        assert!(is_quiet(" `NO_REPLY` ") && is_quiet("") && !is_quiet("NO_REPLY, but…"));
+    }
 
     #[test]
     fn test_process_tool_result_read_file() {

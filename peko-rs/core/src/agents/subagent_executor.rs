@@ -3197,6 +3197,20 @@ async fn execute_subagent_task(
             // would be posted to the conversation. 2026-11-09: recovery
             // re-posted the previous turn's reply (two pekos thanked each
             // other in a loop), then a raw ChannelRead result.
+            // ADR-114 D2: a conversation turn that asked or suggested and
+            // then said nothing wrote its reply beside that call.
+            if conversation && crate::agents::subagent_recovery::is_quiet(&final_answer) {
+                if let Some(reply) =
+                    crate::agents::subagent_recovery::ResultRecovery::reply_beside_reply_tools(
+                        &child_session_for_recovery,
+                        recover_from,
+                    )
+                    .await
+                {
+                    info!("conversation turn ended quietly after Ask/Suggest; replying with the text beside the call");
+                    final_answer = reply;
+                }
+            }
             if final_answer.trim().is_empty() && !conversation {
                 if let Some(recovered) =
                     crate::agents::subagent_recovery::ResultRecovery::recover_from_session(
