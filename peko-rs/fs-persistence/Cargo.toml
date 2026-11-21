@@ -22,7 +22,7 @@ sha2 = "0.10"
 # ADR-065: default_workspace_lock_dir mirrors
 # peko_tools_core::paths::default_data_dir (env override, platform
 # data dir, /tmp fallback) — must stay in sync with it
-dirs = "5.0"
+dirs = "7.0"
 
 # Async + filesystem
 tokio = { version = "1.35", features = ["rt", "fs", "sync", "macros", "io-util", "time"] }

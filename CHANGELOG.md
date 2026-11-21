@@ -4,6 +4,20 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Changed
+
+- **Dependencies are current.** `hpke` (the sealing of what crosses
+  PekoHub) moves to 0.13, `thiserror` to 2, `dirs` to 7, `clap` to 4.6 and
+  the MCP client `rmcp` to 3.11. What Peko seals and opens is unchanged: a
+  phone on the current app opens what this version seals, and the reverse.
+
+### Fixed
+
+- **`peko` runs on a stack of the same size on every system.** Windows
+  gives a program's first thread 1 MB, which the newer argument parser
+  overflowed in a debug build, so every command exited with "has
+  overflowed its stack". The command line now runs on a thread with 8 MB.
+
 ## [0.4.1] - 2026-11-20
 
 ### Security
