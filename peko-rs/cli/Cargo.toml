@@ -62,6 +62,6 @@ hex = "0.4"
 
 [dev-dependencies]
 # Process-wide test setup: every CLI test takes the passphrase vault.
-ctor = "0.8"
+ctor = "1.0"
 tempfile = "3.10"
 serial_test = "3.0"

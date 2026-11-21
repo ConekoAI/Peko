@@ -185,6 +185,13 @@ impl AgreementKey {
     }
 }
 
+/// The operating system's random numbers, in the form `hpke` takes them.
+/// A failure to read them panics, as `rand::rngs::OsRng` does.
+pub(crate) fn os_rng() -> impl hpke::rand_core::CryptoRng {
+    use rand_core_hpke::TryRngCore as _;
+    rand_core_hpke::OsRng.unwrap_err()
+}
+
 /// Seal `plaintext` to the X25519 key `public` (base64url) with `info`
 /// and `aad`. Returns base64url of the encapsulated key and the
 /// ciphertext.
@@ -204,7 +211,7 @@ pub fn seal_to(public: &str, info: &str, plaintext: &[u8], aad: &[u8]) -> Result
         info.as_bytes(),
         plaintext,
         aad,
-        &mut rand::rngs::OsRng,
+        &mut os_rng(),
     )
     .map_err(|e| format!("seal failed: {e}"))?;
     let mut out = encapped.to_bytes().to_vec();

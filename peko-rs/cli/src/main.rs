@@ -79,9 +79,32 @@ mod summary;
 #[cfg(test)]
 mod test_support;
 
+/// Stack for the thread the command line runs on. Windows gives a
+/// program's first thread 1 MB, and building the argument parser for
+/// every subcommand overflows that in a debug build (clap 4.6).
+const MAIN_STACK_BYTES: usize = 8 * 1024 * 1024;
+
 /// Peko - Lightweight Multi-Agent Runtime
-#[tokio::main]
-async fn main() {
+fn main() {
+    // Run on a thread whose stack is the same size on every system,
+    // rather than on the first thread, whose size the system picks.
+    let main = std::thread::Builder::new()
+        .name("main".into())
+        .stack_size(MAIN_STACK_BYTES)
+        .spawn(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("start the async runtime")
+                .block_on(run());
+        })
+        .expect("start the main thread");
+    if let Err(panic) = main.join() {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+async fn run() {
     let cli = Cli::parse();
 
     // One rustls crypto provider for the whole process, before anything

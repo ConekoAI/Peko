@@ -288,7 +288,7 @@ pub fn seal_notification(
             DEVICE_NOTIFY_VERSION.as_bytes(),
             signed.as_bytes(),
             b"",
-            &mut rand::rngs::OsRng,
+            &mut crate::tunnel::seal::os_rng(),
         )
         .map_err(|e| format!("seal failed: {e}"))?;
     let mut out = encapped.to_bytes().to_vec();
@@ -613,7 +613,7 @@ pub mod test_device {
         pub fn new() -> Self {
             let signing = fresh_signing_key();
             let (agreement_secret, public) =
-                hpke::kem::X25519HkdfSha256::gen_keypair(&mut rand::rngs::OsRng);
+                hpke::kem::X25519HkdfSha256::gen_keypair(&mut crate::tunnel::seal::os_rng());
             Self {
                 device_id: format!("dev_{}", uuid::Uuid::new_v4().simple()),
                 signing,

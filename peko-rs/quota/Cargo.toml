@@ -19,7 +19,7 @@ serde_json = "1.0"
 # single-threaded runtime required by the Scope tests.
 tokio = { version = "1.35", features = ["rt", "macros", "fs", "io-util", "time", "sync"] }
 # Error derive + logging used in QuotaMeter / QuotaScope.
-thiserror = "1.0"
+thiserror = "2.0"
 tracing = "0.1"
 
 [dev-dependencies]
