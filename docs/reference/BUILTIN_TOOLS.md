@@ -443,6 +443,8 @@ Each path (absolute, `~/…`, or relative to the workspace) passes the same floo
 
 A non-owner run's call goes to the policy reviewer first, as `Read` does. Refused outside a conversation (cron, internal work). Calls run alone (not parallel).
 
+An `.html` attachment is a **page** (ADR-118): Peko Desktop shows it inline, served from its own `pekopage:` protocol with a policy of its own (`sandbox allow-scripts`, no network, nothing of the app), at most 2 MB; larger pages and other clients show a file. The description tells the peko to make pages self-contained.
+
 ### Suggest
 
 Offer suggested replies with the run's reply (ADR-093 D3) — a few short answers the person can send with one tap.
