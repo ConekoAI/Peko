@@ -57,6 +57,9 @@ pub(crate) struct Caller {
     /// working in the principal's internal tree; floor tests pick a
     /// lower stamp with [`Caller::acting_for`].
     pub acting_for: peko_tools_core::ActingFor,
+    /// The run the call belongs to: its file changes are that turn's
+    /// (ADR-117).
+    pub run: String,
 }
 
 impl Default for Caller {
@@ -65,6 +68,7 @@ impl Default for Caller {
             principal: PRINCIPAL.into(),
             session: SESSION.into(),
             acting_for: peko_tools_core::ActingFor::runtime(),
+            run: "harness-run-1".into(),
         }
     }
 }
@@ -221,6 +225,13 @@ pub(crate) fn builtin_tools(backends: &Backends, fakes: &Fakes) -> Vec<Arc<dyn T
             backends.ledger_dir.clone(),
             backends.sessions_dir.clone(),
         )),
+        Arc::new(crate::tools::builtin::ChangesTool::new(Arc::new(
+            crate::tools::changes::ChangeLog::open(
+                &crate::tools::changes::dir_for_sessions(&backends.sessions_dir),
+                &backends.workspace,
+            )
+            .expect("change log"),
+        ))),
     ]
 }
 
@@ -319,6 +330,15 @@ impl ToolHarness {
             .dispatcher()
             .bind_ledger(&PrincipalId(PRINCIPAL.into()), &backends.ledger_dir)
             .expect("harness tool ledger");
+        // ADR-117: the same change log the `Changes` tool reads.
+        tooling
+            .dispatcher()
+            .bind_changes(
+                &PrincipalId(PRINCIPAL.into()),
+                &crate::tools::changes::dir_for_sessions(&backends.sessions_dir),
+                &workspace,
+            )
+            .expect("harness change log");
         let fakes = Fakes::default();
         for tool in builtin_tools(&backends, &fakes) {
             tooling
@@ -404,6 +424,7 @@ impl ToolHarness {
         let mut call = peko_engine::ToolCallSpec::new(tool, params);
         call.principal_id = Some(caller.principal.clone());
         call.session_id = Some(caller.session.clone());
+        call.run_id = Some(caller.run.clone());
         call.agent_id = Some("harness-agent".into());
         call.workspace = Some(self.workspace.to_string_lossy().into_owned());
         call.acting_for = Some(caller.acting_for.clone());
@@ -545,6 +566,11 @@ mod tests {
                 "ToolLog",
                 json!({"action":"search", "tool":"Bash"}),
                 "\"tool\":\"Bash\"",
+            ),
+            (
+                "Changes",
+                json!({"action":"list", "all": true}),
+                "\"turns\"",
             ),
         ];
         // Unbound in the harness: ModelCall and Workflow need a

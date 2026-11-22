@@ -12,6 +12,22 @@ This document defines the public API surface for Peko, including the new Unified
 
 ---
 
+## Turn changes and undo (ADR-117)
+
+- `peko_tools_core::FileChangeSink` (`before`, `after`) and
+  `ToolContext::{file_changes, file_before, file_after}`: `Write` and
+  `Edit` name the file they write.
+- `peko_core::tools::changes`: `ChangeLog` (`open`, `scan`, `record_scan`,
+  `link`, `turn`, `turns`, `all_files`, `undo`, `prune`, `summary`,
+  `shown_path`), `CallRecorder`, `Turn`, `TurnKey`, `FileState`,
+  `FileChange`, `Undone`, `Skipped`, `TurnSummary`, `ChangedFile`,
+  `dir_for_sessions`. `ToolDispatcher::{bind_changes, changes}`;
+  `PrincipalBindings::workspace`.
+- Built-in `Changes` (`tools::builtin::ChangesTool`), owner-only.
+- IPC `RequestPacket::{TurnChanges, TurnUndo}` →
+  `ResponsePacket::{TurnChanges, TurnUndone}` with `UndoSkipped`;
+  `DaemonClient::{turn_changes, turn_undo}`. CLI `peko undo`.
+
 ## Secret requests (ADR-116)
 
 - `peko_core::principal::secret_requests`: `Target` (`Peko {name}` /

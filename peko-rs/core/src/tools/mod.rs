@@ -4,6 +4,7 @@
 
 pub mod builtin;
 pub mod catalog;
+pub mod changes;
 pub mod dispatcher;
 pub mod installation;
 pub mod prompt_sections;

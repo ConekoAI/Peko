@@ -713,6 +713,33 @@ pub enum RequestPacket {
         secret: String,
     },
 
+    /// Recent turns of a peko that changed files, newest first (ADR-117):
+    /// those in `channel` when given, or with `dm`, in the DM of `peer`
+    /// (the caller when absent) as `principal_log` resolves it. Owner
+    /// only, local callers only. Answered with `TurnChanges`.
+    #[serde(rename = "turn_changes")]
+    TurnChanges {
+        request_id: u64,
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        channel: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        dm: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        peer: Option<peko_auth::ActorRef>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<u32>,
+    },
+
+    /// Undo turn `turn`'s file changes (ADR-117 D3). Owner only, local
+    /// callers only. Answered with `TurnUndone`.
+    #[serde(rename = "turn_undo")]
+    TurnUndo {
+        request_id: u64,
+        name: String,
+        turn: String,
+    },
+
     /// Read a peer's conversation thread with a Principal.
     ///
     /// This is the read complement to `PrincipalSend`. There is no
@@ -1439,6 +1466,8 @@ impl RequestPacket {
             | Self::SecretProvide { request_id, .. }
             | Self::SecretDecline { request_id, .. }
             | Self::SecretDelete { request_id, .. }
+            | Self::TurnChanges { request_id, .. }
+            | Self::TurnUndo { request_id, .. }
             | Self::QuotaGet { request_id, .. }
             | Self::QuotaSet { request_id, .. }
             | Self::QuotaReset { request_id, .. }
@@ -1614,6 +1643,15 @@ impl std::fmt::Debug for SecretText {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("SecretText(…)")
     }
+}
+
+/// A file undo left alone (ADR-117 D3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UndoSkipped {
+    /// Relative to the peko's workspace when inside it.
+    pub path: String,
+    /// `changed since`, or why its earlier version can't be put back.
+    pub why: String,
 }
 
 /// One secret request waiting for the owner (ADR-116).
@@ -2920,6 +2958,23 @@ pub enum ResponsePacket {
         waiting: Vec<SecretRequestInfo>,
     },
 
+    /// A peko's recent turns that changed files (ADR-117).
+    #[serde(rename = "turn_changes_result")]
+    TurnChanges {
+        request_id: u64,
+        name: String,
+        turns: Vec<crate::tools::changes::TurnSummary>,
+    },
+
+    /// What undoing a turn did: files put back, and files left alone.
+    #[serde(rename = "turn_undone")]
+    TurnUndone {
+        request_id: u64,
+        turn: String,
+        restored: Vec<String>,
+        skipped: Vec<UndoSkipped>,
+    },
+
     /// What `secret_provide` / `secret_decline` / `secret_delete` did.
     #[serde(rename = "secret_done")]
     SecretDone { request_id: u64, message: String },
@@ -3728,6 +3783,8 @@ impl ResponsePacket {
             | Self::ApprovalDecided { request_id, .. }
             | Self::SecretList { request_id, .. }
             | Self::SecretDone { request_id, .. }
+            | Self::TurnChanges { request_id, .. }
+            | Self::TurnUndone { request_id, .. }
             | Self::PrincipalExported { request_id, .. }
             | Self::PrincipalImported { request_id, .. }
             | Self::PrincipalImportPreviewed { request_id, .. }
@@ -3843,6 +3900,8 @@ impl ResponsePacket {
             Self::ApprovalDecided { .. } => "ApprovalDecided",
             Self::SecretList { .. } => "SecretList",
             Self::SecretDone { .. } => "SecretDone",
+            Self::TurnChanges { .. } => "TurnChanges",
+            Self::TurnUndone { .. } => "TurnUndone",
             Self::PrincipalExported { .. } => "PrincipalExported",
             Self::PrincipalImported { .. } => "PrincipalImported",
             Self::PrincipalImportPreviewed { .. } => "PrincipalImportPreviewed",

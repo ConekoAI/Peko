@@ -82,6 +82,15 @@ pub struct ToolDispatcher {
     /// Each principal's tool ledger (ADR-079), bound with its services.
     /// A principal without one (tests, the system principal) is audited
     /// only globally. Shared with run overlays.
+    /// Each principal's change log (ADR-117).
+    changes: Arc<
+        std::sync::RwLock<
+            std::collections::HashMap<
+                peko_subject::PrincipalId,
+                Arc<crate::tools::changes::ChangeLog>,
+            >,
+        >,
+    >,
     ledgers:
         Arc<std::sync::RwLock<std::collections::HashMap<peko_subject::PrincipalId, Arc<Ledger>>>>,
     /// Principals whose ledger could not be opened: their calls are
@@ -145,6 +154,7 @@ impl ToolDispatcher {
             policy_gate: Arc::default(),
             review_cache: Arc::default(),
             ledgers: Arc::default(),
+            changes: Arc::default(),
             unledgered: Arc::default(),
             redactor: Arc::default(),
         }
@@ -302,6 +312,40 @@ impl ToolDispatcher {
             .write()
             .expect("principal async lock poisoned")
             .insert(principal, PrincipalAsync { runtime, executor });
+    }
+
+    /// Bind `principal`'s change log in `dir` for its `workspace`
+    /// (ADR-117). Rebinding to the same directory is a no-op.
+    pub(crate) fn bind_changes(
+        &self,
+        principal: &peko_subject::PrincipalId,
+        dir: &std::path::Path,
+        workspace: &std::path::Path,
+    ) -> Result<()> {
+        if self
+            .changes(principal)
+            .is_some_and(|bound| bound.dir() == dir && bound.workspace() == workspace)
+        {
+            return Ok(());
+        }
+        let opened = Arc::new(crate::tools::changes::ChangeLog::open(dir, workspace)?);
+        self.changes
+            .write()
+            .expect("changes lock poisoned")
+            .insert(principal.clone(), opened);
+        Ok(())
+    }
+
+    /// `principal`'s bound change log.
+    pub(crate) fn changes(
+        &self,
+        principal: &peko_subject::PrincipalId,
+    ) -> Option<Arc<crate::tools::changes::ChangeLog>> {
+        self.changes
+            .read()
+            .expect("changes lock poisoned")
+            .get(principal)
+            .cloned()
     }
 
     /// Bind `principal`'s tool ledger in `dir` (ADR-079). Rebinding to
@@ -519,7 +563,49 @@ impl ToolDispatcher {
             &call,
         )
         .await;
-        let dispatched = self.execute_inner(&call, &call_id, late.clone()).await;
+        // ADR-117: what the call changes on disk, for undo.
+        let turn = principal.as_ref().and_then(|id| {
+            let log = self.changes(id)?;
+            let run_id = call.run_id.clone().filter(|r| !r.is_empty())?;
+            let stamp = call
+                .acting_for
+                .clone()
+                .unwrap_or_else(ActingFor::unattributed);
+            Some((
+                log,
+                crate::tools::changes::TurnKey {
+                    run_id,
+                    session_id: call.session_id.clone().filter(|s| !s.is_empty()),
+                    channel: stamp.compartment.channel().map(str::to_string),
+                    actor: stamp.actor.clone(),
+                },
+            ))
+        });
+        let shell_scan = match &turn {
+            Some((log, _)) if call.tool_name == "Bash" => {
+                let log = Arc::clone(log);
+                tokio::task::spawn_blocking(move || log.scan())
+                    .await
+                    .ok()
+                    .flatten()
+            }
+            _ => None,
+        };
+        let recorder = turn
+            .as_ref()
+            .filter(|_| matches!(call.tool_name.as_str(), "Write" | "Edit"))
+            .map(|(log, key)| {
+                Arc::new(crate::tools::changes::CallRecorder::new(
+                    Arc::clone(log),
+                    key.clone(),
+                )) as Arc<dyn peko_tools_core::FileChangeSink>
+            });
+        let dispatched = self
+            .execute_inner(&call, &call_id, late.clone(), recorder)
+            .await;
+        if let Some((log, key)) = &turn {
+            Self::record_changes(log, key, &call, shell_scan, &dispatched).await;
+        }
         self.fire_observe(
             WorkspaceHookPoint::PostToolUse {
                 tool_name: Some(call.tool_name.clone()),
@@ -625,11 +711,47 @@ impl ToolDispatcher {
         }
     }
 
+    /// After a call: a `Bash` call's workspace changes (the second scan),
+    /// and a foreground `Agent` call's worker run, folded into the turn.
+    async fn record_changes(
+        log: &Arc<crate::tools::changes::ChangeLog>,
+        key: &crate::tools::changes::TurnKey,
+        call: &ToolCallSpec,
+        before: Option<crate::tools::changes::Scan>,
+        dispatched: &Result<Dispatched>,
+    ) {
+        if let Some(before) = before {
+            let log = Arc::clone(log);
+            let key = key.clone();
+            let recorded = tokio::task::spawn_blocking(move || match log.scan() {
+                Some(after) => log.record_scan(&key, &before, &after),
+                None => Ok(()),
+            })
+            .await;
+            if let Ok(Err(e)) = recorded {
+                tracing::warn!("could not record a shell call's changes: {e:#}");
+            }
+        }
+        if call.tool_name == "Agent" {
+            let child = dispatched
+                .as_ref()
+                .ok()
+                .filter(|d| d.json["status"] == "completed")
+                .and_then(|d| d.json["run_id"].as_str());
+            if let Some(child) = child {
+                if let Err(e) = log.link(key, child) {
+                    tracing::warn!("could not link a delegated turn: {e:#}");
+                }
+            }
+        }
+    }
+
     async fn execute_inner(
         &self,
         call: &ToolCallSpec,
         call_id: &str,
         late: Option<Arc<LateEnd>>,
+        recorder: Option<Arc<dyn peko_tools_core::FileChangeSink>>,
     ) -> Result<Dispatched> {
         let tool_name = call.tool_name.clone();
         // An empty id is no principal: tools must see `None` (and fail
@@ -810,6 +932,7 @@ impl ToolDispatcher {
                 )) as Arc<dyn peko_tools_core::BackgroundSpawner>
             }),
         };
+        base_ctx.file_changes = recorder;
         let tool_ctx = match call.abort_signal.as_ref() {
             Some(rx) => base_ctx.with_abort_signal(rx.clone()),
             None => base_ctx,

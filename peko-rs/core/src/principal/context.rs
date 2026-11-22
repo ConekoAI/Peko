@@ -395,6 +395,7 @@ impl PrincipalContext {
             &self.principal_id,
             crate::tools::installation::PrincipalBindings {
                 sessions_dir: Some(self.sessions_dir.clone()),
+                workspace: Some(self.workspace_path.clone()),
                 plan: Some(Arc::clone(&self.plan_port)),
                 model_catalog: self
                     .resolver
@@ -484,6 +485,7 @@ pub(crate) async fn install_principal_tooling(
         &principal.id,
         crate::tools::installation::PrincipalBindings {
             sessions_dir: Some(principal.memory.sessions_dir().clone()),
+            workspace: Some(principal.workspace_path.clone()),
             plan: Some(Arc::clone(&principal.plan_port)),
             model_catalog: pm
                 .llm_resolver()

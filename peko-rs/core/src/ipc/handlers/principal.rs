@@ -290,6 +290,8 @@ impl RequestHandler for PrincipalHandler {
                 | RequestPacket::SecretProvide { .. }
                 | RequestPacket::SecretDecline { .. }
                 | RequestPacket::SecretDelete { .. }
+                | RequestPacket::TurnChanges { .. }
+                | RequestPacket::TurnUndo { .. }
                 | RequestPacket::PrincipalLog { .. }
                 | RequestPacket::PrincipalLogWatch { .. }
                 | RequestPacket::PrincipalAccessGet { .. }
@@ -489,6 +491,17 @@ impl RequestHandler for PrincipalHandler {
                         }
                     }
                 };
+                send_response(sink, response).await?;
+            }
+
+            request @ (RequestPacket::TurnChanges { .. } | RequestPacket::TurnUndo { .. }) => {
+                let request_id = request.request_id();
+                let response = handle_turn_request(host, request, caller)
+                    .await
+                    .unwrap_or_else(|message| ResponsePacket::Error {
+                        request_id,
+                        message,
+                    });
                 send_response(sink, response).await?;
             }
 
@@ -1963,6 +1976,112 @@ async fn owner_principal(
     .map_err(|denied| format!("[forbidden] only the owner decides approvals: {denied}"))?;
     drop(config);
     Ok(principal)
+}
+
+/// `turn_changes` / `turn_undo` (ADR-117 D4): the owner's own action,
+/// on this computer.
+async fn handle_turn_request(
+    host: &dyn PrincipalHost,
+    request: RequestPacket,
+    caller: &CallerContext,
+) -> Result<ResponsePacket, String> {
+    if !caller.is_local() {
+        return Err(
+            "[permission_denied] turns are undone on the computer that runs the peko".into(),
+        );
+    }
+    let (RequestPacket::TurnChanges { name, .. } | RequestPacket::TurnUndo { name, .. }) = &request
+    else {
+        return Err("[bad_request] not a turn request".into());
+    };
+    let principal = owner_principal(host, name, caller).await?;
+    let dispatcher = host.principal_manager().tooling().dispatcher().clone();
+    let log = match dispatcher.changes(&principal.id) {
+        Some(log) => log,
+        None => {
+            dispatcher
+                .bind_changes(
+                    &principal.id,
+                    &crate::tools::changes::dir_for_sessions(&principal.memory.sessions_dir()),
+                    &principal.workspace_path,
+                )
+                .map_err(|e| format!("[unavailable] the change log could not be opened: {e:#}"))?;
+            dispatcher
+                .changes(&principal.id)
+                .ok_or_else(|| "[unavailable] the change log could not be opened".to_string())?
+        }
+    };
+    match request {
+        RequestPacket::TurnChanges {
+            request_id,
+            name,
+            channel,
+            dm,
+            peer,
+            limit,
+        } => {
+            let channel = if dm {
+                // An unprovisioned DM has no turns.
+                let Some(dm) =
+                    resolve_log_thread(host, &name, peer, &caller.subject(), caller.is_operator())
+                        .await
+                        .map_err(|e| format!("[bad_request] {e:?}"))?
+                        .channel
+                else {
+                    return Ok(ResponsePacket::TurnChanges {
+                        request_id,
+                        name,
+                        turns: Vec::new(),
+                    });
+                };
+                Some(dm.to_string())
+            } else {
+                channel
+            };
+            let limit = limit.map_or(20, |l| (l as usize).clamp(1, 200));
+            let turns = tokio::task::spawn_blocking(move || {
+                log.turns(channel.as_deref(), limit)
+                    .iter()
+                    .map(|t| log.summary(t))
+                    .collect::<Vec<_>>()
+            })
+            .await
+            .map_err(|e| format!("[internal] {e}"))?;
+            Ok(ResponsePacket::TurnChanges {
+                request_id,
+                name,
+                turns,
+            })
+        }
+        RequestPacket::TurnUndo {
+            request_id, turn, ..
+        } => {
+            let shown = Arc::clone(&log);
+            let id = turn.clone();
+            let undone = tokio::task::spawn_blocking(move || log.undo(&id))
+                .await
+                .map_err(|e| format!("[internal] {e}"))?
+                .map_err(|e| format!("[bad_request] {e}"))?;
+            Ok(ResponsePacket::TurnUndone {
+                request_id,
+                turn,
+                restored: undone
+                    .restored
+                    .iter()
+                    .map(|p| shown.shown_path(p))
+                    .collect(),
+                skipped: undone
+                    .skipped
+                    .iter()
+                    .map(|s| crate::ipc::packet::UndoSkipped {
+                        path: shown.shown_path(&s.path),
+                        why: s.why.clone(),
+                    })
+                    .collect(),
+            })
+        }
+        _ => Err("[bad_request] not a turn request".into()),
+    }
 }
 
 /// `secret_list` / `secret_provide` / `secret_decline` / `secret_delete`

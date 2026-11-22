@@ -613,6 +613,40 @@ impl DaemonClient {
         .await
     }
 
+    /// A peko's recent turns that changed files (ADR-117).
+    pub async fn turn_changes(
+        &self,
+        name: impl Into<String>,
+        channel: Option<String>,
+        limit: Option<u32>,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        self.request_response(RequestPacket::TurnChanges {
+            request_id,
+            name: name.into(),
+            channel,
+            dm: false,
+            peer: None,
+            limit,
+        })
+        .await
+    }
+
+    /// Undo turn `turn`'s file changes (ADR-117).
+    pub async fn turn_undo(
+        &self,
+        name: impl Into<String>,
+        turn: impl Into<String>,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        self.request_response(RequestPacket::TurnUndo {
+            request_id,
+            name: name.into(),
+            turn: turn.into(),
+        })
+        .await
+    }
+
     /// A peko's secret names and waiting secret requests (ADR-116).
     pub async fn secret_list(&self, name: impl Into<String>) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();

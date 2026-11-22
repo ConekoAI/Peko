@@ -21,6 +21,7 @@ pub mod acting_for;
 pub mod call_parent;
 pub mod constants;
 pub mod exec;
+pub mod file_changes;
 pub mod interrupt;
 pub mod schema;
 pub mod traits;
@@ -33,6 +34,7 @@ pub use exec::{
     AbortSignalBridgeGuard, CancellationTokenBridgeGuard, ToolContext, ToolError,
     ToolProgressEvent, ToolResult, ToolWithContext,
 };
+pub use file_changes::FileChangeSink;
 pub use interrupt::ToolInterruptNotice;
 pub use traits::Tool;
 

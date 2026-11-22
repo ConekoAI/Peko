@@ -129,9 +129,26 @@ pub struct ToolContext {
     pub principal_name: Option<String>,
     /// Background-execution hooks (spawner + task-body progress sink).
     pub background: crate::background::BackgroundContext,
+    /// Where a tool that writes files names them (ADR-117); set by the
+    /// dispatcher for calls whose changes it records.
+    pub file_changes: Option<Arc<dyn crate::file_changes::FileChangeSink>>,
 }
 
 impl ToolContext {
+    /// Tell the call's recorder, if any, that `path` is about to change.
+    pub fn file_before(&self, path: &std::path::Path) {
+        if let Some(sink) = &self.file_changes {
+            sink.before(path);
+        }
+    }
+
+    /// Tell the call's recorder, if any, that the write to `path` is done.
+    pub fn file_after(&self, path: &std::path::Path) {
+        if let Some(sink) = &self.file_changes {
+            sink.after(path);
+        }
+    }
+
     /// Create a new tool context
     pub fn new(
         run_id: impl Into<String>,
@@ -159,6 +176,7 @@ impl ToolContext {
             principal_id: None,
             principal_name: None,
             background: Default::default(),
+            file_changes: None,
         }
     }
 
@@ -189,6 +207,7 @@ impl ToolContext {
             principal_id: None,
             principal_name: None,
             background: Default::default(),
+            file_changes: None,
         }
     }
 
@@ -221,6 +240,7 @@ impl ToolContext {
             principal_id: None,
             principal_name: None,
             background: Default::default(),
+            file_changes: None,
         }
     }
 
@@ -278,6 +298,7 @@ impl ToolContext {
             principal_id: None,
             principal_name: None,
             background: Default::default(),
+            file_changes: None,
         }
     }
 

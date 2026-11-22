@@ -936,6 +936,40 @@ An answer pushes a completion (`tool_name: "Secret"`, `task_id:
 "secret:<id>"`, result `{secret, status, note}`) into the asking session's
 inbox and wakes it.
 
+### 3.1c Turn changes (ADR-117)
+
+Per principal, beside the ledger in the local tier, `<local>/changes/`:
+
+- `turns/<run_id>.json`: one run that changed files.
+
+  ```json
+  {
+    "id": "<run id>",
+    "session_id": "…",
+    "channel": "chan_…",                     // the conversation, when there was one
+    "actor": "user:local:local",
+    "started_at": "…", "updated_at": "…",
+    "files": [
+      {"path": "/abs/path/kb/notes.md",
+       "before": {"state": "saved", "hash": "<sha256>", "size": 3},
+       "after":  {"state": "saved", "hash": "<sha256>", "size": 5}}
+    ],                                          // state: absent | saved | not_saved {reason}
+    "shell": true,                              // ran shell commands
+    "delegated": ["<worker run id>"],           // foreground Agent calls, undone with it
+    "undone": {"at": "…", "restored": ["…"], "skipped": [{"path": "…", "why": "changed since"}]}
+  }
+  ```
+
+- `blobs/<sha256>`: the bytes of each version kept (files up to 5 MB).
+
+Turns and the bytes only they use are pruned after 7 days. IPC, owner only,
+local callers only: `turn_changes {name, channel?, limit?}` →
+`turn_changes_result {name, turns: [{turn, session_id?, channel?, actor,
+started_at, updated_at, files: [{path, change: added|modified|deleted}],
+shell, undone_at?}]}` (paths relative to the workspace when inside it);
+`turn_undo {name, turn}` → `turn_undone {turn, restored: [path], skipped:
+[{path, why}]}`.
+
 ### 3.2 Registry settings (retired)
 
 Remote registry configuration and source credentials are retired in ADR-066 P5.

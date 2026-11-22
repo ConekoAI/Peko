@@ -93,6 +93,8 @@
   {"type": "chatgpt_sign_in_status", "protocol_version": 1, "request_id": 1, "flow_id": "f-1", "pasted_url": "http://127.0.0.1:1455/auth/callback?code=c&state=s"},
   {"type": "chatgpt_sign_in_cancel", "protocol_version": 1, "request_id": 1, "flow_id": "f-1"},
   {"type": "secret_list", "protocol_version": 1, "request_id": 1, "name": "helper"},
+  {"type": "turn_changes", "protocol_version": 1, "request_id": 1, "name": "helper", "dm": true, "limit": 3},
+  {"type": "turn_undo", "protocol_version": 1, "request_id": 1, "name": "helper", "turn": "019a7c3e-0000-7000-8000-000000000001"},
   {"type": "secret_provide", "protocol_version": 1, "request_id": 1, "name": "helper", "id": "sec_3f2a9c1b7d4e", "value": "ghp_example"},
   {"type": "secret_decline", "protocol_version": 1, "request_id": 1, "name": "helper", "id": "sec_3f2a9c1b7d4e"},
   {"type": "principal_access_set", "protocol_version": 1, "request_id": 1, "name": "helper", "visitors": {"tools": ["Read", "Fetch"], "mcp": [], "read": ["public/"], "write": [], "ask_owner": false}, "people": [{"address": "visitor:local:+15550100", "rule": {"tools": ["Read"], "mcp": ["orders"], "read": ["public/", "orders/"], "write": [], "ask_owner": true}}]}
