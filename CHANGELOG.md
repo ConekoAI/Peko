@@ -24,8 +24,9 @@ All notable changes to Peko.
   runtime)`), and can run them with `Skill`. They live in the binary, so a
   release updates them; nothing is copied into the workspace, and `peko
   seed` and snapshots leave them out. A workspace skill of the same name
-  replaces one. The first is `coding-agents`: hand a coding task to Claude
-  Code or Codex installed and signed in on this computer, on the owner's
+  replaces one. The first is `coding-agents`: hand a coding task to a
+  coding agent installed and signed in on this computer (Claude Code,
+  Codex, Cursor, GitHub Copilot, Antigravity or OpenCode), on the owner's
   own plan, in its own worktree, then check its work and report. It is
   listed only for runs acting for the owner, since it needs `Bash`.
 - **A peko can ask questions that wait for an answer (ADR-114).** The new
