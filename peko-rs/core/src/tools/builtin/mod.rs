@@ -39,7 +39,7 @@ pub use plan::PlanTool;
 pub use role_catalog::AgentCatalogTool;
 pub use session::caller_aware::CallerAwareSessionTool;
 pub use session::{SessionInfo, SessionTool, SharedSessionRuntime};
-pub use skill::{SharedSkillRuntime, SkillEntry, SkillFrontmatter, SkillTool};
+pub use skill::{SharedSkillRuntime, SkillEntry, SkillFrontmatter, SkillSource, SkillTool};
 pub use tasks::{TaskTool, Todo, TodoStatus};
 pub use tool_log::{ToolLogTool, TOOL_LOG_TOOL_NAME};
 pub use workflow::{

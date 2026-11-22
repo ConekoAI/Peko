@@ -11,6 +11,7 @@
 //! parse_yaml_frontmatter_typed}` paths used by other parts of the
 //! codebase (validation, the builtin `Skill` tool, etc.).
 
+pub mod bundled;
 pub mod prompt;
 pub mod reader;
 
@@ -19,5 +20,6 @@ pub mod reader;
 pub use crate::tools::builtin::skill::{
     parse_yaml_frontmatter, parse_yaml_frontmatter_typed, SkillFrontmatter,
 };
+pub use bundled::{bundled_skill, BundledSkill, BUNDLED_SKILLS};
 pub use prompt::{WorkspaceSkillsPromptHandler, SKILL_CATALOG_HOOK_PRIORITY};
 pub use reader::WorkspaceSkillRuntime;

@@ -210,7 +210,9 @@ pub(crate) async fn install_workspace(
         InstallationPhase::Workspace,
         vec![
             Arc::new(SkillTool::new(Arc::new(
-                crate::extensions::skill::WorkspaceSkillRuntime::new(workspace.join("skills")),
+                crate::extensions::skill::WorkspaceSkillRuntime::with_bundled(
+                    workspace.join("skills"),
+                ),
             ))),
             Arc::new(AgentCatalogTool::from_workspace(workspace.to_path_buf())),
         ],

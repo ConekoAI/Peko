@@ -49,13 +49,41 @@ pub fn read_skill_file(path: &std::path::Path) -> anyhow::Result<String> {
 // ─── DTOs ──────────────────────────────────────────────────────────
 
 /// Entry for a single discovered skill.
-///
 #[derive(Debug, Clone)]
 pub struct SkillEntry {
     /// Invocation key (the skill directory name).
     pub name: String,
-    /// Absolute path to the skill's `SKILL.md`.
-    pub path: PathBuf,
+    /// Where the skill's `SKILL.md` comes from.
+    pub source: SkillSource,
+}
+
+/// Where a skill's definition lives.
+#[derive(Debug, Clone)]
+pub enum SkillSource {
+    /// Absolute path to a `SKILL.md` in the workspace.
+    File(PathBuf),
+    /// A `SKILL.md` compiled into the runtime.
+    Bundled(&'static str),
+}
+
+impl SkillEntry {
+    /// The skill's `SKILL.md` text.
+    pub fn read(&self) -> anyhow::Result<String> {
+        match &self.source {
+            SkillSource::File(path) => read_skill_file(path),
+            SkillSource::Bundled(text) => Ok((*text).to_string()),
+        }
+    }
+
+    /// The directory files the skill mentions are relative to; `None`
+    /// for a bundled skill, which has none.
+    #[must_use]
+    pub fn dir(&self) -> Option<&std::path::Path> {
+        match &self.source {
+            SkillSource::File(path) => path.parent(),
+            SkillSource::Bundled(_) => None,
+        }
+    }
 }
 
 // ─── SkillRuntime port trait ───────────────────────────────────────
