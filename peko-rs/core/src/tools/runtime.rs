@@ -772,6 +772,7 @@ mod tests {
             &principal,
             crate::tools::installation::PrincipalBindings {
                 sessions_dir: None,
+                workspace: None,
                 plan: None,
                 model_catalog: Some(Arc::clone(&models)),
                 caller_did: None,

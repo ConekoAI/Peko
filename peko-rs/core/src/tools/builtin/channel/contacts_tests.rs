@@ -428,6 +428,7 @@ impl Fixture {
                 &principal.id,
                 crate::tools::installation::PrincipalBindings {
                     sessions_dir: None,
+                    workspace: None,
                     plan: None,
                     model_catalog: None,
                     caller_did: Some(&did),

@@ -41,6 +41,7 @@ Commands:
   model          LLM model management (runtime model catalog)
   device         Your account's computers and phones
   secret         Secrets your pekos asked you for
+  undo           Undo what a peko's turn changed in your files
   code           An identity's code, to read to its owner
   quota          How many tokens and requests a peko may use
   update         Update Peko to the latest version
@@ -1384,6 +1385,31 @@ Arguments:
   <PEKO>  The peko
   <NAME>  The secret's name
 
+```
+
+## `peko undo`
+
+```text
+Undo what a peko's turn changed in your files
+
+Without a turn, lists the peko's recent turns that changed files, newest first. With one, puts each file it changed back, where the file is still as the turn left it.
+
+Examples: peko undo mochi peko undo mochi 019a7c3e-…
+
+Usage: peko undo [OPTIONS] <PEKO> [TURN]
+
+Arguments:
+  <PEKO>
+          The peko
+
+  [TURN]
+          The turn to undo (from the list); without it, list recent turns
+
+Options:
+      --limit <LIMIT>
+          How many turns to list
+          
+          [default: 10]
 ```
 
 ## `peko code`

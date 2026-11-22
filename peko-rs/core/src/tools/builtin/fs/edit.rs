@@ -238,6 +238,27 @@ impl Tool for EditTool {
         .await
     }
 
+    /// Names the file to the call's change recorder (ADR-117) around
+    /// the edit.
+    async fn execute_with_context(
+        &self,
+        params: serde_json::Value,
+        ctx: &peko_tools_core::ToolContext,
+    ) -> Result<serde_json::Value> {
+        let path = params
+            .get("file_path")
+            .and_then(serde_json::Value::as_str)
+            .map(|p| self.resolve_path(p));
+        if let Some(path) = &path {
+            ctx.file_before(path);
+        }
+        let result = self.execute(params).await;
+        if let Some(path) = &path {
+            ctx.file_after(path);
+        }
+        result
+    }
+
     fn estimated_duration_ms(&self, _params: &serde_json::Value) -> u64 {
         100 // Fast operation
     }

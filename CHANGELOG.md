@@ -6,6 +6,17 @@ All notable changes to Peko.
 
 ### Added
 
+- **Undo what a peko's turn changed (ADR-117).** The runtime records the
+  files each turn changes: whatever `Write` and `Edit` write, anywhere, and
+  whatever shell commands change inside the peko's workspace, with the
+  files delegated tasks changed folded in. Peko Desktop shows a
+  conversation's recent turns that changed files above the composer, with
+  Undo; `peko undo <peko>` lists them and `peko undo <peko> <turn>` undoes
+  one; and a peko can undo one of its own turns when you ask, with the new
+  owner-only `Changes` built-in (29 in all). Undo puts each file back only
+  where it is still as the turn left it, and names the rest. Shell changes
+  outside the workspace aren't recorded. Turns are kept 7 days. New IPC:
+  `turn_changes`, `turn_undo`.
 - **A peko can look into a problem with Peko itself.** The bundled `triage`
   skill (owner runs only) asks what went wrong, reads the engine log, the
   audit log and the peko's tool ledger, `peko system doctor` and the rest,

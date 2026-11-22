@@ -1,12 +1,12 @@
 # Built-in Tools Catalog
 
-Peko exposes **28 built-in tool names**, all in PascalCase. Task, Plan, Cron, Async, Contacts, and Channel each require an explicit `action`; no former per-action tool names are aliases. Session also rejects fields irrelevant to the selected action. This reference
+Peko exposes **29 built-in tool names**, all in PascalCase. Task, Plan, Cron, Async, Contacts, and Channel each require an explicit `action`; no former per-action tool names are aliases. Session also rejects fields irrelevant to the selected action. This reference
 describes the compiled Tool implementations; the emitted descriptions and
 JSON Schemas in source are the executable contract. MCP and workspace tools
 have their own names and schemas and are outside this inventory.
 
 Every registered tool appears in the native wire catalog (ADR-066), except the
-ones the ADR-078 trust floor refuses the run (`Plan`, `Bash` and `Secret` below owner)
+ones the ADR-078 trust floor refuses the run (`Plan`, `Bash`, `Secret` and `Changes` below owner)
 and, for an untrusted run, the ones the owner's `ACCESS.toml` does not list
 (ADR-113). ToolCatalog
 owns registration/lookup; ToolDispatcher validates arguments, writes each call
@@ -958,6 +958,23 @@ current path. Owner runs see the whole ledger; any other run sees only calls
 made in its own compartment (ADR-078 D4), and the rest reads as missing.
 Excerpts are tool output, returned with runtime tags defused. `ToolLog` is
 parallelizable, read-only, and exempt from policy review.
+
+### Changes
+
+The files recent turns changed, and undoing one (ADR-117).
+
+**Owner runs only.** Undo rewrites the owner's files; the floor refuses it to every other run.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/changes.rs) · [change log](../../peko-rs/core/src/tools/changes.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `action` | `list` \| `undo` | yes | — |
+| `turn` | string | undo | a turn (run id) from `list` |
+| `all` | boolean | no | list: every conversation, not only this one |
+| `limit` | integer | no | list: 1–50, default 5 |
+
+The dispatcher records what each run changes, in the principal's local tier (`<local>/changes/`): `Write` and `Edit` name the exact file they write (a `FileChangeSink` on the call's context); a `Bash` call's changes inside the peko's workspace are the difference of two scans around it (`.git`, `node_modules`, `target`, `.triage`, `.venv` skipped). Shell changes outside the workspace are not recorded; the turn is marked `shell`. A foreground `Agent` call folds the worker's run into the turn. `list` returns `{success, turns: [{turn, current, updated_at, files: [{path, change}], shell, undone_at?, …}]}`, newest first, in the caller's conversation unless `all`. `undo` puts each file back to what it was before the turn (and the runs it delegated), only where the file is still as the turn left it, and returns `{success, restored: [path], skipped: [{path, why}]}`; a turn is undone once. Files over 5 MB are named but not kept. Turns are kept 7 days. Calls run alone (not parallel).
 
 ## Testing
 

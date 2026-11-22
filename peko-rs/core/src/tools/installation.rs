@@ -61,7 +61,8 @@ builtin_manifest! {
     DAEMON_CALLER_TOOL_NAMES: Runtime, Daemon, true => ["Session", "Agent"];
     WORKSPACE_TOOL_NAMES: Principal, Workspace, false => ["Skill", "RoleCatalog"];
     PRINCIPAL_SERVICE_TOOL_NAMES: Principal, PrincipalServices, false => [
-        "Task", "Plan", "ChannelSend", "Channel", "Contacts", "ModelList", "MCP", "ToolLog"
+        "Task", "Plan", "ChannelSend", "Channel", "Contacts", "ModelList", "MCP", "ToolLog",
+        "Changes"
     ];
     ASYNC_TOOL_NAMES: Principal, Async, false => ["Async"];
 }
@@ -224,6 +225,9 @@ pub(crate) async fn install_workspace(
 
 pub(crate) struct PrincipalBindings<'a> {
     pub sessions_dir: Option<PathBuf>,
+    /// The peko's workspace: with `sessions_dir`, binds its change log
+    /// (ADR-117).
+    pub workspace: Option<PathBuf>,
     pub plan: Option<Arc<dyn peko_plan::PlanPort>>,
     pub model_catalog: Option<Arc<peko_providers::catalog::ModelCatalog>>,
     pub caller_did: Option<&'a str>,
@@ -244,6 +248,22 @@ pub(crate) async fn install_principal_services(
                 principal = %principal.0,
                 "tool ledger unavailable; calls are audited only globally: {e:#}"
             ),
+        }
+        // ADR-117: what each turn changed sits beside the ledger.
+        if let Some(workspace) = bindings.workspace.as_deref() {
+            if let Err(e) = tooling.dispatcher().bind_changes(
+                principal,
+                &crate::tools::changes::dir_for_sessions(&dir),
+                workspace,
+            ) {
+                tracing::warn!(
+                    principal = %principal.0,
+                    "change log unavailable; turns cannot be undone: {e:#}"
+                );
+            }
+        }
+        if let Some(log) = tooling.dispatcher().changes(principal) {
+            tools.push(Arc::new(crate::tools::builtin::ChangesTool::new(log)));
         }
         let runtime = Arc::new(crate::session::todo_runtime_impl::TodoStorageRuntime::new(
             Arc::new(peko_session::todos::TodoStorage::new(dir)),

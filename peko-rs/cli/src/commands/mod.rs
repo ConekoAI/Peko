@@ -32,6 +32,7 @@ pub mod tunnel;
 pub mod vault;
 pub mod version;
 
+pub mod undo;
 pub mod update;
 
 use clap::{Parser, Subcommand};
@@ -191,6 +192,17 @@ pub enum Commands {
     ///   peko secret set mochi GITHUB_TOKEN
     #[command(subcommand)]
     Secret(secret::SecretCommands),
+
+    /// Undo what a peko's turn changed in your files
+    ///
+    /// Without a turn, lists the peko's recent turns that changed files,
+    /// newest first. With one, puts each file it changed back, where the
+    /// file is still as the turn left it.
+    ///
+    /// Examples:
+    ///   peko undo mochi
+    ///   peko undo mochi 019a7c3e-…
+    Undo(undo::UndoArgs),
 
     /// An identity's code, to read to its owner
     ///

@@ -161,6 +161,8 @@ impl Agent {
             &self.principal_id,
             PrincipalBindings {
                 sessions_dir: self.session_manager.read().await.sessions_dir().cloned(),
+                // Bound by the principal's own context; not rebound here.
+                workspace: None,
                 plan: self.principal_plan_port.clone(),
                 model_catalog: self.model_catalog.clone(),
                 caller_did: self.caller_principal_did.as_deref(),

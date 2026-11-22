@@ -450,14 +450,16 @@ stop the engine and run `peko vault migrate --to passphrase` (or
 
 ## Tools, roles, skills and MCP servers
 
-Every peko has the same 28 built-in tools: files and shell (`Read`, `Write`,
+Every peko has the same 29 built-in tools: files and shell (`Read`, `Write`,
 `Edit`, `Glob`, `Grep`, `Bash`), reading a public web page by its address
 (`Fetch`), delegation (`Agent`, `RoleCatalog`,
 `Skill`), its own sessions, channels and contacts, sending you files
 (`Attach`), suggesting replies you can send with a tap (`Suggest`), asking
 you questions on one card you answer together (`Ask`), asking you for a
 token or key without it passing through the chat (`Secret`: you answer on a
-card in the Peko app or with `peko secret set`), plans
+card in the Peko app or with `peko secret set`), undoing what one of its
+turns changed in your files when you ask (`Changes`; also the Undo above the
+composer in Peko Desktop, and `peko undo`), plans
 and tasks,
 scheduling (`Cron`), background work (`Async`), models (`ModelList`,
 `ModelCall`), workflows, MCP and its tool ledger (`ToolLog`). See
