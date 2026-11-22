@@ -6,6 +6,12 @@ All notable changes to Peko.
 
 ### Added
 
+- **A peko can answer with a page (ADR-118).** An `.html` file it sends
+  with `Attach` shows in the conversation as a page in Peko Desktop: a
+  chart, a table, a timeline or a mockup, its scripts running in a sandbox
+  with no network and no reach into the app. `Attach` now tells pekos to
+  make pages self-contained (styles, scripts and images inline, up to
+  2 MB, readable in light and dark).
 - **Undo what a peko's turn changed (ADR-117).** The runtime records the
   files each turn changes: whatever `Write` and `Edit` write, anywhere, and
   whatever shell commands change inside the peko's workspace, with the

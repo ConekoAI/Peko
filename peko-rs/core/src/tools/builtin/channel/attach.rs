@@ -58,6 +58,8 @@ impl Tool for AttachTool {
     fn description(&self) -> String {
         r#"Send files to the person you are talking to. Each file is copied into your workspace's `attachments/` folder and posted in this conversation as a message from you, with `text` as an optional caption; it appears beside your reply (images and SVG inline, audio and video playable, anything else opens in its app). Use it for something you made or found that they should have — a chart, a report, a spreadsheet, a recording. Don't paste a file's contents or path in your reply instead.
 
+When an answer is better seen than read (a chart, a comparison table, a timeline, a diagram, a mockup), send a page: an `.html` file shows in the conversation as a page in Peko Desktop. Make it one self-contained file up to 2 MB: styles and scripts inline, images as `data:` URLs, nothing loaded from the network (it is blocked), readable in light and dark (`prefers-color-scheme`). Links inside it don't open. Write it with `Write`, then attach it, and say in your reply what it shows.
+
 Up to 8 files per call, each up to 20 MB — or, when someone in the conversation is on another computer, each up to 10 MB and 25 MB in all. Only in a conversation (not in cron or internal work).
 
 ## Result
