@@ -6,6 +6,18 @@ All notable changes to Peko.
 
 ### Added
 
+- **A peko asks you for a secret instead of in the chat (ADR-116).** The new
+  `Secret` built-in (28 in all, owner runs only) asks for a token or key by
+  name and says why. You get a note in your conversation with the peko and
+  answer on a card in Peko Desktop or with `peko secret set <peko> <id>`
+  (hidden input). The value goes to the vault, never to the conversation,
+  the model, or the tool ledger; the peko is told it was saved or declined.
+  A secret is an environment variable name (`GITHUB_TOKEN`), set only for
+  the `Bash` calls that name it (`secrets: ["GITHUB_TOKEN"]`), and its value
+  is taken out of what they print; or a credential slot of one of the
+  peko's MCP servers. `peko secret list|decline|delete` manage the rest.
+  New IPC: `secret_list`, `secret_provide`, `secret_decline`,
+  `secret_delete`.
 - **A ChatGPT plan can pay for OpenAI models (ADR-115).** `peko credential
   login chatgpt` signs in with ChatGPT in the browser; OpenAI asks you to
   allow sharing your plan with Peko. The sign-in is stored in the vault as

@@ -1,12 +1,12 @@
 # Built-in Tools Catalog
 
-Peko exposes **27 built-in tool names**, all in PascalCase. Task, Plan, Cron, Async, Contacts, and Channel each require an explicit `action`; no former per-action tool names are aliases. Session also rejects fields irrelevant to the selected action. This reference
+Peko exposes **28 built-in tool names**, all in PascalCase. Task, Plan, Cron, Async, Contacts, and Channel each require an explicit `action`; no former per-action tool names are aliases. Session also rejects fields irrelevant to the selected action. This reference
 describes the compiled Tool implementations; the emitted descriptions and
 JSON Schemas in source are the executable contract. MCP and workspace tools
 have their own names and schemas and are outside this inventory.
 
 Every registered tool appears in the native wire catalog (ADR-066), except the
-ones the ADR-078 trust floor refuses the run (`Plan` and `Bash` below owner)
+ones the ADR-078 trust floor refuses the run (`Plan`, `Bash` and `Secret` below owner)
 and, for an untrusted run, the ones the owner's `ACCESS.toml` does not list
 (ADR-113). ToolCatalog
 owns registration/lookup; ToolDispatcher validates arguments, writes each call
@@ -206,6 +206,9 @@ peers alike and leaves it out of their wire catalog.
 | `run_in_background` | boolean | no | default false |
 | `timeout` | integer | no | ≥ 1 |
 | `max_output_bytes` | integer | no | ≥ 1 |
+| `secrets` | string[] | no | names of the peko's secrets |
+
+`secrets` (ADR-116 D5) sets each named peko secret as that environment variable for this command only; a name with no secret fails the call and points to `Secret`. Every value of 8 or more characters is replaced by `[secret NAME]` in `stdout`, `stderr` and a background task's live output. A background spawn reads them in its task body.
 
 timeout is milliseconds. max_output_bytes defaults to 100000 per stream and is ignored in background mode, where each stream keeps its last 100000 bytes (a dropped start is marked `(truncated)...`). Background execution returns an async receipt; it runs through the caller principal's Async runtime exactly like `Async action=spawn tool=Bash`, and `timeout` bounds the task.
 
@@ -474,6 +477,23 @@ Each question is at most 300 characters, with no options (free text) or 2–4 op
 A later call replaces the earlier one. A conversation turn that asked and then ends quietly (`NO_REPLY` or nothing) replies with the text it wrote beside the call; with none, the card is posted with text listing the questions. Returns `{success, to: "conversation" | "delegator", questions, note}`, plus `channel` in a conversation.
 
 Exempt from the policy reviewer: the questions ride a reply that is already reviewed, and an answer carries no authority. Visitors reach it when `ACCESS.toml` lists it (the seeded file does). Calls run alone (not parallel).
+
+### Secret
+
+Ask the owner for a secret (ADR-116) — a token, password or API key — without it passing through the conversation.
+
+**Owner runs only.** From anyone else's run it would be a way to phish the owner; the floor refuses it and leaves it out of their wire catalog.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/secret.rs) · [requests](../../peko-rs/core/src/principal/secret_requests.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `action` | `request` \| `list` | yes | — |
+| `name` | string | request | an environment variable name; with `server`, an MCP credential slot |
+| `why` | string | request | 1–300 characters, shown to the owner |
+| `server` | string | no | an MCP server in the workspace's `mcp/` |
+
+`request` stores a `sec_…` record in `<local>/secret_requests/`, announces it in the owner's conversation (`🔑 Secret requested`), and returns `{success, id, secret, status: "waiting", expires_at}`. Asking again for a target already waiting returns that request; at most 5 wait at once, and each lapses after 24 hours. The owner answers on the desktop card or with `peko secret set` / `decline` (IPC `secret_provide` / `secret_decline`, owner only, local callers only). The value goes to the vault — namespace `secret:principal:<id>` named by the variable, or the server's `mcp:principal:<id>:<server>` slot — and the session that asked gets a completion saying it was saved or declined, never the value. `list` returns `{success, secrets: [name], waiting: [{id, secret, why, expires_at}]}`. Calls run alone (not parallel).
 
 ## Web
 

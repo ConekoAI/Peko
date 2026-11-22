@@ -36,7 +36,7 @@ use crate::daemon::state::StreamingRunHandle;
 use crate::ipc::handlers::RequestHandler;
 use crate::ipc::packet::{
     ApprovalInfo, PrincipalLogMessage, RequestPacket, ResponsePacket, RunFailureInfo,
-    RunUsageSummary, ToolErrorEntry, PRINCIPAL_LOG_SCHEMA_VERSION,
+    RunUsageSummary, SecretRequestInfo, ToolErrorEntry, PRINCIPAL_LOG_SCHEMA_VERSION,
 };
 use crate::ipc::response_sink::ResponseSink;
 use crate::ipc::send_response::send_response;
@@ -286,6 +286,10 @@ impl RequestHandler for PrincipalHandler {
                 | RequestPacket::PrincipalSetupStatus { .. }
                 | RequestPacket::PrincipalSetupRun { .. }
                 | RequestPacket::ApprovalDecide { .. }
+                | RequestPacket::SecretList { .. }
+                | RequestPacket::SecretProvide { .. }
+                | RequestPacket::SecretDecline { .. }
+                | RequestPacket::SecretDelete { .. }
                 | RequestPacket::PrincipalLog { .. }
                 | RequestPacket::PrincipalLogWatch { .. }
                 | RequestPacket::PrincipalAccessGet { .. }
@@ -485,6 +489,20 @@ impl RequestHandler for PrincipalHandler {
                         }
                     }
                 };
+                send_response(sink, response).await?;
+            }
+
+            request @ (RequestPacket::SecretList { .. }
+            | RequestPacket::SecretProvide { .. }
+            | RequestPacket::SecretDecline { .. }
+            | RequestPacket::SecretDelete { .. }) => {
+                let request_id = request.request_id();
+                let response = handle_secret_request(host, request, caller)
+                    .await
+                    .unwrap_or_else(|message| ResponsePacket::Error {
+                        request_id,
+                        message,
+                    });
                 send_response(sink, response).await?;
             }
 
@@ -1945,6 +1963,100 @@ async fn owner_principal(
     .map_err(|denied| format!("[forbidden] only the owner decides approvals: {denied}"))?;
     drop(config);
     Ok(principal)
+}
+
+/// `secret_list` / `secret_provide` / `secret_decline` / `secret_delete`
+/// (ADR-116 D3): the owner's own action, on this computer only.
+async fn handle_secret_request(
+    host: &dyn PrincipalHost,
+    request: RequestPacket,
+    caller: &CallerContext,
+) -> Result<ResponsePacket, String> {
+    use crate::principal::secret_requests::{self, Target};
+    if !caller.is_local() {
+        return Err(
+            "[permission_denied] secrets are given on the computer that runs the peko".into(),
+        );
+    }
+    let desk = secret_requests::secret_desk()
+        .ok_or_else(|| "[unavailable] secrets are not available in this runtime".to_string())?;
+    let bad = |e: anyhow::Error| format!("[bad_request] {e}");
+    match request {
+        RequestPacket::SecretList { request_id, name } => {
+            let principal = owner_principal(host, &name, caller).await?;
+            let waiting = secret_requests::waiting(&principal)
+                .into_iter()
+                .map(|r| SecretRequestInfo {
+                    secret: r.target.label(),
+                    kind: match r.target {
+                        Target::Peko { .. } => "peko",
+                        Target::Mcp { .. } => "mcp",
+                    }
+                    .to_string(),
+                    id: r.id,
+                    why: r.why,
+                    created_at: r.created_at.to_rfc3339(),
+                    expires_at: r.expires_at.to_rfc3339(),
+                })
+                .collect();
+            Ok(ResponsePacket::SecretList {
+                request_id,
+                secrets: desk.secret_names(&principal.id.0),
+                waiting,
+                name,
+            })
+        }
+        RequestPacket::SecretProvide {
+            request_id,
+            name,
+            id,
+            value,
+        } => {
+            let principal = owner_principal(host, &name, caller).await?;
+            let value = secrecy::SecretString::from(value.0);
+            let message = secret_requests::provide(&desk, &principal, &id, value)
+                .await
+                .map_err(bad)?;
+            Ok(ResponsePacket::SecretDone {
+                request_id,
+                message,
+            })
+        }
+        RequestPacket::SecretDecline {
+            request_id,
+            name,
+            id,
+        } => {
+            let principal = owner_principal(host, &name, caller).await?;
+            let message = secret_requests::decline(&desk, &principal, &id)
+                .await
+                .map_err(bad)?;
+            Ok(ResponsePacket::SecretDone {
+                request_id,
+                message,
+            })
+        }
+        RequestPacket::SecretDelete {
+            request_id,
+            name,
+            secret,
+        } => {
+            let principal = owner_principal(host, &name, caller).await?;
+            let message = if desk.delete(&principal.id.0, &secret).map_err(bad)? {
+                format!("Deleted {secret} from {name}.")
+            } else {
+                format!("{name} has no secret {secret}.")
+            };
+            Ok(ResponsePacket::SecretDone {
+                request_id,
+                message,
+            })
+        }
+        other => Err(format!(
+            "[bad_request] not a secret request: {}",
+            other.request_id()
+        )),
+    }
 }
 
 /// An approval request as `approval_list` reports it.
@@ -5375,6 +5487,145 @@ mod tests {
                 .err()
                 .unwrap();
             assert!(err.starts_with("[not_found]"), "{err}");
+        }
+
+        /// ADR-116: a secret request is answered by the owner on this
+        /// computer; the value goes to the vault, the session that asked
+        /// hears it was saved, and no response carries the value.
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn the_owner_answers_secret_requests_on_this_computer() {
+            use crate::principal::secret_requests::{self, Target};
+            let temp = tempfile::TempDir::new().unwrap();
+            std::env::set_var("PEKO_HOME", temp.path());
+            peko_identity::init_test_env();
+            let resolver = PathResolver::with_dirs(
+                temp.path().join("config"),
+                temp.path().join("data"),
+                temp.path().join("cache"),
+            );
+            let inbox = crate::async_exec::executor::standalone_inbox_registry();
+            let manager = Arc::new(PrincipalManager::with_path_resolver(
+                resolver.clone(),
+                Arc::new(crate::principal::factory::DefaultPrincipalMemoryFactory),
+                Arc::new(crate::principal::factory::DefaultPrincipalRouterFactory),
+                Arc::clone(&inbox),
+            ));
+            let principal = manager
+                .create(
+                    serde_json::from_value(serde_json::json!({
+                        "name": "mine", "preferred_model_id": "mock",
+                        "owner": {"kind": "user", "id": "local"}
+                    }))
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+            let vault = Arc::new(crate::common::vault::Vault::for_test(
+                &temp.path().join("vault"),
+                "pass-phrase",
+            ));
+            secret_requests::install_secret_desk(
+                Arc::clone(&vault),
+                Arc::clone(&inbox),
+                Arc::downgrade(&manager),
+            );
+            let record = secret_requests::request(
+                &principal,
+                Target::parse("GITHUB_TOKEN", None).unwrap(),
+                "to open pull requests with gh",
+                Some("sess-asker".into()),
+            )
+            .await
+            .unwrap();
+            let host = Host { manager, resolver };
+            let local = CallerContext::local();
+            let list = || RequestPacket::SecretList {
+                request_id: 1,
+                name: "mine".into(),
+            };
+
+            match handle_secret_request(&host, list(), &local).await.unwrap() {
+                ResponsePacket::SecretList {
+                    secrets, waiting, ..
+                } => {
+                    assert!(secrets.is_empty());
+                    assert_eq!(waiting.len(), 1);
+                    assert_eq!(waiting[0].id, record.id);
+                    assert_eq!(waiting[0].secret, "GITHUB_TOKEN");
+                    assert_eq!(waiting[0].kind, "peko");
+                }
+                other => panic!("unexpected {other:?}"),
+            }
+            // Not over PekoHub, and not by anyone but the owner.
+            let remote = CallerContext::from_jwt("alice".into());
+            let err = handle_secret_request(&host, list(), &remote)
+                .await
+                .unwrap_err();
+            assert!(err.starts_with("[permission_denied]"), "{err}");
+
+            let provide = RequestPacket::SecretProvide {
+                request_id: 2,
+                name: "mine".into(),
+                id: record.id.clone(),
+                value: crate::ipc::packet::SecretText("ghp_test_value_123".into()),
+            };
+            assert!(!format!("{provide:?}").contains("ghp_test_value_123"));
+            let done = handle_secret_request(&host, provide.clone(), &local)
+                .await
+                .unwrap();
+            assert!(!format!("{done:?}").contains("ghp_test_value_123"));
+            let stored = vault
+                .get_material_for(
+                    &secret_requests::peko_namespace(&principal.id.0),
+                    "GITHUB_TOKEN",
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                secrecy::ExposeSecret::expose_secret(&stored),
+                "ghp_test_value_123"
+            );
+
+            // The asking session hears it was saved, not the value.
+            let items = inbox
+                .get_or_create(&peko_session::inbox_key(&principal.id.0, "sess-asker"))
+                .await
+                .drain_all()
+                .await;
+            assert_eq!(items.len(), 1);
+            let shown = format!("{items:?}");
+            assert!(
+                shown.contains("GITHUB_TOKEN") && shown.contains("saved"),
+                "{shown}"
+            );
+            assert!(!shown.contains("ghp_test_value_123"));
+
+            // Answered once.
+            let err = handle_secret_request(&host, provide, &local)
+                .await
+                .unwrap_err();
+            assert!(err.contains("no longer waiting"), "{err}");
+            match handle_secret_request(&host, list(), &local).await.unwrap() {
+                ResponsePacket::SecretList {
+                    secrets, waiting, ..
+                } => {
+                    assert_eq!(secrets, vec!["GITHUB_TOKEN"]);
+                    assert!(waiting.is_empty());
+                }
+                other => panic!("unexpected {other:?}"),
+            }
+            let deleted = RequestPacket::SecretDelete {
+                request_id: 3,
+                name: "mine".into(),
+                secret: "GITHUB_TOKEN".into(),
+            };
+            match handle_secret_request(&host, deleted, &local).await.unwrap() {
+                ResponsePacket::SecretDone { message, .. } => {
+                    assert!(message.starts_with("Deleted"), "{message}");
+                }
+                other => panic!("unexpected {other:?}"),
+            }
         }
     }
 

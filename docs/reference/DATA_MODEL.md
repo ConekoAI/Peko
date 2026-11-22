@@ -895,6 +895,47 @@ The engine renews the access token a minute before `expires_at_ms` and writes
 the new token and refresh token back to the same credential. Signing in again
 to the same slot keeps the credential id, so models that use it keep working.
 
+### 3.1b Peko secrets and secret requests (ADR-116)
+
+A peko's own secrets are vault credentials in namespace
+`secret:principal:<local-id>` (typed and shown as `secret:peko:<local-id>`),
+kind `generic_secret`, each named by the environment variable `Bash` sets
+(`GITHUB_TOKEN`: uppercase letters, digits and `_`, starting with a letter, at
+most 64). A secret for an MCP server goes to that server's own slot,
+`mcp:principal:<local-id>:<server>` / `<slot>`.
+
+A request is `<local>/secret_requests/sec_<12 hex>.json`:
+
+```json
+{
+  "id": "sec_3f2a9c1b7d4e",
+  "target": {"kind": "peko", "name": "GITHUB_TOKEN"},   // or {"kind": "mcp", "server": "notion", "slot": "api_token"}
+  "why": "to open pull requests with gh",
+  "session_id": "…",                                    // told when it is answered
+  "created_at": "…",
+  "expires_at": "…",                                    // 24 h
+  "status": "waiting"                                   // saved | declined
+}
+```
+
+At most 5 wait per peko; a second request for a target already waiting
+returns the first. IPC, owner only (`ManageSettings`) and local callers only
+(`[permission_denied]` otherwise):
+
+- `secret_list {name}` → `secret_list_result {name, secrets: [name],
+  waiting: [{id, secret, kind: "peko"|"mcp", why, created_at, expires_at}]}`
+  (waiting only, oldest first; `secret` is `GITHUB_TOKEN` or
+  `notion/api_token`).
+- `secret_provide {name, id, value}` → `secret_done {message}`: `id` is a
+  `sec_…` id or a waiting request's `secret`, or the name of a new peko
+  secret when none waits. The value is stored and in no response.
+- `secret_decline {name, id}` and `secret_delete {name, secret}` →
+  `secret_done {message}`.
+
+An answer pushes a completion (`tool_name: "Secret"`, `task_id:
+"secret:<id>"`, result `{secret, status, note}`) into the asking session's
+inbox and wakes it.
+
 ### 3.2 Registry settings (retired)
 
 Remote registry configuration and source credentials are retired in ADR-066 P5.

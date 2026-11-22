@@ -12,6 +12,25 @@ This document defines the public API surface for Peko, including the new Unified
 
 ---
 
+## Secret requests (ADR-116)
+
+- `peko_core::principal::secret_requests`: `Target` (`Peko {name}` /
+  `Mcp {server, slot}`, `parse`, `label`), `SecretRequest`, `Status`,
+  `request`, `waiting`, `provide`, `decline`, `redact`,
+  `validate_env_name`, `peko_namespace`, `mcp_namespace`. `SecretDesk`
+  (`new`, `principal`, `secret_names`, `peko_secret`, `delete`) holds the
+  vault and inboxes; the daemon installs it with `install_secret_desk`,
+  read with `secret_desk()`.
+- Built-in `Secret` (`tools::builtin::SecretTool`), owner-only in
+  `security::floor::OWNER_ONLY_TOOLS`. `BashArgs::secrets` and
+  `BashTool::with_secret_desk`.
+- IPC `RequestPacket::{SecretList, SecretProvide, SecretDecline,
+  SecretDelete}` → `ResponsePacket::{SecretList, SecretDone}` with
+  `SecretRequestInfo`; `SecretText` carries the value and never shows it in
+  `Debug`. `DaemonClient::{secret_list, secret_provide, secret_decline,
+  secret_delete}`.
+- CLI `peko secret list|set|decline|delete`.
+
 ## Renewing credentials and ChatGPT plans (ADR-115)
 
 - `peko_provider_api::TokenSource` (`fn token(&self) -> TokenFuture<'_>`)

@@ -873,6 +873,13 @@ impl AppState {
                 vault: Arc::clone(&vault),
                 run_tokens: Arc::clone(&run_token_registry),
             }));
+        // ADR-116: secret requests are answered into this vault and told
+        // to the session that asked.
+        crate::principal::secret_requests::install_secret_desk(
+            Arc::clone(&vault),
+            Arc::clone(&inbox_registry),
+            Arc::downgrade(&principal_manager),
+        );
 
         // ADR-034: Initialize auth components
         let auth_config = peko_auth::config::AuthConfig::load(&path_resolver)?;

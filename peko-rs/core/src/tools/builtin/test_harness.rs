@@ -200,6 +200,7 @@ pub(crate) fn builtin_tools(backends: &Backends, fakes: &Fakes) -> Vec<Arc<dyn T
         Arc::new(SuggestTool::new(backends.channels.clone())),
         Arc::new(AskTool::new(backends.channels.clone())),
         Arc::new(FetchTool::new()),
+        Arc::new(crate::tools::builtin::SecretTool::new()),
         Arc::new(channel::contacts::ContactsTool::new(
             backends.channels.clone(),
             Weak::new(),
@@ -574,6 +575,13 @@ mod tests {
                 "Fetch",
                 json!({"url":"http://127.0.0.1:9/"}),
                 "not a public internet address",
+            ),
+            // Checked before the vault is reached (its success path is
+            // covered in `principal::secret_requests`).
+            (
+                "Secret",
+                json!({"action":"request", "name":"github_token", "why":"gh"}),
+                "environment variable name",
             ),
         ];
 

@@ -32,21 +32,32 @@ use peko_core::common::vault::{Credential, CredentialFilter, CredentialKind, Vau
 use peko_providers::catalog::ModelCatalog;
 
 /// The vault namespace of a peko's MCP secrets is
-/// `mcp:principal:<local-id>:<server>`; people type and read it as
-/// `mcp:peko:<local-id>:<server>`. Map what was typed to the stored form.
+/// `mcp:principal:<local-id>:<server>`, and of its own secrets
+/// `secret:principal:<local-id>` (ADR-116); people type and read them as
+/// `mcp:peko:…` / `secret:peko:…`. Map what was typed to the stored form.
 fn stored_namespace(namespace: &str) -> String {
-    match namespace.strip_prefix("mcp:peko:") {
-        Some(rest) => format!("mcp:principal:{rest}"),
-        None => namespace.to_string(),
+    for (shown, stored) in [
+        ("mcp:peko:", "mcp:principal:"),
+        ("secret:peko:", "secret:principal:"),
+    ] {
+        if let Some(rest) = namespace.strip_prefix(shown) {
+            return format!("{stored}{rest}");
+        }
     }
+    namespace.to_string()
 }
 
 /// A stored namespace as people read it (the inverse of [`stored_namespace`]).
 fn shown_namespace(namespace: &str) -> String {
-    match namespace.strip_prefix("mcp:principal:") {
-        Some(rest) => format!("mcp:peko:{rest}"),
-        None => namespace.to_string(),
+    for (shown, stored) in [
+        ("mcp:peko:", "mcp:principal:"),
+        ("secret:peko:", "secret:principal:"),
+    ] {
+        if let Some(rest) = namespace.strip_prefix(stored) {
+            return format!("{shown}{rest}");
+        }
     }
+    namespace.to_string()
 }
 
 /// Credential commands

@@ -6,7 +6,7 @@ use crate::common::paths::PathResolver;
 use crate::tools::builtin::{
     channel, messaging, AgentCatalogTool, AskTool, AsyncTool, AttachTool, BashTool,
     CallerAwareSessionTool, ChannelReadTool, EditTool, FetchTool, GlobTool, GrepTool,
-    ModelCallTool, ModelListTool, PlanTool, ReadTool, SkillTool, SuggestTool, TaskTool,
+    ModelCallTool, ModelListTool, PlanTool, ReadTool, SecretTool, SkillTool, SuggestTool, TaskTool,
     ToolLogTool, WorkflowTool, WriteTool,
 };
 use crate::tools::catalog::ToolCatalog;
@@ -55,7 +55,7 @@ macro_rules! builtin_manifest {
 builtin_manifest! {
     RUNTIME_TOOL_NAMES: Runtime, Runtime, false => [
         "Bash", "Read", "Write", "Edit", "Glob", "Grep",
-        "Cron", "ChannelRead", "Attach", "Suggest", "Ask", "Fetch"
+        "Cron", "ChannelRead", "Attach", "Suggest", "Ask", "Fetch", "Secret"
     ];
     DAEMON_TOOL_NAMES: Runtime, Daemon, false => ["ModelCall", "Workflow"];
     DAEMON_CALLER_TOOL_NAMES: Runtime, Daemon, true => ["Session", "Agent"];
@@ -149,6 +149,8 @@ pub async fn install_runtime(
         Arc::new(AskTool::new(channel_port.clone())),
         // ADR-103 — one public web page or text file by URL.
         Arc::new(FetchTool::new()),
+        // ADR-116 — ask the owner for a secret, kept in the vault.
+        Arc::new(SecretTool::new()),
     ];
 
     install_defaults(
