@@ -56,6 +56,26 @@ pub fn create_provider_for_model(
     api_key: &str,
     retry: &peko_provider_api::ProviderRetryConfig,
 ) -> Result<Arc<Provider>> {
+    build_provider(config, api_key, retry).map(Arc::new)
+}
+
+/// Like [`create_provider_for_model`], for a credential whose tokens
+/// renew: each request asks `source` for a current bearer token.
+pub fn create_provider_with_token_source(
+    config: &ModelConfig,
+    source: Arc<dyn peko_provider_api::TokenSource>,
+    retry: &peko_provider_api::ProviderRetryConfig,
+) -> Result<Arc<Provider>> {
+    Ok(Arc::new(
+        build_provider(config, "", retry)?.with_token_source(source),
+    ))
+}
+
+fn build_provider(
+    config: &ModelConfig,
+    api_key: &str,
+    retry: &peko_provider_api::ProviderRetryConfig,
+) -> Result<Provider> {
     let adapter = match config.api_format {
         crate::catalog::ApiFormat::OpenaiCompletions => {
             let a = if config.base_url.is_empty() {
@@ -113,7 +133,7 @@ pub fn create_provider_for_model(
         spec: config.spec,
     };
 
-    Provider::new(adapter, api_key.to_string(), options).map(Arc::new)
+    Provider::new(adapter, api_key.to_string(), options)
 }
 
 #[cfg(test)]

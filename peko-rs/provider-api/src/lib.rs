@@ -55,7 +55,10 @@ pub use peko_message::{ContentBlock, LlmMessage, MessageRole, TokenUsage};
 // (`peko_provider_api::traits::ChatOptions`) form interchangeably.
 pub use cache_retention::CacheRetention;
 pub use context_window_error::is_context_window_exceeded;
-pub use credentials::{CredentialError, CredentialMaterial, CredentialProvider, RotationEntry};
+pub use credentials::{
+    CredentialError, CredentialMaterial, CredentialProvider, RotationEntry, TokenFuture,
+    TokenSource,
+};
 pub use prompt_cache::clamp_openai_prompt_cache_key;
 pub use rate_limit::{
     format_snapshot, header_value, parse_snapshot_metadata, AnthropicRateLimitParser, HeaderEntry,

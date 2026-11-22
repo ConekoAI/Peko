@@ -120,6 +120,29 @@ peko model test my-model
   via mimo-v2.6-flash (~1 token billed)
 ```
 
+### Use your ChatGPT plan instead of an API key
+
+If you have a ChatGPT plan, OpenAI models can be billed to it:
+
+```bash
+peko credential login chatgpt
+```
+
+Your browser opens on OpenAI's sign-in; sign in and allow sharing your plan
+with Peko. (Pass `--no-browser` to get the address instead; if the browser is
+on another computer, paste the address it ends on back into the terminal.)
+The command lists the models on your plan and prints the line to add one:
+
+```bash
+peko model add --id gpt-5.5-plan --api-format openai_responses \
+    --base-url https://api.openai.com/v1 --model gpt-5.5 --credential-id <id>
+```
+
+The sign-in renews itself. If it ends (you removed Peko's access in ChatGPT,
+or it was idle too long), run `peko credential login chatgpt` again: the
+same credential is updated and its models keep working. Usage counts toward
+your plan's limits, and some API features are not available on a plan.
+
 ---
 
 ## 3. Start the engine

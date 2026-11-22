@@ -29,6 +29,7 @@ pub(crate) mod channel;
 pub(crate) mod credential;
 pub(crate) mod device;
 pub(crate) mod instance;
+pub(crate) mod plan_sign_in;
 pub(crate) mod principal;
 pub(crate) mod provider_add;
 pub(crate) mod provider_edit;
@@ -46,6 +47,7 @@ use channel::ChannelHandler;
 use credential::CredentialHandler;
 use device::DeviceHandler;
 use instance::InstanceHandler;
+use plan_sign_in::PlanSignInHandler;
 use principal::PrincipalHandler;
 use provider_add::ProviderAddHandler;
 use provider_edit::ProviderEditHandler;
@@ -115,7 +117,7 @@ impl RequestDispatcher {
         peer: &PeerAddr,
     ) -> anyhow::Result<()> {
         let host = Arc::new(state);
-        let handlers: [Arc<dyn RequestHandler>; 16] = [
+        let handlers: [Arc<dyn RequestHandler>; 17] = [
             Arc::new(SystemHandler::new(host.clone())),
             Arc::new(AuthHandler::new(host.clone())),
             Arc::new(ToolHandler::new(host.clone())),
@@ -137,6 +139,8 @@ impl RequestDispatcher {
             // the add handler so the whole catalog-mutation surface is
             // routed as one group.
             Arc::new(ProviderEditHandler::new(host.clone())),
+            // ADR-115: signing in with ChatGPT for a plan credential.
+            Arc::new(PlanSignInHandler::new(host.clone())),
             // PR-2c: the `channel` handler exposes the
             // `peko-channel` runtime-tier port (create / invite /
             // post / peek / members / list / leave / pin-to-shared)

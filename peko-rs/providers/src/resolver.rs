@@ -290,6 +290,8 @@ impl LlmResolver {
             } else {
                 create_provider_for_model(config, "mock-key", &self.retry_config)?
             }
+        } else if let Some(source) = self.token_source(config) {
+            crate::factory::create_provider_with_token_source(config, source, &self.retry_config)?
         } else {
             let api_key = self
                 .resolve_api_key(config)
@@ -325,6 +327,17 @@ impl LlmResolver {
         };
 
         Provider::new(AnyAdapter::Mock(adapter), "mock-key".to_string(), options).map(Arc::new)
+    }
+
+    /// The renewing token source behind the model's credential, if its
+    /// credential is one (an OAuth sign-in rather than a static key).
+    #[must_use]
+    pub fn token_source(
+        &self,
+        config: &ModelConfig,
+    ) -> Option<Arc<dyn peko_provider_api::TokenSource>> {
+        let id = config.credential_id.as_deref()?;
+        self.credentials.as_ref()?.token_source(id)
     }
 
     /// Resolve the API key for a configured model through the same

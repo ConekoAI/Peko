@@ -81,6 +81,16 @@ impl CredentialProvider for VaultCredentialProvider {
             .map_err(|e| CredentialError::Backend(format!("{e:#}")))
     }
 
+    fn token_source(&self, id: &str) -> Option<Arc<dyn peko_provider_api::TokenSource>> {
+        let credential = self.vault.get_credential(id)?;
+        crate::common::chatgpt_plan::is_plan_credential(&credential).then(|| {
+            Arc::new(crate::common::chatgpt_plan::PlanTokenSource::new(
+                self.vault.clone(),
+                id,
+            )) as Arc<dyn peko_provider_api::TokenSource>
+        })
+    }
+
     fn record_test(&self, credential_id: &str, ok: bool) {
         if let Err(e) = self.vault.record_test(credential_id, ok) {
             tracing::warn!(

@@ -222,7 +222,10 @@ impl OpenAiResponsesAdapter {
 
     /// Convert unified tool definitions into the Responses API tool
     /// shape (matches codex's `ResponsesApiTool` minus the
-    /// codex-only `strict` / `defer_loading` fields).
+    /// codex-only `defer_loading` field). `strict` is always `false`:
+    /// the Responses API defaults function tools to strict schemas,
+    /// which Peko's schemas (optional fields, per-action variants) are
+    /// not written for, and a ChatGPT plan rejects them (ADR-115).
     fn convert_tools(&self, tools: &[ToolDefinition]) -> Vec<ResponsesTool> {
         tools
             .iter()
@@ -231,6 +234,7 @@ impl OpenAiResponsesAdapter {
                 name: t.name.clone(),
                 description: t.description.clone(),
                 parameters: t.parameters.clone(),
+                strict: false,
             })
             .collect()
     }
@@ -399,9 +403,11 @@ impl super::ApiAdapter for OpenAiResponsesAdapter {
         // because Azure's state-keeping model is the opposite of
         // OpenAI's. We detect the endpoint once at construction
         // time so every request carries the field automatically.
-        if self.is_azure {
-            body["store"] = json!(true);
-        }
+        // Everywhere else Peko asks for nothing to be stored: it sends
+        // the whole conversation each time and never reads a stored
+        // response (no `previous_response_id`), and a ChatGPT plan
+        // (ADR-115) refuses requests that would be stored.
+        body["store"] = json!(self.is_azure);
 
         // F25: reasoning-effort knob. Maps to Responses API's
         // `reasoning: {effort, summary}` object. The string is the
@@ -855,6 +861,7 @@ struct ResponsesTool {
     name: String,
     description: String,
     parameters: Value,
+    strict: bool,
 }
 
 /// Response body shape for the blocking call. Mirrors codex's
@@ -1392,6 +1399,8 @@ mod tests {
         assert_eq!(tools_json.len(), 1);
         assert_eq!(tools_json[0]["type"], "function");
         assert_eq!(tools_json[0]["name"], "Read");
+        // Never strict: Peko's schemas are not strict-mode schemas.
+        assert_eq!(tools_json[0]["strict"], false);
     }
 
     // ---------- F25: reasoning-effort wiring ----------
@@ -2050,7 +2059,8 @@ mod tests {
             .unwrap();
         assert_eq!(body["store"], true);
 
-        // OpenAI endpoint does NOT get the `store` field.
+        // Every other endpoint asks for nothing to be stored (a
+        // ChatGPT plan refuses stored requests, ADR-115).
         let openai_adapter = OpenAiResponsesAdapter::new();
         let (_, body) = openai_adapter
             .build_request(
@@ -2061,7 +2071,7 @@ mod tests {
                 false,
             )
             .unwrap();
-        assert!(body.get("store").is_none());
+        assert_eq!(body["store"], false);
     }
 
     // ---- helpers -------------------------------------------------------

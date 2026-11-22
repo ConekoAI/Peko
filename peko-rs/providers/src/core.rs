@@ -150,6 +150,19 @@ fn project_cache_options(
 }
 
 impl Provider {
+    /// Authenticate every request with a token from `source` instead of
+    /// a static key (an OAuth sign-in whose tokens renew).
+    #[must_use]
+    pub fn with_token_source(
+        mut self,
+        source: std::sync::Arc<dyn peko_provider_api::TokenSource>,
+    ) -> Self {
+        self.client = self
+            .client
+            .with_auth(crate::transport::AuthConfig::Source(source));
+        self
+    }
+
     /// Create a new provider
     pub fn new(
         adapter: AnyAdapter,

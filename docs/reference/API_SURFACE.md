@@ -12,6 +12,39 @@ This document defines the public API surface for Peko, including the new Unified
 
 ---
 
+## Renewing credentials and ChatGPT plans (ADR-115)
+
+- `peko_provider_api::TokenSource` (`fn token(&self) -> TokenFuture<'_>`)
+  hands out a bearer token valid for at least a minute.
+  `CredentialProvider::token_source(id)` (default `None`) returns one for a
+  credential that renews itself.
+- `peko_providers::transport::AuthConfig::Source(Arc<dyn TokenSource>)`:
+  the transport asks it before every attempt, retries included.
+  `HttpClient::with_auth`, `Provider::with_token_source`,
+  `factory::create_provider_with_token_source`, and
+  `LlmResolver::token_source(&ModelConfig)`; `LlmResolver::build_provider`
+  uses the token source whenever the model's credential has one.
+  `HttpClient::build_request` is now `async`.
+- `peko_providers::chatgpt`: the plan-sharing OAuth protocol —
+  `discover`, `SignIn` (`new`, `state`, `callback`), `exchange`, `renewal`
+  / `Renewal`, `renew` / `RenewError`, `revoke`, `list_models`,
+  `PlanSession`, `PlanTokens`.
+- `peko_core::common::chatgpt_plan`: `PlanTokenSource` (vault-backed,
+  renewals serialized per credential in-process, vault re-read before
+  renewing), `PendingSignIn` (`start`, `url`, `finish`), `store_plan`,
+  `find_plan_credential`, `previous_sign_in`, `plan_session`,
+  `is_plan_credential`, `shown_metadata`, `revoke`.
+  `VaultCredentialProvider::token_source` returns a `PlanTokenSource` for
+  plan credentials. `SignInFlows` (`sign_in_flows()`: `start`, `status`,
+  `cancel`; `FlowState`, `SignedIn`) runs sign-ins for IPC clients, one
+  waiting at a time, results kept 40 minutes.
+- IPC (`ipc::handlers::plan_sign_in`, port `PlanSignInHost`):
+  `RequestPacket::{ChatgptSignInStart, ChatgptSignInStatus,
+  ChatgptSignInCancel}` → `ResponsePacket::{ChatgptSignInStarted,
+  ChatgptSignInState}` with `PlanSignInState` / `PlanModelWire`. The engine
+  listens on its own loopback port, so the browser must run on the engine's
+  computer or the client hands over `pasted_url`.
+
 ## Sealed envelopes (ADR-110)
 
 `tunnel::seal` holds the sealing: `AgreementKey::derive(&SigningKey)`,

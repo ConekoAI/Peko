@@ -85,10 +85,28 @@ fn parse_retry_after_header(value: &str) -> Option<Duration> {
 }
 
 /// Authentication configuration
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum AuthConfig {
-    Bearer { token: String },
-    Header { name: String, value: String },
+    Bearer {
+        token: String,
+    },
+    Header {
+        name: String,
+        value: String,
+    },
+    /// A bearer token asked for before every attempt, for sign-ins whose
+    /// tokens expire and renew (a ChatGPT plan).
+    Source(Arc<dyn peko_provider_api::TokenSource>),
+}
+
+impl std::fmt::Debug for AuthConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Bearer { .. } => f.write_str("Bearer"),
+            Self::Header { name, .. } => write!(f, "Header({name})"),
+            Self::Source(_) => f.write_str("Source"),
+        }
+    }
 }
 
 /// Shared HTTP client for provider API calls
@@ -288,8 +306,19 @@ impl HttpClient {
         classify_http_error(status_u16, body_text, retry_after, snapshot_owned.as_ref())
     }
 
+    /// Replace how requests authenticate.
+    #[must_use]
+    pub fn with_auth(mut self, auth: AuthConfig) -> Self {
+        self.auth = auth;
+        self
+    }
+
     /// Build request with authentication headers
-    fn build_request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
+    async fn build_request(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+    ) -> anyhow::Result<reqwest::RequestBuilder> {
         let url = if path.starts_with("http") {
             path.to_string()
         } else {
@@ -308,6 +337,12 @@ impl HttpClient {
             AuthConfig::Header { name, value } if !value.is_empty() => {
                 request = request.header(name, value);
             }
+            AuthConfig::Source(source) => {
+                use secrecy::ExposeSecret;
+                let token = source.token().await?;
+                request =
+                    request.header("Authorization", format!("Bearer {}", token.expose_secret()));
+            }
             AuthConfig::Bearer { .. } | AuthConfig::Header { .. } => {}
         }
 
@@ -316,9 +351,9 @@ impl HttpClient {
             request = request.header(name, value);
         }
 
-        request
+        Ok(request
             .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
+            .header("Accept", "application/json"))
     }
 
     /// Send a POST request with JSON body and parse JSON response
@@ -337,6 +372,7 @@ impl HttpClient {
         let operation = || async {
             let mut request = self
                 .build_request(reqwest::Method::POST, path)
+                .await?
                 .json(&body_json);
             // F25: per-request headers override the static set.
             for (name, value) in per_request_headers {
@@ -384,6 +420,7 @@ impl HttpClient {
         let operation = || async {
             let mut request = self
                 .build_request(reqwest::Method::POST, path)
+                .await?
                 .json(&body_json)
                 .header("Accept", "text/event-stream");
             // F25: per-request headers override the static set.
@@ -433,7 +470,7 @@ impl HttpClient {
     /// Send a simple GET request
     pub async fn get<R: DeserializeOwned>(&self, path: &str) -> anyhow::Result<R> {
         let operation = || async {
-            let request = self.build_request(reqwest::Method::GET, path);
+            let request = self.build_request(reqwest::Method::GET, path).await?;
 
             debug!("Sending GET request to {}{}", self.base_url, path);
 
@@ -480,15 +517,66 @@ mod tests {
     }
 
     /// Keyless endpoints get no auth header; keyed ones get theirs.
-    #[test]
-    fn empty_credentials_send_no_auth_header() {
-        let request = |auth| {
+    fn request(auth: AuthConfig) -> reqwest::Request {
+        tokio_test::block_on(
             HttpClient::new("http://127.0.0.1:1", auth, 30)
                 .unwrap()
-                .build_request(reqwest::Method::POST, "/v1/chat/completions")
-                .build()
-                .unwrap()
-        };
+                .build_request(reqwest::Method::POST, "/v1/chat/completions"),
+        )
+        .unwrap()
+        .build()
+        .unwrap()
+    }
+
+    struct Counting(std::sync::atomic::AtomicUsize);
+
+    impl peko_provider_api::TokenSource for Counting {
+        fn token(&self) -> peko_provider_api::TokenFuture<'_> {
+            let n = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async move { Ok(secrecy::SecretString::from(format!("tok-{n}"))) })
+        }
+    }
+
+    /// A token source is asked again for every request, so a renewed
+    /// token reaches the next attempt.
+    #[test]
+    fn token_source_is_asked_for_each_request() {
+        let source = Arc::new(Counting(std::sync::atomic::AtomicUsize::new(0)));
+        let first = request(AuthConfig::Source(source.clone()));
+        let second = request(AuthConfig::Source(source));
+        assert_eq!(first.headers()["Authorization"], "Bearer tok-0");
+        assert_eq!(second.headers()["Authorization"], "Bearer tok-1");
+    }
+
+    struct SignedOut;
+
+    impl peko_provider_api::TokenSource for SignedOut {
+        fn token(&self) -> peko_provider_api::TokenFuture<'_> {
+            Box::pin(async {
+                Err(peko_provider_api::CredentialError::Backend(
+                    "signed out".into(),
+                ))
+            })
+        }
+    }
+
+    #[test]
+    fn a_token_source_error_fails_the_request() {
+        let err = tokio_test::block_on(
+            HttpClient::new(
+                "http://127.0.0.1:1",
+                AuthConfig::Source(Arc::new(SignedOut)),
+                30,
+            )
+            .unwrap()
+            .build_request(reqwest::Method::GET, "/v1/models"),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("signed out"), "got {err}");
+    }
+
+    #[test]
+    fn empty_credentials_send_no_auth_header() {
         let keyless = request(AuthConfig::Bearer {
             token: String::new(),
         });

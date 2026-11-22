@@ -6,6 +6,19 @@ All notable changes to Peko.
 
 ### Added
 
+- **A ChatGPT plan can pay for OpenAI models (ADR-115).** `peko credential
+  login chatgpt` signs in with ChatGPT in the browser; OpenAI asks you to
+  allow sharing your plan with Peko. The sign-in is stored in the vault as
+  one credential, and a model that uses it (`--api-format openai_responses
+  --base-url https://api.openai.com/v1 --credential-id <id>`) is billed to
+  the plan instead of an API key. The command lists the models on your
+  plan and prints the `peko model add` line. The sign-in renews itself
+  while pekos run; when it ends, run the command again and the models that
+  use it keep working. `peko credential delete` revokes it with OpenAI.
+  A browser on another computer works too: paste the address it ends on.
+  Peko Desktop signs in the same way (Settings → Models → Use ChatGPT
+  plan): the engine runs the sign-in, and the dialog lists the plan's
+  models to add.
 - **A peko can ask questions that wait for an answer (ADR-114).** The new
   `Ask` built-in (27 in all) puts 1–4 questions on one card with the
   peko's reply. Each question has a few choices (one, or several), or none
@@ -26,6 +39,17 @@ All notable changes to Peko.
 
 ### Changed
 
+- **IPC:** new requests `chatgpt_sign_in_start` (`name?`) →
+  `chatgpt_sign_in_started { flow_id, url }`, `chatgpt_sign_in_status`
+  (`flow_id`, `pasted_url?`) and `chatgpt_sign_in_cancel` (`flow_id`) →
+  `chatgpt_sign_in_state { flow_id, state }`, where `state` is
+  `waiting`, `done { credential_id, account, models }`, `failed { message }`
+  or `gone`. Additive; older clients are unaffected.
+- **OpenAI Responses requests now send `store: false` and `strict: false`
+  on every function tool** (Azure still sends `store: true`). Peko sends
+  the whole conversation each time and never reads a stored response, and
+  its tool schemas are not strict-mode schemas; a ChatGPT plan (ADR-115)
+  refuses stored requests and strict schemas it cannot compile.
 - **Wire and on-disk format:** `posted` events gain optional `ask` and
   `answers`. `principal_send`, `principal_send_stream`, `channel_post` and
   the phone's `post` verb take `answers`. `PrincipalLogMessage` gains

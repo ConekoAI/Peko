@@ -57,11 +57,14 @@ rand = "0.8"
 # Logging.
 tracing = "0.1"
 
+# ChatGPT plan sharing (`chatgpt.rs`): the PKCE code challenge.
+sha2 = "0.10"
+
 [dev-dependencies]
 # Test fixtures: vault-backed `VaultCredentialProvider` needs `tempfile`,
 # the in-process mock adapter needs `tokio::sync::Mutex` runtime, etc.
 tempfile = "3.10"
-tokio = { version = "1.35", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.35", features = ["macros", "rt-multi-thread", "net"] }
 # `tokio-test::block_on` for sync test fns that need to await
 # catalog/resolver internals (catalog.rs + resolver.rs test mods).
 tokio-test = "0.4"

@@ -851,7 +851,8 @@ pid_file    = ".peko/run/daemon.pid"  # Optional. Default: as shown
 # (~/.peko/models.toml, written by `peko model add`) and API keys live in
 # the encrypted vault (OS keychain), referenced by each entry's
 # `credential_id`. Keys are not read from environment variables.
-# Never store keys in this file.
+# Never store keys in this file. A ChatGPT plan sign-in
+# (`peko credential login chatgpt`, ADR-115) is one such credential too.
 
 # Tooling is supplied by workspace files; no capability installation settings.
 
@@ -863,6 +864,36 @@ pid_file    = ".peko/run/daemon.pid"  # Optional. Default: as shown
 # bundled in a `.principal` package). The old `[teams]` / `[agents]` config
 # tables and their `workspace_root` keys no longer exist.
 ```
+
+### 3.1a ChatGPT plan credentials (ADR-115)
+
+`peko credential login chatgpt [--name <slot>]` stores one vault credential
+in namespace `llm`, slot `<slot>` (default `chatgpt`), kind `oauth_token`.
+Its material is the current access token (a bearer token for
+`https://api.openai.com/v1`); its metadata is:
+
+```json
+{
+  "oauth": "chatgpt_plan",
+  "host_id": "urn:uuid:…",          // names this computer to OpenAI; kept across sign-ins
+  "account": "person@example.com",
+  "session": {
+    "client_id": "oaiapp_…",         // the app registration OpenAI made at first sign-in
+    "refresh_token": "…",            // rotates on every renewal; shown as "(hidden)"
+    "expires_at_ms": 1795000000000,
+    "earliest_refresh_at_ms": null,
+    "scopes": ["openid", "…", "chatgpt.tokens.use.direct"],
+    "subject": "…",                  // OpenAI's account id
+    "email": "person@example.com",
+    "token_endpoint": "https://auth.openai.com/oauth/token",
+    "revocation_endpoint": "…"
+  }
+}
+```
+
+The engine renews the access token a minute before `expires_at_ms` and writes
+the new token and refresh token back to the same credential. Signing in again
+to the same slot keeps the credential id, so models that use it keep working.
 
 ### 3.2 Registry settings (retired)
 
