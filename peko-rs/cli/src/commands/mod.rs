@@ -24,6 +24,7 @@ pub mod model;
 pub mod principal;
 pub mod quota;
 pub mod runtime;
+pub mod secret;
 pub mod send;
 pub mod stop;
 pub mod system;
@@ -177,6 +178,19 @@ pub enum Commands {
     ///   peko device remove dev_5f0c1c1e9a7b4f52
     #[command(subcommand)]
     Device(device::DeviceCommands),
+
+    /// Secrets your pekos asked you for
+    ///
+    /// A peko asks for a token or key with a request instead of in the
+    /// chat; give it here or on the card in the Peko app. The value goes
+    /// to the vault and never reaches the conversation.
+    ///
+    /// Examples:
+    ///   peko secret list mochi
+    ///   peko secret set mochi sec_3f2a9c1b7d4e
+    ///   peko secret set mochi GITHUB_TOKEN
+    #[command(subcommand)]
+    Secret(secret::SecretCommands),
 
     /// An identity's code, to read to its owner
     ///

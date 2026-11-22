@@ -676,6 +676,43 @@ pub enum RequestPacket {
         always: bool,
     },
 
+    /// A peko's secrets and the secret requests waiting for its owner
+    /// (ADR-116 D3): names only, never values. Owner only, local callers
+    /// only. Answered with `SecretList`.
+    #[serde(rename = "secret_list")]
+    SecretList { request_id: u64, name: String },
+
+    /// The owner's value for secret request `id` (a `sec_…` id, or the
+    /// name of a waiting request), or for a new peko secret named `id`
+    /// when none waits (ADR-116 D3). The value goes to the vault and is
+    /// in no response. Owner only, local callers only. Answered with
+    /// `SecretDone`.
+    #[serde(rename = "secret_provide")]
+    SecretProvide {
+        request_id: u64,
+        name: String,
+        id: String,
+        value: SecretText,
+    },
+
+    /// The owner declines secret request `id`. Owner only, local callers
+    /// only. Answered with `SecretDone`.
+    #[serde(rename = "secret_decline")]
+    SecretDecline {
+        request_id: u64,
+        name: String,
+        id: String,
+    },
+
+    /// Remove peko secret `secret`. Owner only, local callers only.
+    /// Answered with `SecretDone`.
+    #[serde(rename = "secret_delete")]
+    SecretDelete {
+        request_id: u64,
+        name: String,
+        secret: String,
+    },
+
     /// Read a peer's conversation thread with a Principal.
     ///
     /// This is the read complement to `PrincipalSend`. There is no
@@ -1398,6 +1435,10 @@ impl RequestPacket {
             | Self::PrincipalSetupStatus { request_id, .. }
             | Self::PrincipalSetupRun { request_id, .. }
             | Self::ApprovalDecide { request_id, .. }
+            | Self::SecretList { request_id, .. }
+            | Self::SecretProvide { request_id, .. }
+            | Self::SecretDecline { request_id, .. }
+            | Self::SecretDelete { request_id, .. }
             | Self::QuotaGet { request_id, .. }
             | Self::QuotaSet { request_id, .. }
             | Self::QuotaReset { request_id, .. }
@@ -1561,6 +1602,35 @@ pub struct SetupStepInfo {
     /// `None` while the call is running.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<String>,
+}
+
+/// A secret on its way to the vault (ADR-116): serialized as a plain
+/// string, never shown by `Debug`.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SecretText(pub String);
+
+impl std::fmt::Debug for SecretText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SecretText(…)")
+    }
+}
+
+/// One secret request waiting for the owner (ADR-116).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SecretRequestInfo {
+    /// `sec_…`
+    pub id: String,
+    /// `GITHUB_TOKEN`, or `notion/api_token` for an MCP slot.
+    pub secret: String,
+    /// `peko` or `mcp`.
+    pub kind: String,
+    /// What the peko needs it for.
+    pub why: String,
+    /// RFC 3339.
+    pub created_at: String,
+    /// RFC 3339; the request lapses then.
+    pub expires_at: String,
 }
 
 /// One approval request waiting for the owner (ADR-078 D7).
@@ -2841,6 +2911,19 @@ pub enum ResponsePacket {
         message: String,
     },
 
+    /// A peko's secret names and waiting requests (ADR-116).
+    #[serde(rename = "secret_list_result")]
+    SecretList {
+        request_id: u64,
+        name: String,
+        secrets: Vec<String>,
+        waiting: Vec<SecretRequestInfo>,
+    },
+
+    /// What `secret_provide` / `secret_decline` / `secret_delete` did.
+    #[serde(rename = "secret_done")]
+    SecretDone { request_id: u64, message: String },
+
     /// One message on a `PrincipalLogWatch` stream — a replayed or
     /// freshly posted row of the peer's DM channel, in the same shape
     /// `PrincipalLog` pages carry. Heartbeats ride the same stream as
@@ -3643,6 +3726,8 @@ impl ResponsePacket {
             | Self::ApprovalList { request_id, .. }
             | Self::PrincipalSetupStatus { request_id, .. }
             | Self::ApprovalDecided { request_id, .. }
+            | Self::SecretList { request_id, .. }
+            | Self::SecretDone { request_id, .. }
             | Self::PrincipalExported { request_id, .. }
             | Self::PrincipalImported { request_id, .. }
             | Self::PrincipalImportPreviewed { request_id, .. }
@@ -3756,6 +3841,8 @@ impl ResponsePacket {
             Self::ApprovalList { .. } => "ApprovalList",
             Self::PrincipalSetupStatus { .. } => "PrincipalSetupStatus",
             Self::ApprovalDecided { .. } => "ApprovalDecided",
+            Self::SecretList { .. } => "SecretList",
+            Self::SecretDone { .. } => "SecretDone",
             Self::PrincipalExported { .. } => "PrincipalExported",
             Self::PrincipalImported { .. } => "PrincipalImported",
             Self::PrincipalImportPreviewed { .. } => "PrincipalImportPreviewed",

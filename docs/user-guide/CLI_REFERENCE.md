@@ -40,6 +40,7 @@ Commands:
   channel        Direct messages and group chats with people and pekos
   model          LLM model management (runtime model catalog)
   device         Your account's computers and phones
+  secret         Secrets your pekos asked you for
   code           An identity's code, to read to its owner
   quota          How many tokens and requests a peko may use
   update         Update Peko to the latest version
@@ -1306,6 +1307,82 @@ Usage: peko device deny [OPTIONS] <ID>
 
 Arguments:
   <ID>  Its id (`apr_owner…`, `apr_keychange…`, `apr_devreset…`)
+
+```
+
+## `peko secret`
+
+```text
+Secrets your pekos asked you for
+
+A peko asks for a token or key with a request instead of in the chat; give it here or on the card in the Peko app. The value goes to the vault and never reaches the conversation.
+
+Examples: peko secret list mochi peko secret set mochi sec_3f2a9c1b7d4e peko secret set mochi GITHUB_TOKEN
+
+Usage: peko secret [OPTIONS] <COMMAND>
+
+Commands:
+  list     List a peko's secrets and the requests waiting for you
+  set      Give a peko a secret it asked for, or a new one
+  decline  Decline a secret request
+  delete   Delete one of a peko's secrets
+  help     Print this message or the help of the given subcommand(s)
+
+```
+
+### `peko secret list`
+
+```text
+List a peko's secrets and the requests waiting for you
+
+Usage: peko secret list [OPTIONS] <PEKO>
+
+Arguments:
+  <PEKO>  The peko
+
+```
+
+### `peko secret set`
+
+```text
+Give a peko a secret it asked for, or a new one
+
+The value is read without echo (or from stdin when piped).
+
+Usage: peko secret set [OPTIONS] <PEKO> <ID>
+
+Arguments:
+  <PEKO>
+          The peko
+
+  <ID>
+          The request (`sec_…`) or the secret's name (e.g. GITHUB_TOKEN)
+
+```
+
+### `peko secret decline`
+
+```text
+Decline a secret request
+
+Usage: peko secret decline [OPTIONS] <PEKO> <ID>
+
+Arguments:
+  <PEKO>  The peko
+  <ID>    The request (`sec_…`) or the secret's name
+
+```
+
+### `peko secret delete`
+
+```text
+Delete one of a peko's secrets
+
+Usage: peko secret delete [OPTIONS] <PEKO> <NAME>
+
+Arguments:
+  <PEKO>  The peko
+  <NAME>  The secret's name
 
 ```
 

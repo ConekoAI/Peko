@@ -22,6 +22,7 @@ use serde_json::json;
 use std::sync::Arc;
 use tokio::process::Command;
 
+use crate::principal::secret_requests::SecretDesk;
 use peko_tools_core::{BackgroundSpawn, Tool, ToolContext};
 
 /// Platform-specific shell configuration
@@ -85,12 +86,64 @@ pub struct BashArgs {
     /// to read slices of large outputs).
     #[serde(default)]
     pub max_output_bytes: Option<usize>,
+    /// Peko secrets (ADR-116) set as environment variables of these
+    /// names for this command only; their values are taken out of what
+    /// it prints.
+    #[serde(default)]
+    pub secrets: Vec<String>,
+}
+
+/// The values of the peko secrets a call names, as `(name, value)`.
+fn resolve_secrets(
+    names: &[String],
+    ctx: Option<&ToolContext>,
+    desk: Option<Arc<SecretDesk>>,
+) -> Result<Vec<(String, String)>> {
+    use secrecy::ExposeSecret;
+    if names.is_empty() {
+        return Ok(Vec::new());
+    }
+    let principal = ctx
+        .and_then(|c| c.principal_id.as_deref())
+        .filter(|p| !p.is_empty())
+        .context("Bash `secrets` needs a peko to read them from")?;
+    let desk = desk
+        .or_else(crate::principal::secret_requests::secret_desk)
+        .context("secrets are not available in this runtime")?;
+    let mut out = Vec::with_capacity(names.len());
+    for name in names {
+        let value = desk.peko_secret(principal, name)?.with_context(|| {
+            format!(
+                "no secret {name}: ask the owner for it with `Secret` action `request` \
+                 (name \"{name}\"), then try again once it is saved"
+            )
+        })?;
+        out.push((name.clone(), value.expose_secret().to_string()));
+    }
+    Ok(out)
+}
+
+/// `output` with the call's secret values taken out of `stdout` and
+/// `stderr` (ADR-116 D5).
+fn redact_output(mut output: serde_json::Value, secrets: &[(String, String)]) -> serde_json::Value {
+    if secrets.is_empty() {
+        return output;
+    }
+    for key in ["stdout", "stderr"] {
+        if let Some(text) = output.get(key).and_then(serde_json::Value::as_str) {
+            let redacted = crate::principal::secret_requests::redact(text, secrets);
+            output[key] = serde_json::Value::String(redacted);
+        }
+    }
+    output
 }
 
 /// `Bash` tool - Execute system shell commands
 pub struct BashTool {
     /// Workspace directory (default cwd)
     workspace_dir: Option<std::path::PathBuf>,
+    /// Where `secrets` are read; the daemon's desk when unset.
+    secret_desk: Option<Arc<SecretDesk>>,
 }
 
 impl BashTool {
@@ -99,6 +152,7 @@ impl BashTool {
     pub fn new() -> Self {
         Self {
             workspace_dir: None,
+            secret_desk: None,
         }
     }
 
@@ -106,6 +160,13 @@ impl BashTool {
     #[must_use]
     pub fn with_workspace(mut self, workspace: impl Into<std::path::PathBuf>) -> Self {
         self.workspace_dir = Some(workspace.into());
+        self
+    }
+
+    /// Read `secrets` from `desk` instead of the daemon's.
+    #[must_use]
+    pub fn with_secret_desk(mut self, desk: Arc<SecretDesk>) -> Self {
+        self.secret_desk = Some(desk);
         self
     }
 
@@ -130,9 +191,11 @@ impl BashTool {
         timeout_ms: Option<u64>,
         max_output_bytes: Option<usize>,
         ctx: Option<&ToolContext>,
+        secrets: &[(String, String)],
     ) -> Result<serde_json::Value> {
         let mut cmd = Command::new(SHELL);
         cmd.args(SHELL_ARGS).arg(command);
+        cmd.envs(secrets.iter().map(|(k, v)| (k, v)));
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
         if let Some(dir) = working_dir {
@@ -174,7 +237,7 @@ impl BashTool {
         };
         tree.disarm();
 
-        Self::format_output(&output, max_output_bytes)
+        Self::format_output(&output, max_output_bytes).map(|out| redact_output(out, secrets))
     }
 
     /// Start the command as a background task owned by the caller's
@@ -230,9 +293,12 @@ impl BashTool {
         working_dir: Option<std::path::PathBuf>,
         abort_rx: tokio::sync::watch::Receiver<bool>,
         progress: Arc<std::sync::Mutex<String>>,
+        secrets: &[(String, String)],
     ) -> Result<serde_json::Value> {
         let mut cmd = Command::new(SHELL);
         cmd.args(SHELL_ARGS).arg(command);
+        cmd.envs(secrets.iter().map(|(k, v)| (k, v)));
+        let secrets: Arc<Vec<(String, String)>> = Arc::new(secrets.to_vec());
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
         if let Some(dir) = working_dir {
@@ -252,11 +318,13 @@ impl BashTool {
             stdout_pipe,
             Arc::clone(&progress),
             DEFAULT_MAX_OUTPUT_BYTES,
+            Arc::clone(&secrets),
         ));
         let stderr_task = tokio::spawn(read_stream_tail(
             stderr_pipe,
             Arc::clone(&progress),
             DEFAULT_MAX_OUTPUT_BYTES,
+            Arc::clone(&secrets),
         ));
 
         // Race the child against the executor's cancel channel. On abort
@@ -280,14 +348,17 @@ impl BashTool {
 
         let (stdout, stdout_truncated) = tail_text(&stdout);
         let (stderr, stderr_truncated) = tail_text(&stderr);
-        Ok(json!({
-            "exit_code": status.code().unwrap_or(-1),
-            "stdout": stdout,
-            "stderr": stderr,
-            "stdout_truncated": stdout_truncated,
-            "stderr_truncated": stderr_truncated,
-            "success": status.success(),
-        }))
+        Ok(redact_output(
+            json!({
+                "exit_code": status.code().unwrap_or(-1),
+                "stdout": stdout,
+                "stderr": stderr,
+                "stdout_truncated": stdout_truncated,
+                "stderr_truncated": stderr_truncated,
+                "success": status.success(),
+            }),
+            &secrets,
+        ))
     }
 
     /// Format command output
@@ -324,12 +395,28 @@ impl BashTool {
             .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
         let cwd = self.resolve_cwd(args.cwd.as_deref());
+        // A background spawn re-enters this tool as its task body, which
+        // reads the secrets itself: none are read here for it.
+        let secrets = if args.run_in_background
+            && ctx.and_then(|c| c.background.progress.as_ref()).is_none()
+        {
+            Vec::new()
+        } else {
+            resolve_secrets(&args.secrets, ctx, self.secret_desk.clone())?
+        };
 
         // A background-task body streams into the task's live buffer under
         // the task's timeout and cancellation; `run_in_background` inside a
         // task is moot (it is already background).
         if let Some((ctx, progress)) = ctx.and_then(|c| Some((c, c.background.progress.clone()?))) {
-            Self::execute_command_streaming(&args.command, cwd, ctx.abort_signal(), progress).await
+            Self::execute_command_streaming(
+                &args.command,
+                cwd,
+                ctx.abort_signal(),
+                progress,
+                &secrets,
+            )
+            .await
         } else if args.run_in_background {
             Self::spawn_background(params, args.timeout, ctx).await
         } else {
@@ -339,6 +426,7 @@ impl BashTool {
                 args.timeout,
                 args.max_output_bytes,
                 ctx,
+                &secrets,
             )
             .await
         }
@@ -389,6 +477,7 @@ async fn read_stream_tail<R: tokio::io::AsyncRead + Unpin>(
     mut pipe: R,
     progress: Arc<std::sync::Mutex<String>>,
     cap: usize,
+    secrets: Arc<Vec<(String, String)>>,
 ) -> StreamTail {
     use tokio::io::AsyncReadExt;
     let mut tail = StreamTail::default();
@@ -406,10 +495,13 @@ async fn read_stream_tail<R: tokio::io::AsyncRead + Unpin>(
                 // `from_utf8_lossy` per chunk can emit a replacement char
                 // where a chunk splits a character — fine for a progress
                 // display; the result is built from the kept bytes.
-                peko_tools_core::background::append_progress(
-                    &progress,
-                    &String::from_utf8_lossy(&chunk[..n]),
-                );
+                let text = String::from_utf8_lossy(&chunk[..n]);
+                let text = if secrets.is_empty() {
+                    text.into_owned()
+                } else {
+                    crate::principal::secret_requests::redact(&text, &secrets)
+                };
+                peko_tools_core::background::append_progress(&progress, &text);
             }
         }
     }
@@ -469,6 +561,9 @@ impl Tool for BashTool {
 ## Time limits
 `timeout` (milliseconds) kills the command and everything it started; there is none by default. A blocking call still running after 10 minutes returns a receipt with a `task_id` and keeps running in the background; its result is delivered to your session when it finishes.
 
+## Secrets
+`secrets: ["GITHUB_TOKEN"]` sets your saved secrets of those names as environment variables for this command only (ask the owner for one with `Secret`). Their values are replaced by `[secret NAME]` in the output; never print them on purpose.
+
 ## Background
 `run_in_background: true` returns a receipt with a `task_id` at once (`timeout` still applies). Follow up with `Async`: action `output` (`block: true` waits for the end), `status`, `stop`, or `list`.
 "#
@@ -495,6 +590,11 @@ impl Tool for BashTool {
                     "type": "boolean",
                     "description": "When true, run the command in the background and return a task receipt",
                     "default": false
+                },
+                "secrets": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Names of your secrets (see `Secret`) to set as environment variables for this command only, e.g. [\"GITHUB_TOKEN\"]; their values are taken out of the output"
                 },
                 "timeout": {
                     "type": "integer",
@@ -538,6 +638,81 @@ mod tests {
     use super::*;
     use serde_json::json;
     use tempfile::TempDir;
+
+    fn desk_with(name: &str, value: &str) -> (TempDir, Arc<SecretDesk>) {
+        let dir = TempDir::new().unwrap();
+        let vault = Arc::new(crate::common::vault::Vault::for_test(
+            dir.path(),
+            "pass-phrase",
+        ));
+        let desk = Arc::new(SecretDesk::new(
+            vault,
+            Arc::new(peko_session::InboxRegistry::new(
+                crate::async_exec::executor::executor::default_inbox_factory(),
+            )),
+            std::sync::Weak::new(),
+        ));
+        desk.store_peko_secret("prin_a", name, value);
+        (dir, desk)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn named_secrets_are_set_for_the_command_and_kept_out_of_its_output() {
+        let (_dir, desk) = desk_with("DEMO_TOKEN", "tok-1234567890");
+        let tool = BashTool::new().with_secret_desk(desk);
+        let ctx = ToolContext::default_for_tool("Bash").with_principal_id("prin_a");
+        let out = tool
+            .execute_with_context(
+                json!({
+                    "command": "echo \"len=${#DEMO_TOKEN} $DEMO_TOKEN\"; echo \"$DEMO_TOKEN\" >&2",
+                    "secrets": ["DEMO_TOKEN"]
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out["stdout"], "len=14 [secret DEMO_TOKEN]\n");
+        assert_eq!(out["stderr"], "[secret DEMO_TOKEN]\n");
+
+        // Not set for a call that does not name it.
+        let out = tool
+            .execute_with_context(json!({"command": "echo \"[${DEMO_TOKEN:-}]\""}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(out["stdout"], "[]\n");
+
+        // Background bodies redact their live output and result too.
+        let mut bg = ToolContext::default_for_tool("Bash").with_principal_id("prin_a");
+        let progress: Arc<std::sync::Mutex<String>> = Arc::default();
+        bg.background.progress = Some(Arc::clone(&progress));
+        let out = tool
+            .execute_with_context(
+                json!({"command": "echo \"$DEMO_TOKEN\"", "secrets": ["DEMO_TOKEN"]}),
+                &bg,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out["stdout"], "[secret DEMO_TOKEN]\n");
+        assert!(!progress.lock().unwrap().contains("tok-1234567890"));
+    }
+
+    #[tokio::test]
+    async fn a_secret_the_peko_lacks_fails_the_call_and_names_secret() {
+        let (_dir, desk) = desk_with("DEMO_TOKEN", "tok-1234567890");
+        let tool = BashTool::new().with_secret_desk(desk);
+        let ctx = ToolContext::default_for_tool("Bash").with_principal_id("prin_b");
+        let err = tool
+            .execute_with_context(json!({"command": "true", "secrets": ["DEMO_TOKEN"]}), &ctx)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("`Secret`"), "{err}");
+        let err = tool
+            .execute_with_context(json!({"command": "true", "secrets": ["bad-name"]}), &ctx)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("environment variable"), "{err}");
+    }
 
     #[test]
     fn test_bash_tool_creation() {

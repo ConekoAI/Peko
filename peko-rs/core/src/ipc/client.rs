@@ -613,6 +613,63 @@ impl DaemonClient {
         .await
     }
 
+    /// A peko's secret names and waiting secret requests (ADR-116).
+    pub async fn secret_list(&self, name: impl Into<String>) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        self.request_response(RequestPacket::SecretList {
+            request_id,
+            name: name.into(),
+        })
+        .await
+    }
+
+    /// The owner's value for secret request `id` (or a new peko secret).
+    pub async fn secret_provide(
+        &self,
+        name: impl Into<String>,
+        id: impl Into<String>,
+        value: String,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        self.request_response(RequestPacket::SecretProvide {
+            request_id,
+            name: name.into(),
+            id: id.into(),
+            value: crate::ipc::packet::SecretText(value),
+        })
+        .await
+    }
+
+    /// The owner declines secret request `id`.
+    pub async fn secret_decline(
+        &self,
+        name: impl Into<String>,
+        id: impl Into<String>,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        self.request_response(RequestPacket::SecretDecline {
+            request_id,
+            name: name.into(),
+            id: id.into(),
+        })
+        .await
+    }
+
+    /// Remove peko secret `secret`.
+    pub async fn secret_delete(
+        &self,
+        name: impl Into<String>,
+        secret: impl Into<String>,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        self.request_response(RequestPacket::SecretDelete {
+            request_id,
+            name: name.into(),
+            secret: secret.into(),
+        })
+        .await
+    }
+
     /// Export a Principal to a package — a full-existence snapshot
     /// (ADR-056): sessions, authored cron schedule, plans, and the
     /// installed workspace tooling alongside the definition.

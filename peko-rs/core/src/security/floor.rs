@@ -14,8 +14,10 @@ use super::access::{Grant, Reach, Unreached};
 /// plan the principal holds, and plans have no compartment, so a run
 /// acting for anyone else would reach the owner's. `Bash` runs as the OS
 /// user, so no path rule holds it: it would read every conversation the
-/// runtime keeps, its keys, and its settings.
-pub const OWNER_ONLY_TOOLS: &[&str] = &["Plan", "Bash"];
+/// runtime keeps, its keys, and its settings. `Secret` asks the owner
+/// for a secret (ADR-116): from anyone else's run that would be a way to
+/// phish the owner.
+pub const OWNER_ONLY_TOOLS: &[&str] = &["Plan", "Bash", "Secret"];
 
 /// `Channel` actions only the owner decides: `create` / `invite` change
 /// who can reach the principal and whom it can reach (ADR-082 D6);
