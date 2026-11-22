@@ -526,6 +526,7 @@ Commands:
   delete   Delete a credential by id
   list     List credentials with optional filters
   migrate  Migrate legacy provider keys from the OS keychain into the vault
+  login    Sign in to a service in the browser and store the sign-in
   help     Print this message or the help of the given subcommand(s)
 
 ```
@@ -600,6 +601,32 @@ Legacy per-provider OS keychain entries are no longer a supported secret source;
 
 Usage: peko credential migrate [OPTIONS]
 
+```
+
+### `peko credential login`
+
+```text
+Sign in to a service in the browser and store the sign-in.
+
+`chatgpt`: use your ChatGPT plan for OpenAI models instead of an API key. OpenAI asks you to allow sharing your plan with Peko. The sign-in renews itself; run this again if it ends, and the models that use it keep working.
+
+Usage: peko credential login [OPTIONS] <SERVICE>
+
+Arguments:
+  <SERVICE>
+          What to sign in to
+
+          Possible values:
+          - chatgpt: A ChatGPT plan, for OpenAI models
+
+Options:
+      --name <NAME>
+          Vault slot for the sign-in. Use another name to keep a second account
+          
+          [default: chatgpt]
+
+      --no-browser
+          Print the sign-in address instead of opening a browser
 ```
 
 ## `peko system`

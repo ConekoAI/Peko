@@ -3316,6 +3316,27 @@ impl crate::ipc::handlers::audit::AuditHost for AppState {
 /// `peko_providers::catalog::ModelCatalog` — the same instance the
 /// resolver uses, so any mutation is reflected here without a reload.
 #[async_trait::async_trait]
+impl crate::ipc::handlers::plan_sign_in::PlanSignInHost for AppState {
+    async fn plan_sign_in_start(&self, name: &str) -> anyhow::Result<(String, String)> {
+        crate::common::chatgpt_plan::sign_in_flows()
+            .start(Arc::clone(&self.vault), name)
+            .await
+    }
+
+    fn plan_sign_in_status(
+        &self,
+        flow_id: &str,
+        pasted: Option<String>,
+    ) -> crate::common::chatgpt_plan::FlowState {
+        crate::common::chatgpt_plan::sign_in_flows().status(flow_id, pasted)
+    }
+
+    fn plan_sign_in_cancel(&self, flow_id: &str) -> crate::common::chatgpt_plan::FlowState {
+        crate::common::chatgpt_plan::sign_in_flows().cancel(flow_id)
+    }
+}
+
+#[async_trait::async_trait]
 impl crate::ipc::handlers::credential::CredentialHost for AppState {
     fn list_credentials(
         &self,

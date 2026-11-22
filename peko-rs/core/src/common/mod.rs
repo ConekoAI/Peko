@@ -4,6 +4,7 @@
 //! ensuring consistency in path resolution, configuration handling, etc.
 
 pub mod authority;
+pub mod chatgpt_plan;
 pub mod config_path;
 pub mod disruption;
 pub mod identifiers;

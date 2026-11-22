@@ -268,6 +268,32 @@ pub enum RequestPacket {
     #[serde(rename = "model_test")]
     ModelTest { request_id: u64, id: String },
 
+    /// Start signing in with ChatGPT so OpenAI models bill a ChatGPT
+    /// plan (ADR-115). The engine listens for the browser's return on
+    /// its own loopback port and stores the sign-in in vault slot
+    /// `llm/<name>` (default `chatgpt`). The reply carries the address
+    /// to open; follow with `chatgpt_sign_in_status`.
+    #[serde(rename = "chatgpt_sign_in_start")]
+    ChatgptSignInStart {
+        request_id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
+
+    /// How a ChatGPT sign-in is going. `pasted_url` hands it the
+    /// address a browser on another computer ended on.
+    #[serde(rename = "chatgpt_sign_in_status")]
+    ChatgptSignInStatus {
+        request_id: u64,
+        flow_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pasted_url: Option<String>,
+    },
+
+    /// Stop waiting for a ChatGPT sign-in.
+    #[serde(rename = "chatgpt_sign_in_cancel")]
+    ChatgptSignInCancel { request_id: u64, flow_id: String },
+
     /// Insert or overwrite a credential at `(namespace, name)` with
     /// the given material. The vault assigns a fresh UUID on insert
     /// and returns it in the reply; on overwrite the existing
@@ -1325,6 +1351,9 @@ impl RequestPacket {
             | Self::CredentialGetMaterial { request_id, .. }
             | Self::CredentialSet { request_id, .. }
             | Self::CredentialDelete { request_id, .. }
+            | Self::ChatgptSignInStart { request_id, .. }
+            | Self::ChatgptSignInStatus { request_id, .. }
+            | Self::ChatgptSignInCancel { request_id, .. }
             | Self::BindingList { request_id }
             | Self::BindingGet { request_id, .. }
             | Self::BindingSet { request_id, .. }
@@ -2381,6 +2410,23 @@ pub enum ResponsePacket {
         broken_references: u32,
     },
 
+    /// Reply to [`RequestPacket::ChatgptSignInStart`]: open `url` in a
+    /// browser; ask about `flow_id` with `chatgpt_sign_in_status`.
+    #[serde(rename = "chatgpt_sign_in_started")]
+    ChatgptSignInStarted {
+        request_id: u64,
+        flow_id: String,
+        url: String,
+    },
+
+    /// Reply to `chatgpt_sign_in_status` and `chatgpt_sign_in_cancel`.
+    #[serde(rename = "chatgpt_sign_in_state")]
+    ChatgptSignInState {
+        request_id: u64,
+        flow_id: String,
+        state: PlanSignInState,
+    },
+
     /// Reply to [`RequestPacket::CredentialGet`]. Carries the full
     /// record (id, namespace, name, kind, metadata, timestamps)
     /// but never the secret material.
@@ -3231,6 +3277,36 @@ pub struct ChannelPekoWake {
     pub wake: peko_channel::WakePolicy,
 }
 
+/// Where a ChatGPT sign-in stands (ADR-115).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum PlanSignInState {
+    /// Waiting for the browser (or a pasted address).
+    Waiting,
+    /// Signed in and stored. `models` are the ones the plan offers
+    /// (empty when the list could not be read); a model is added with
+    /// `model_add`, `api_format` `openai_responses`, `base_url`
+    /// `https://api.openai.com/v1` and this `credential_id`.
+    Done {
+        credential_id: String,
+        account: String,
+        models: Vec<PlanModelWire>,
+    },
+    /// The sign-in failed; `message` says why, for people.
+    Failed { message: String },
+    /// Cancelled, or no such sign-in (it ended long ago, or the engine
+    /// restarted).
+    Gone,
+}
+
+/// A model a ChatGPT plan offers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanModelWire {
+    /// The wire model id.
+    pub slug: String,
+    pub display_name: String,
+}
+
 /// Explicit model endpoint settings, matching `peko model add`.
 /// Credentials are stored in the vault; optional metadata is user authored.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -3537,6 +3613,8 @@ impl ResponsePacket {
             | Self::CredentialsListed { request_id, .. }
             | Self::CredentialSetDone { request_id, .. }
             | Self::CredentialDeleted { request_id, .. }
+            | Self::ChatgptSignInStarted { request_id, .. }
+            | Self::ChatgptSignInState { request_id, .. }
             | Self::CredentialGot { request_id, .. }
             | Self::CredentialMaterial { request_id, .. }
             | Self::BindingsListed { request_id, .. }
@@ -3648,6 +3726,8 @@ impl ResponsePacket {
             Self::CredentialsListed { .. } => "CredentialsListed",
             Self::CredentialSetDone { .. } => "CredentialSetDone",
             Self::CredentialDeleted { .. } => "CredentialDeleted",
+            Self::ChatgptSignInStarted { .. } => "ChatgptSignInStarted",
+            Self::ChatgptSignInState { .. } => "ChatgptSignInState",
             Self::CredentialGot { .. } => "CredentialGot",
             Self::CredentialMaterial { .. } => "CredentialMaterial",
             Self::BindingsListed { .. } => "BindingsListed",

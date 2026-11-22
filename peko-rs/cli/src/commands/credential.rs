@@ -21,6 +21,10 @@
 //!
 //! Live validation of model credentials moved to `peko model test <id>`,
 //! which pings the model's actual endpoint with the stored key.
+//!
+//! `peko credential login chatgpt` signs in with ChatGPT in the browser
+//! and stores the sign-in as a credential: models that use it are billed
+//! to the ChatGPT plan instead of an API key (`common::chatgpt_plan`).
 
 use crate::commands::GlobalPaths;
 use anyhow::{Context, Result};
@@ -108,6 +112,30 @@ pub enum CredentialCommands {
     /// Legacy per-provider OS keychain entries are no longer a supported
     /// secret source; the unified vault is the single source of truth.
     Migrate,
+    /// Sign in to a service in the browser and store the sign-in.
+    ///
+    /// `chatgpt`: use your ChatGPT plan for OpenAI models instead of an
+    /// API key. OpenAI asks you to allow sharing your plan with Peko.
+    /// The sign-in renews itself; run this again if it ends, and the
+    /// models that use it keep working.
+    Login {
+        /// What to sign in to.
+        service: LoginService,
+        /// Vault slot for the sign-in. Use another name to keep a second
+        /// account.
+        #[arg(long, default_value = "chatgpt")]
+        name: String,
+        /// Print the sign-in address instead of opening a browser.
+        #[arg(long)]
+        no_browser: bool,
+    },
+}
+
+/// Services `peko credential login` signs in to.
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+pub enum LoginService {
+    /// A ChatGPT plan, for OpenAI models.
+    Chatgpt,
 }
 
 /// Execute a credential subcommand.
@@ -160,7 +188,95 @@ pub async fn execute(cmd: CredentialCommands, paths: &GlobalPaths) -> Result<()>
             .await
         }
         CredentialCommands::Migrate => migrate_cmd(&vault).await,
+        CredentialCommands::Login {
+            service: LoginService::Chatgpt,
+            name,
+            no_browser,
+        } => chatgpt_login_cmd(&vault, &name, no_browser).await,
     }
+}
+
+async fn chatgpt_login_cmd(vault: &Vault, name: &str, no_browser: bool) -> Result<()> {
+    use peko_core::common::chatgpt_plan;
+    use secrecy::ExposeSecret;
+
+    let (host_id, returning) = chatgpt_plan::previous_sign_in(vault, name);
+    let pending = chatgpt_plan::PendingSignIn::start(&host_id, returning.as_ref()).await?;
+    println!(
+        "Sign in with ChatGPT and allow Peko to use your plan:\n\n  {}\n",
+        pending.url()
+    );
+    if !no_browser && open_browser(pending.url()).is_err() {
+        println!("(Could not open a browser; open the address above yourself.)");
+    }
+    println!(
+        "Waiting for the sign-in. If the browser is on another computer, paste the address it ends on here and press Enter."
+    );
+    // Stdin is read on its own thread so a pasted address can finish the
+    // sign-in while the loopback listener waits for the browser.
+    let (tx, rx) = tokio::sync::mpsc::channel(4);
+    std::thread::spawn(move || {
+        let stdin = std::io::stdin();
+        let mut line = String::new();
+        while stdin.read_line(&mut line).is_ok_and(|n| n > 0) {
+            if tx.blocking_send(std::mem::take(&mut line)).is_err() {
+                break;
+            }
+        }
+    });
+    let tokens = pending.finish(rx).await?;
+    let id = chatgpt_plan::store_plan(vault, name, &tokens, &host_id)
+        .context("failed to store the ChatGPT sign-in in the vault")?;
+    println!(
+        "\nSigned in as {}. Credential: {id}",
+        tokens.session.account()
+    );
+    notify_daemon_reload().await;
+
+    let models = peko_providers::chatgpt::list_models(
+        &reqwest::Client::new(),
+        tokens.access_token.expose_secret(),
+    )
+    .await;
+    let add = |model: &str| {
+        format!(
+            "peko model add --id {model}-plan --api-format openai_responses --base-url {} --model {model} --credential-id {id}",
+            peko_providers::chatgpt::API_BASE_URL
+        )
+    };
+    match models {
+        Ok(models) if !models.is_empty() => {
+            println!("\nModels on your plan:");
+            for model in &models {
+                println!("  {}  ({})", model.slug, model.display_name);
+            }
+            println!(
+                "\nAdd one for your pekos, e.g.:\n\n  {}",
+                add(&models[0].slug)
+            );
+        }
+        Ok(_) | Err(_) => {
+            println!(
+                "\nAdd a model on your plan for your pekos, e.g.:\n\n  {}",
+                add("<model>")
+            );
+        }
+    }
+    println!("\nModels already using this credential keep working.");
+    Ok(())
+}
+
+/// Best-effort attempt to open the user's browser.
+fn open_browser(url: &str) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    std::process::Command::new("open").arg(url).spawn()?;
+    #[cfg(target_os = "linux")]
+    std::process::Command::new("xdg-open").arg(url).spawn()?;
+    #[cfg(target_os = "windows")]
+    std::process::Command::new("cmd")
+        .args(["/c", "start", "\"\"", url])
+        .spawn()?;
+    Ok(())
 }
 
 /// Tagged error returned by `delete_cmd`. The dispatcher maps
@@ -271,7 +387,10 @@ async fn get_cmd(vault: &Vault, id: &str) -> Result<()> {
     if !credential.metadata.is_null()
         && credential.metadata != serde_json::Value::Object(serde_json::Map::new())
     {
-        println!("metadata:     {}", credential.metadata);
+        println!(
+            "metadata:     {}",
+            peko_core::common::chatgpt_plan::shown_metadata(&credential.metadata)
+        );
     }
     println!("created_at:   {}", credential.created_at.to_rfc3339());
     println!("updated_at:   {}", credential.updated_at.to_rfc3339());
@@ -339,6 +458,16 @@ async fn delete_cmd(
                     .map_err(DeleteError::Other)?;
                 detached += 1;
             }
+        }
+    }
+
+    // A ChatGPT sign-in is revoked with OpenAI too, best effort.
+    if let Some(credential) = vault
+        .get_credential(id)
+        .filter(peko_core::common::chatgpt_plan::is_plan_credential)
+    {
+        if !peko_core::common::chatgpt_plan::revoke(&credential).await {
+            println!("Could not confirm with OpenAI that the ChatGPT sign-in was revoked; you can remove Peko's access in your ChatGPT settings.");
         }
     }
 

@@ -16,6 +16,8 @@
 //! direct `crate::common::vault::Vault` field that
 //! `LlmResolver`/`RotationState` held before the extraction.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use secrecy::SecretString;
@@ -91,4 +93,27 @@ pub trait CredentialProvider: Send + Sync {
     /// by `RotationState::record_current_test` so future rotation
     /// cursors can skip dead credentials.
     fn record_test(&self, credential_id: &str, ok: bool);
+
+    /// A source of short-lived bearer tokens for the credential `id`,
+    /// when it is one that renews itself (an OAuth sign-in such as a
+    /// ChatGPT plan). `None`, the default, means its material is a
+    /// static key. A provider built from a token source asks it for a
+    /// token on every request, so a long run outlives any one token.
+    fn token_source(&self, id: &str) -> Option<Arc<dyn TokenSource>> {
+        let _ = id;
+        None
+    }
+}
+
+/// The future a [`TokenSource`] returns.
+pub type TokenFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<SecretString, CredentialError>> + Send + 'a>>;
+
+/// Hands out a bearer token valid for at least the next minute,
+/// renewing it as needed. Implementations live beside the vault; the
+/// transport calls [`TokenSource::token`] before each HTTP attempt.
+pub trait TokenSource: Send + Sync {
+    /// A current token. An error says why there is none (signed out,
+    /// renewal refused); it reaches the caller as the request's error.
+    fn token(&self) -> TokenFuture<'_>;
 }
