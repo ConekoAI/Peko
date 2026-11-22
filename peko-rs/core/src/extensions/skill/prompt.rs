@@ -28,9 +28,10 @@ use std::time::SystemTime;
 use async_trait::async_trait;
 use tracing::warn;
 
+use super::bundled::BUNDLED_SKILLS;
 use super::reader::{is_skill_directory, WorkspaceSkillRuntime};
 use crate::tools::builtin::skill::{
-    parse_yaml_frontmatter_typed, read_skill_file, SkillFrontmatter, SkillRuntime,
+    parse_yaml_frontmatter_typed, SkillFrontmatter, SkillRuntime, SkillSource,
 };
 
 /// Default priority for the skills-catalog prompt section.
@@ -62,7 +63,7 @@ struct CatalogCacheKey {
 /// prompt.
 #[derive(Debug, Default)]
 pub struct WorkspaceSkillsPromptHandler {
-    cache: Mutex<Option<(CatalogCacheKey, String)>>,
+    cache: Mutex<Option<(CatalogCacheKey, Vec<String>)>>,
 }
 
 impl WorkspaceSkillsPromptHandler {
@@ -72,37 +73,49 @@ impl WorkspaceSkillsPromptHandler {
         Self::default()
     }
 
-    /// Render the skills catalog for `workspace`, using the
-    /// fingerprint-keyed cache. Returns `None` when there is nothing
-    /// to render.
+    /// Render the skills catalog for `workspace`: its own skills, then
+    /// the runtime's bundled skills it does not replace (those marked
+    /// owner-only only when `owner`). Returns `None` when there is
+    /// nothing to render.
+    fn render_catalog(&self, workspace: &str, owner: bool) -> Option<String> {
+        let skills_dir = Path::new(workspace).join("skills");
+        let mut lines = self.workspace_lines(workspace, &skills_dir);
+        lines.extend(bundled_lines(&skills_dir, owner));
+        lines.sort();
+        let text = render_lines(&lines, workspace);
+        (!text.is_empty()).then_some(text)
+    }
+
+    /// The workspace's catalog lines, using the fingerprint-keyed cache.
     ///
     /// The cache key folds each scanned `<name>/SKILL.md` file's
     /// `(mtime, len)` in, so in-place content edits invalidate the
     /// catalog on the next call — the previous `(dir_mtime,
     /// child_count)` key only caught added/removed entries (dir mtime
     /// doesn't move on content writes).
-    fn render_catalog(&self, workspace: &str) -> Option<String> {
-        let skills_dir = Path::new(workspace).join("skills");
+    fn workspace_lines(&self, workspace: &str, skills_dir: &Path) -> Vec<String> {
+        let Some(files) = skills_dir_fingerprint(skills_dir) else {
+            return Vec::new();
+        };
         let key = CatalogCacheKey {
             workspace: PathBuf::from(workspace),
-            files: skills_dir_fingerprint(&skills_dir)?,
+            files,
         };
 
         {
             let cache = self.cache.lock().expect("skills catalog cache poisoned");
-            if let Some((cached_key, text)) = &*cache {
+            if let Some((cached_key, lines)) = &*cache {
                 if *cached_key == key {
-                    return (!text.is_empty()).then(|| text.clone());
+                    return lines.clone();
                 }
             }
         }
 
-        let text = scan_skills_dir(&skills_dir, workspace);
+        let lines = scan_skills_dir(skills_dir);
 
         let mut cache = self.cache.lock().expect("skills catalog cache poisoned");
-        *cache = Some((key, text.clone()));
-
-        (!text.is_empty()).then_some(text)
+        *cache = Some((key, lines.clone()));
+        lines
     }
 }
 
@@ -117,10 +130,10 @@ fn skills_dir_fingerprint(skills_dir: &Path) -> Option<DirFingerprint> {
     let mut stats = Vec::new();
     let runtime = WorkspaceSkillRuntime::new(skills_dir.to_path_buf());
     for name in runtime.list_skills() {
-        let Some(entry) = runtime.resolve_skill(&name) else {
+        let Some(SkillSource::File(skill_md)) = runtime.resolve_skill(&name).map(|e| e.source)
+        else {
             continue;
         };
-        let skill_md = entry.path;
         let Ok(meta) = std::fs::metadata(&skill_md) else {
             continue;
         };
@@ -158,25 +171,27 @@ impl crate::tools::prompt_sections::PromptSectionProvider for WorkspaceSkillsPro
         if workspace.is_empty() {
             return None;
         }
-        self.render_catalog(&workspace)
+        let owner = input
+            .acting_for
+            .as_ref()
+            .is_some_and(peko_tools_core::ActingFor::is_owner);
+        self.render_catalog(&workspace, owner)
     }
 }
 
-/// Scan `<workspace>/skills/<name>/SKILL.md` and render the catalog,
-/// capped at [`SKILLS_CATALOG_MAX_BYTES`]. Skills whose frontmatter
-/// fails to parse are skipped with a warning.
-fn scan_skills_dir(skills_dir: &Path, workspace: &str) -> String {
+/// Scan `<workspace>/skills/<name>/SKILL.md` into sorted catalog lines.
+/// Skills whose frontmatter fails to parse are skipped with a warning.
+fn scan_skills_dir(skills_dir: &Path) -> Vec<String> {
     let runtime = WorkspaceSkillRuntime::new(skills_dir.to_path_buf());
     let mut lines = Vec::new();
     for name in runtime.list_skills() {
         let Some(entry) = runtime.resolve_skill(&name) else {
             continue;
         };
-        let skill_md = entry.path;
-        let content = match read_skill_file(&skill_md) {
+        let content = match entry.read() {
             Ok(content) => content,
             Err(e) => {
-                warn!("Failed to read {}: {e}; skipping skill", skill_md.display());
+                warn!("Failed to read skill {name}: {e}; skipping skill");
                 continue;
             }
         };
@@ -188,19 +203,38 @@ fn scan_skills_dir(skills_dir: &Path, workspace: &str) -> String {
                 ));
             }
             Err(e) => {
-                warn!(
-                    "Failed to parse frontmatter in {}: {e}; skipping skill",
-                    skill_md.display()
-                );
+                warn!("Failed to parse frontmatter of skill {name}: {e}; skipping skill");
             }
         }
     }
     // Deterministic ordering — directory iteration order is
     // platform-dependent.
     lines.sort();
+    lines
+}
 
+/// Catalog lines for the bundled skills the workspace does not replace;
+/// an owner-only one only when `owner`.
+fn bundled_lines(skills_dir: &Path, owner: bool) -> Vec<String> {
+    let workspace = WorkspaceSkillRuntime::new(skills_dir.to_path_buf());
+    BUNDLED_SKILLS
+        .iter()
+        .filter(|skill| owner || !skill.owner_only)
+        .filter(|skill| workspace.resolve_skill(skill.name).is_none())
+        .filter_map(|skill| {
+            let (fm, _body) = parse_yaml_frontmatter_typed::<SkillFrontmatter>(skill.text).ok()?;
+            Some(format!(
+                "- {}: {} (ships with the runtime)",
+                skill.name, fm.description
+            ))
+        })
+        .collect()
+}
+
+/// Join catalog `lines`, capped at [`SKILLS_CATALOG_MAX_BYTES`].
+fn render_lines(lines: &[String], workspace: &str) -> String {
     let notice = format!("(more skills in {workspace}/skills/ — list the directory to see all)");
-    crate::tools::prompt_sections::render_capped_lines(&lines, SKILLS_CATALOG_MAX_BYTES, &notice)
+    crate::tools::prompt_sections::render_capped_lines(lines, SKILLS_CATALOG_MAX_BYTES, &notice)
 }
 
 #[cfg(test)]
@@ -388,7 +422,7 @@ mod tests {
         }
 
         let ws = temp.path().to_string_lossy().to_string();
-        let out = scan_skills_dir(&skills_dir, &ws);
+        let out = render_lines(&scan_skills_dir(&skills_dir), &ws);
 
         assert!(out.len() <= SKILLS_CATALOG_MAX_BYTES, "len: {}", out.len());
         assert!(
@@ -408,7 +442,7 @@ mod tests {
         make_skill(&skills_dir, "docker", "Docker ops");
 
         let ws = temp.path().to_string_lossy().to_string();
-        let out = scan_skills_dir(&skills_dir, &ws);
+        let out = render_lines(&scan_skills_dir(&skills_dir), &ws);
 
         assert_eq!(out, "- docker: Docker ops (skills/docker/SKILL.md)");
     }
@@ -436,5 +470,51 @@ mod tests {
             .contains("Owner A"));
         let result = handler.render(&skills_input(b.path())).await.unwrap();
         assert!(result.contains("Owner B"), "principal B received: {result}");
+    }
+
+    fn owner_input(workspace: &Path) -> crate::tools::prompt_sections::PromptSectionInput {
+        crate::tools::prompt_sections::PromptSectionInput {
+            acting_for: Some(peko_tools_core::ActingFor::runtime()),
+            ..skills_input(workspace)
+        }
+    }
+
+    #[tokio::test]
+    async fn owner_runs_see_bundled_skills_even_without_a_skills_dir() {
+        let temp = TempDir::new().unwrap();
+        let text = WorkspaceSkillsPromptHandler::new()
+            .render(&owner_input(temp.path()))
+            .await
+            .expect("bundled skills listed");
+        assert!(
+            text.starts_with("- coding-agents: ") && text.ends_with(" (ships with the runtime)"),
+            "got: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn owner_only_bundled_skills_are_hidden_from_other_runs() {
+        let temp = TempDir::new().unwrap();
+        make_skill(&temp.path().join("skills"), "docker", "Docker ops");
+        let text = WorkspaceSkillsPromptHandler::new()
+            .render(&skills_input(temp.path()))
+            .await
+            .unwrap();
+        assert_eq!(text, "- docker: Docker ops (skills/docker/SKILL.md)");
+    }
+
+    #[tokio::test]
+    async fn a_workspace_skill_replaces_the_bundled_line() {
+        let temp = TempDir::new().unwrap();
+        make_skill(&temp.path().join("skills"), "coding-agents", "Owner's way");
+        make_skill(&temp.path().join("skills"), "docker", "Docker ops");
+        let text = WorkspaceSkillsPromptHandler::new()
+            .render(&owner_input(temp.path()))
+            .await
+            .unwrap();
+        assert_eq!(
+            text,
+            "- coding-agents: Owner's way (skills/coding-agents/SKILL.md)\n- docker: Docker ops (skills/docker/SKILL.md)"
+        );
     }
 }

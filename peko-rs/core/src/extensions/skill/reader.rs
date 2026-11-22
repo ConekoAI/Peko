@@ -24,7 +24,8 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 
-use crate::tools::builtin::skill::{SkillEntry, SkillRuntime};
+use super::bundled::{bundled_skill, BUNDLED_SKILLS};
+use crate::tools::builtin::skill::{SkillEntry, SkillRuntime, SkillSource};
 
 /// Skill definitions must be ordinary workspace files. Linked roots or
 /// definitions make discovery depend on another workspace and cannot be
@@ -33,9 +34,12 @@ pub(crate) fn is_skill_directory(path: &std::path::Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir())
 }
 
-/// Per-principal skill lookup backed by `<workspace>/skills/`.
+/// Per-principal skill lookup backed by `<workspace>/skills/`, and,
+/// when built with [`WorkspaceSkillRuntime::with_bundled`], the skills
+/// that ship with the runtime beneath it.
 pub struct WorkspaceSkillRuntime {
     skills_dir: PathBuf,
+    bundled: bool,
 }
 
 impl WorkspaceSkillRuntime {
@@ -46,7 +50,23 @@ impl WorkspaceSkillRuntime {
     /// directory resolves to no skills.
     #[must_use]
     pub fn new(skills_dir: PathBuf) -> Self {
-        Self { skills_dir }
+        Self {
+            skills_dir,
+            bundled: false,
+        }
+    }
+
+    /// Like [`WorkspaceSkillRuntime::new`], with the runtime's bundled
+    /// skills beneath the workspace: a workspace skill of the same name
+    /// wins. This is what a peko's `Skill` tool uses; snapshot and seed
+    /// code keeps [`WorkspaceSkillRuntime::new`], which sees the
+    /// workspace alone.
+    #[must_use]
+    pub fn with_bundled(skills_dir: PathBuf) -> Self {
+        Self {
+            skills_dir,
+            bundled: true,
+        }
     }
 
     /// The directory the runtime reads from.
@@ -65,9 +85,8 @@ impl WorkspaceSkillRuntime {
     }
 }
 
-#[async_trait]
-impl SkillRuntime for WorkspaceSkillRuntime {
-    fn resolve_skill(&self, name: &str) -> Option<SkillEntry> {
+impl WorkspaceSkillRuntime {
+    fn resolve_workspace(&self, name: &str) -> Option<SkillEntry> {
         // `name` is joined onto `skills_dir` directly, so it must be a
         // single plain path component — anything else (`..`, `a/b`,
         // `a\b`, absolute paths, empty) would resolve outside the
@@ -92,11 +111,11 @@ impl SkillRuntime for WorkspaceSkillRuntime {
         }
         Some(SkillEntry {
             name: name.to_string(),
-            path: skill_md,
+            source: SkillSource::File(skill_md),
         })
     }
 
-    fn list_skills(&self) -> Vec<String> {
+    fn list_workspace(&self) -> Vec<String> {
         if !self.has_ordinary_root() {
             return Vec::new();
         }
@@ -108,10 +127,33 @@ impl SkillRuntime for WorkspaceSkillRuntime {
             .flatten()
             .filter_map(|entry| {
                 let name = entry.file_name().to_str()?.to_string();
-                self.resolve_skill(&name).map(|_| name)
+                self.resolve_workspace(&name).map(|_| name)
             })
             .collect();
         names.sort();
+        names
+    }
+}
+
+#[async_trait]
+impl SkillRuntime for WorkspaceSkillRuntime {
+    fn resolve_skill(&self, name: &str) -> Option<SkillEntry> {
+        self.resolve_workspace(name).or_else(|| {
+            let skill = bundled_skill(name).filter(|_| self.bundled)?;
+            Some(SkillEntry {
+                name: skill.name.to_string(),
+                source: SkillSource::Bundled(skill.text),
+            })
+        })
+    }
+
+    fn list_skills(&self) -> Vec<String> {
+        let mut names = self.list_workspace();
+        if self.bundled {
+            names.extend(BUNDLED_SKILLS.iter().map(|skill| skill.name.to_string()));
+            names.sort();
+            names.dedup();
+        }
         names
     }
 }
@@ -162,7 +204,9 @@ mod tests {
         let rt = WorkspaceSkillRuntime::new(tmp.path().to_path_buf());
         let entry = rt.resolve_skill("docker").expect("docker should resolve");
         assert_eq!(entry.name, "docker");
-        assert!(entry.path.ends_with("docker/SKILL.md"));
+        assert!(
+            matches!(&entry.source, SkillSource::File(path) if path.ends_with("docker/SKILL.md"))
+        );
     }
 
     #[test]
@@ -246,5 +290,36 @@ mod tests {
         for name in rt.list_skills() {
             assert!(rt.resolve_skill(&name).is_some(), "{name} should resolve");
         }
+    }
+
+    #[test]
+    fn bundled_skills_sit_beneath_the_workspace_only_when_asked_for() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_skill(tmp.path(), "docker", "Docker ops");
+        let plain = WorkspaceSkillRuntime::new(tmp.path().to_path_buf());
+        assert_eq!(plain.list_skills(), vec!["docker"]);
+        assert!(plain.resolve_skill("coding-agents").is_none());
+
+        let layered = WorkspaceSkillRuntime::with_bundled(tmp.path().to_path_buf());
+        assert_eq!(layered.list_skills(), vec!["coding-agents", "docker"]);
+        let entry = layered.resolve_skill("coding-agents").unwrap();
+        assert!(matches!(entry.source, SkillSource::Bundled(_)));
+        assert!(entry.dir().is_none());
+        assert!(entry.read().unwrap().contains("name: coding-agents"));
+
+        // A missing workspace still lists the bundled skills.
+        let empty = WorkspaceSkillRuntime::with_bundled(PathBuf::from("/no/such/path/here"));
+        assert_eq!(empty.list_skills(), vec!["coding-agents"]);
+    }
+
+    #[test]
+    fn a_workspace_skill_replaces_the_bundled_one_of_its_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_skill(tmp.path(), "coding-agents", "Owner's own version");
+        let rt = WorkspaceSkillRuntime::with_bundled(tmp.path().to_path_buf());
+        assert_eq!(rt.list_skills(), vec!["coding-agents"]);
+        let entry = rt.resolve_skill("coding-agents").unwrap();
+        assert!(matches!(entry.source, SkillSource::File(_)));
+        assert!(entry.read().unwrap().contains("Owner's own version"));
     }
 }

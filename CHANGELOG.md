@@ -19,6 +19,15 @@ All notable changes to Peko.
   Peko Desktop signs in the same way (Settings → Models → Use ChatGPT
   plan): the engine runs the sign-in, and the dialog lists the plan's
   models to add.
+- **Skills that ship with the runtime.** Every peko now sees the runtime's
+  bundled skills in its skills catalog, after its own (`(ships with the
+  runtime)`), and can run them with `Skill`. They live in the binary, so a
+  release updates them; nothing is copied into the workspace, and `peko
+  seed` and snapshots leave them out. A workspace skill of the same name
+  replaces one. The first is `coding-agents`: hand a coding task to Claude
+  Code or Codex installed and signed in on this computer, on the owner's
+  own plan, in its own worktree, then check its work and report. It is
+  listed only for runs acting for the owner, since it needs `Bash`.
 - **A peko can ask questions that wait for an answer (ADR-114).** The new
   `Ask` built-in (27 in all) puts 1–4 questions on one card with the
   peko's reply. Each question has a few choices (one, or several), or none

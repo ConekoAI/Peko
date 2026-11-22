@@ -505,6 +505,14 @@ prompt. The boot-time drift canary remains.
 whose actor key is already hosted here (`force` lets it replace the copy at
 `target`); the preview calls it, and the import repeats the check before writes.
 
+Bundled skills (ADR-050 amendment, 2026-11-22): `SkillEntry` carries
+`source: SkillSource` (`File(PathBuf)` | `Bundled(&'static str)`) in place of
+`path`, with `read()` and `dir()` (`None` when bundled).
+`WorkspaceSkillRuntime::with_bundled(dir)` puts
+`extensions::skill::BUNDLED_SKILLS` beneath the workspace (workspace wins by
+name); `WorkspaceSkillRuntime::new(dir)` stays workspace-only and is what
+snapshot and seed code use.
+
 ADR-076: `SkillRuntime` resolves only ordinary workspace definitions. The
 `Skill` tool remains principal-owned; discovery cache identity includes the
 workspace path. `tools::builtin::skill::{MAX_SKILL_FILE_BYTES, MAX_SKILL_BODY_BYTES, read_skill_file}`

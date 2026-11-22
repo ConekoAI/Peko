@@ -31,9 +31,7 @@ use serde_json::json;
 
 use crate::tools::builtin::skill::body::preprocess_dynamic_context;
 use crate::tools::builtin::skill::frontmatter::{parse_yaml_frontmatter_typed, SkillFrontmatter};
-use crate::tools::builtin::skill::{
-    append_skill_text, read_skill_file, SharedSkillRuntime, MAX_SKILL_BODY_BYTES,
-};
+use crate::tools::builtin::skill::{append_skill_text, SharedSkillRuntime, MAX_SKILL_BODY_BYTES};
 
 /// Error variant returned when a skill's SKILL.md cannot be read or parsed.
 const SKILL_UNREADABLE: &str = "skill_unreadable";
@@ -69,7 +67,7 @@ impl Tool for SkillTool {
     }
 
     fn description(&self) -> String {
-        r#"Run a skill: returns `{name, dir, body}`, its SKILL.md body with dynamic context resolved and arguments substituted. `name` is the skill's directory name; `args` are positional strings. Files the body mentions are relative to `dir`; its commands run in the workspace. An unknown name lists the available skills; an unreadable or invalid skill file is an error.
+        r#"Run a skill: returns `{name, dir, body}`, its SKILL.md body with dynamic context resolved and arguments substituted. `name` is the skill's directory name; `args` are positional strings. Files the body mentions are relative to `dir` (null for a skill that ships with the runtime); its commands run in the workspace. An unknown name lists the available skills; an unreadable or invalid skill file is an error.
 
 Asked to learn a skill, or to do something the same way every time: write `skills/<name>/SKILL.md` in your workspace (frontmatter `name` and `description`, which says when to use it, then the instructions) and say you did. A memory note is not a skill.
 
@@ -138,7 +136,7 @@ Writing a SKILL.md: `$ARGUMENTS` is all args joined by spaces; `$0`, `$1`, … a
             );
         };
 
-        let content = read_skill_file(&entry.path).map_err(|e| {
+        let content = entry.read().map_err(|e| {
             anyhow::anyhow!("{SKILL_UNREADABLE}: failed to read SKILL.md for skill {name}: {e}")
         })?;
 
@@ -176,11 +174,8 @@ Writing a SKILL.md: `$ARGUMENTS` is all args joined by spaces; `$0`, `$1`, … a
 
         // Files a skill mentions (scripts, references) live beside its
         // SKILL.md; the caller needs the directory to open them.
-        let dir = entry
-            .path
-            .parent()
-            .map(|dir| dir.display().to_string())
-            .unwrap_or_default();
+        // A bundled skill has no directory: `dir` is null.
+        let dir = entry.dir().map(|dir| dir.display().to_string());
         Ok(json!({
             "name": frontmatter.name,
             "dir": dir,
@@ -434,6 +429,27 @@ mod tests {
         SkillTool::new(std::sync::Arc::new(WorkspaceSkillRuntime::new(
             skills_root.to_path_buf(),
         )))
+    }
+
+    #[tokio::test]
+    async fn bundled_skill_runs_with_no_dir_and_unknown_lists_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tool = SkillTool::new(std::sync::Arc::new(WorkspaceSkillRuntime::with_bundled(
+            tmp.path().join("skills"),
+        )));
+        let out = tool
+            .execute(json!({"name": "coding-agents"}))
+            .await
+            .unwrap();
+        assert_eq!(out["name"], "coding-agents");
+        assert!(out["dir"].is_null(), "got {out}");
+        let body = out["body"].as_str().unwrap();
+        assert!(
+            !body.starts_with("---") && body.contains("claude -p"),
+            "got {body}"
+        );
+        let err = tool.execute(json!({"name": "nope"})).await.unwrap_err();
+        assert!(err.to_string().contains("coding-agents"), "got {err}");
     }
 
     fn write_skill(dir: &std::path::Path, name: &str, body: &str, args: &[&str]) {
