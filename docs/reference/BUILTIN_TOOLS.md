@@ -262,7 +262,7 @@ Load a SKILL.md body, resolve dynamic shell context, and substitute arguments.
 
 args is string[]. The body supports $ARGUMENTS, positional $0/$1/etc., named frontmatter arguments, and dynamic shell context. Presence in the principal workspace determines availability; there is no principal capability allowlist.
 
-Skills that ship with the runtime (`peko-rs/core/src/resources/skills/`) sit beneath the workspace's: a workspace skill of the same name wins. A bundled skill returns `dir: null`, since it has no files beside it. The catalog lists one as `(ships with the runtime)`, and an owner-only one (`coding-agents`) only for runs acting for the owner.
+Skills that ship with the runtime (`peko-rs/core/src/resources/skills/`) sit beneath the workspace's: a workspace skill of the same name wins. A bundled skill returns `dir: null`, since it has no files beside it. The catalog lists one as `(ships with the runtime)`, and an owner-only one (`coding-agents`, `triage`) only for runs acting for the owner.
 
 ## Session storage
 

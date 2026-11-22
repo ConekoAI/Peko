@@ -6,6 +6,15 @@ All notable changes to Peko.
 
 ### Added
 
+- **A peko can look into a problem with Peko itself.** The bundled `triage`
+  skill (owner runs only) asks what went wrong, reads the engine log, the
+  audit log and the peko's tool ledger, `peko system doctor` and the rest,
+  reads the source of the version you run, checks GitHub for a known issue
+  or a release that fixes it, and offers a fix or a GitHub issue. It runs
+  nothing that changes your setup without asking, never restarts the
+  engine it runs in, keeps conversations, names and keys out of the issue,
+  sends security problems to a private advisory, and posts only after you
+  read the whole text and say yes.
 - **A peko asks you for a secret instead of in the chat (ADR-116).** The new
   `Secret` built-in (28 in all, owner runs only) asks for a token or key by
   name and says why. You get a note in your conversation with the peko and
