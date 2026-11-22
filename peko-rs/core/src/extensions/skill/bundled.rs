@@ -21,11 +21,18 @@ pub struct BundledSkill {
 }
 
 /// Every bundled skill, sorted by name.
-pub const BUNDLED_SKILLS: &[BundledSkill] = &[BundledSkill {
-    name: "coding-agents",
-    text: include_str!("../../resources/skills/coding-agents/SKILL.md"),
-    owner_only: true,
-}];
+pub const BUNDLED_SKILLS: &[BundledSkill] = &[
+    BundledSkill {
+        name: "coding-agents",
+        text: include_str!("../../resources/skills/coding-agents/SKILL.md"),
+        owner_only: true,
+    },
+    BundledSkill {
+        name: "triage",
+        text: include_str!("../../resources/skills/triage/SKILL.md"),
+        owner_only: true,
+    },
+];
 
 /// The bundled skill called `name`, if there is one.
 #[must_use]
