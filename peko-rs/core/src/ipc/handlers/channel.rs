@@ -1172,6 +1172,65 @@ impl ChannelHandler {
         }
     }
 
+    /// `ChannelPekoBrowser` (ADR-119 D6): the owner's hand on the browser
+    /// of their peko on another computer. A picture is handed over as a
+    /// file the app reads, as for a peko hosted here.
+    async fn channel_peko_browser(
+        &self,
+        request_id: u64,
+        channel: &str,
+        verb: &str,
+        args: &serde_json::Value,
+        caller: &CallerContext,
+        sink: &dyn ResponseSink,
+    ) -> anyhow::Result<()> {
+        if !caller.is_local() {
+            return error_reply(
+                sink,
+                request_id,
+                "[permission_denied] only the local user uses a peko's browser".to_string(),
+            )
+            .await;
+        }
+        let Some(channel) = ChannelId::parse(channel) else {
+            return error_reply(sink, request_id, format!("invalid ChannelId: {channel}")).await;
+        };
+        let Some(port) = self.host.tunnel_channel_port() else {
+            return error_reply(
+                sink,
+                request_id,
+                "This runtime has no PekoHub connection".to_string(),
+            )
+            .await;
+        };
+        let answered = port
+            .peko_browser(&channel, verb, args)
+            .await
+            .and_then(|mut body| {
+                if let Some(data) = body.get("data").and_then(serde_json::Value::as_str) {
+                    let desk = crate::browser::browser_desk().ok_or_else(|| {
+                        anyhow::anyhow!("the browser is not available in this runtime")
+                    })?;
+                    let path = crate::browser::write_frame_file(
+                        desk.browser_dir(),
+                        channel.as_str(),
+                        data,
+                    )?;
+                    body["path"] = serde_json::json!(path.display().to_string());
+                    if let Some(body) = body.as_object_mut() {
+                        body.remove("data");
+                    }
+                }
+                Ok(body)
+            });
+        match answered {
+            Ok(body) => {
+                send_response(sink, ResponsePacket::BrowserResult { request_id, body }).await
+            }
+            Err(e) => error_reply(sink, request_id, format!("{e:#}")).await,
+        }
+    }
+
     /// `ChannelPekoApprovals` / `ChannelPekoApprovalDecide` (ADR-099): the
     /// owner lists or decides their remote peko's waiting requests.
     async fn channel_peko_approvals(
@@ -1328,6 +1387,7 @@ impl RequestHandler for ChannelHandler {
                 | RequestPacket::ChannelPekoModels { .. }
                 | RequestPacket::ChannelPekoApprovals { .. }
                 | RequestPacket::ChannelPekoApprovalDecide { .. }
+                | RequestPacket::ChannelPekoBrowser { .. }
                 | RequestPacket::ChannelInvitations { .. }
                 | RequestPacket::ChannelPersonGroups { .. }
                 | RequestPacket::ChannelInvitationAnswer { .. }
@@ -1378,7 +1438,8 @@ impl RequestHandler for ChannelHandler {
         | RequestPacket::ChannelHistoryOlder { channel, .. }
         | RequestPacket::ChannelPekoModels { channel, .. }
         | RequestPacket::ChannelPekoApprovals { channel, .. }
-        | RequestPacket::ChannelPekoApprovalDecide { channel, .. } = &request
+        | RequestPacket::ChannelPekoApprovalDecide { channel, .. }
+        | RequestPacket::ChannelPekoBrowser { channel, .. } = &request
         {
             if let (Some(port), Some(id)) =
                 (self.host.tunnel_channel_port(), ChannelId::parse(channel))
@@ -2099,6 +2160,16 @@ impl RequestHandler for ChannelHandler {
             request @ (RequestPacket::ChannelPekoApprovals { .. }
             | RequestPacket::ChannelPekoApprovalDecide { .. }) => {
                 self.channel_peko_approvals(request, caller, sink).await?;
+            }
+
+            RequestPacket::ChannelPekoBrowser {
+                request_id,
+                channel,
+                verb,
+                args,
+            } => {
+                self.channel_peko_browser(request_id, &channel, &verb, &args, caller, sink)
+                    .await?;
             }
 
             RequestPacket::ChannelHistoryOlder {

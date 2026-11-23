@@ -674,6 +674,24 @@ impl DaemonClient {
         .await
     }
 
+    /// One `browser` request (ADR-119): `verb` for peko `name`, or
+    /// `status` / `install` with an empty name.
+    pub async fn browser(
+        &self,
+        name: impl Into<String>,
+        verb: impl Into<String>,
+        args: serde_json::Value,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        self.request_response(RequestPacket::Browser {
+            request_id,
+            name: name.into(),
+            verb: verb.into(),
+            args,
+        })
+        .await
+    }
+
     /// The owner declines secret request `id`.
     pub async fn secret_decline(
         &self,

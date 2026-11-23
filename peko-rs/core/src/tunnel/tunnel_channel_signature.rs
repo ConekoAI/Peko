@@ -1443,6 +1443,90 @@ pub struct PekoApprovalDecidedPayload {
     pub exp: i64,
 }
 
+/// Version tag of [`PekoBrowserRequestPayload`] (ADR-119 D6).
+pub const PEKO_BROWSER_REQUEST_VERSION: &str = "peko-peko-browser-request/1";
+/// Version tag of [`PekoBrowserPayload`] (ADR-119 D6).
+pub const PEKO_BROWSER_VERSION: &str = "peko-peko-browser/1";
+
+/// The digest a browser payload signs in place of its text: a picture
+/// of a page is large, and a signature carries its payload whole.
+#[must_use]
+pub fn browser_text_digest(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    URL_SAFE_NO_PAD.encode(Sha256::digest(text.as_bytes()))
+}
+
+/// The signed payload of a `TunnelPekoBrowserRequest`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PekoBrowserRequestPayload {
+    pub v: String,
+    pub request_id: String,
+    pub source_runtime_id: String,
+    pub recipient_runtime_id: String,
+    /// `user:hub:<account>`: the person asking.
+    pub source_principal_did: String,
+    /// The peko's signing DID.
+    pub principal_did: String,
+    pub verb: String,
+    /// [`browser_text_digest`] of the request's `args`.
+    pub args_digest: String,
+    pub iat: i64,
+    pub exp: i64,
+}
+
+/// The signed payload of a `TunnelPekoBrowser`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PekoBrowserPayload {
+    pub v: String,
+    pub request_id: String,
+    pub source_runtime_id: String,
+    pub recipient_runtime_id: String,
+    pub principal_did: String,
+    pub ok: bool,
+    /// [`browser_text_digest`] of the answer's `body`.
+    pub body_digest: String,
+    pub iat: i64,
+    pub exp: i64,
+}
+
+/// Verify a browser request: runtime signature, version, freshness.
+///
+/// # Errors
+///
+/// The JWS does not verify, the version tag differs, or it expired.
+pub fn verify_peko_browser_request(
+    runtime_key: &VerifyingKey,
+    compact: &str,
+) -> Result<PekoBrowserRequestPayload> {
+    verify_versioned(
+        runtime_key,
+        compact,
+        "peko browser request",
+        PEKO_BROWSER_REQUEST_VERSION,
+        |p: &PekoBrowserRequestPayload| &p.v,
+        |p| (p.iat, p.exp),
+    )
+}
+
+/// Verify a browser answer: runtime signature, version, freshness.
+///
+/// # Errors
+///
+/// The JWS does not verify, the version tag differs, or it expired.
+pub fn verify_peko_browser(
+    runtime_key: &VerifyingKey,
+    compact: &str,
+) -> Result<PekoBrowserPayload> {
+    verify_versioned(
+        runtime_key,
+        compact,
+        "peko browser answer",
+        PEKO_BROWSER_VERSION,
+        |p: &PekoBrowserPayload| &p.v,
+        |p| (p.iat, p.exp),
+    )
+}
+
 /// Verify a runtime-signed payload whose version tag is `version`:
 /// signature, version, freshness.
 fn verify_versioned<T: serde::de::DeserializeOwned>(

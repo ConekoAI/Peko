@@ -228,6 +228,10 @@ pub mod auth_compat;
 // port traits (RootAgentRunner + ToolingRuntimeProvider).
 pub mod principal;
 
+// [kept] ADR-119: each peko's own browser (a Chromium the runtime
+// drives), and its owner's hand on it.
+pub mod browser;
+
 // ADR-078: acting-for stamps and the trust floor. Kept free of
 // `principal/` so `agents/` can enforce it.
 pub mod security;

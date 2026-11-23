@@ -86,6 +86,9 @@ mod peko_models;
 
 #[path = "remote_approvals.rs"]
 mod remote_approvals;
+
+#[path = "remote_browser.rs"]
+mod remote_browser;
 pub use attachment_transfer::CHUNK_BYTES as ATTACHMENT_CHUNK_BYTES;
 pub use dm_history::{HistoryPage, HISTORY_PAGE_LIMIT};
 pub use group_hub::{INVITE_LINK_DAYS, INVITE_LINK_MAX_DAYS};
@@ -157,6 +160,8 @@ pub struct TunnelChannelPort {
     /// Approval list and decision requests waiting for the peko's host
     /// (ADR-099).
     approvals_pending: Arc<std::sync::Mutex<HashMap<String, remote_approvals::PendingApproval>>>,
+    /// Browser requests waiting for the peko's host (ADR-119 D6).
+    browser_pending: Arc<std::sync::Mutex<HashMap<String, remote_browser::PendingBrowser>>>,
     /// ADR-111 D5: each account's device list, which says whether a
     /// computer a conversation routes for a person is theirs.
     device_lists: Arc<std::sync::OnceLock<Arc<crate::security::device_list::DeviceLists>>>,
@@ -201,6 +206,7 @@ impl TunnelChannelPort {
             account_dm_requests: Arc::default(),
             models_pending: Arc::default(),
             approvals_pending: Arc::default(),
+            browser_pending: Arc::default(),
             device_lists: Arc::default(),
             lists_asked: Arc::default(),
         }

@@ -179,6 +179,11 @@ fn own_account_speaker(msg: &TunnelMessage) -> Option<(&str, &str, Option<&str>)
             source_principal_did,
             ..
         }
+        | TunnelMessage::TunnelPekoBrowserRequest {
+            source_runtime_id,
+            source_principal_did,
+            ..
+        }
         | TunnelMessage::TunnelDmRoute {
             source_runtime_id,
             source_principal_did,
@@ -1432,6 +1437,80 @@ impl TunnelDispatcher {
                         approval_id,
                         decided,
                         message,
+                        signature,
+                    )
+                    .await;
+            }
+            TunnelMessage::TunnelPekoBrowserRequest {
+                request_id,
+                source_runtime_id,
+                recipient_runtime_id,
+                source_principal_did,
+                principal_did,
+                verb,
+                args,
+                signature,
+            } => {
+                // ADR-119 D6: the owner's hand on their peko's browser,
+                // from their other computer.
+                let port = self.host.tunnel_channel_port();
+                let envelope = crate::tunnel::PekoBrowserRequestPayload {
+                    v: crate::tunnel::PEKO_BROWSER_REQUEST_VERSION.into(),
+                    request_id,
+                    source_runtime_id,
+                    recipient_runtime_id,
+                    source_principal_did,
+                    principal_did,
+                    verb,
+                    args_digest: crate::tunnel::browser_text_digest(&args),
+                    iat: 0,
+                    exp: 0,
+                };
+                if let Some(request) = port
+                    .verified_peko_browser_request(envelope, &signature)
+                    .await
+                {
+                    // A `frame` waits for the page to change: answer
+                    // without holding up the messages behind it.
+                    let host = Arc::clone(&self.host);
+                    tokio::spawn(async move {
+                        let outcome = match serde_json::from_str::<serde_json::Value>(&args) {
+                            Ok(args) => {
+                                host.peko_browser_for_owner(
+                                    &request.principal_did,
+                                    &request.source_principal_did,
+                                    &request.verb,
+                                    &args,
+                                    &request.source_runtime_id,
+                                )
+                                .await
+                            }
+                            Err(e) => Err(format!("the request's arguments are not JSON: {e}")),
+                        };
+                        host.tunnel_channel_port()
+                            .answer_peko_browser(&handle, &request, outcome)
+                            .await;
+                    });
+                }
+            }
+            TunnelMessage::TunnelPekoBrowser {
+                request_id,
+                source_runtime_id,
+                recipient_runtime_id,
+                principal_did,
+                ok,
+                body,
+                signature,
+            } => {
+                self.host
+                    .tunnel_channel_port()
+                    .on_peko_browser(
+                        request_id,
+                        source_runtime_id,
+                        recipient_runtime_id,
+                        principal_did,
+                        ok,
+                        body,
                         signature,
                     )
                     .await;
@@ -6919,7 +6998,9 @@ mod tests {
                 | TunnelMessage::TunnelPekoApprovalsRequest { .. }
                 | TunnelMessage::TunnelPekoApprovals { .. }
                 | TunnelMessage::TunnelPekoApprovalDecide { .. }
-                | TunnelMessage::TunnelPekoApprovalDecided { .. }) => {
+                | TunnelMessage::TunnelPekoApprovalDecided { .. }
+                | TunnelMessage::TunnelPekoBrowserRequest { .. }
+                | TunnelMessage::TunnelPekoBrowser { .. }) => {
                     let handle = self.app.tunnel_handle_slot().read().await.clone().unwrap();
                     self.dispatcher.dispatch(history, handle).await.unwrap();
                 }
@@ -9340,6 +9421,14 @@ mod tests {
                     | TunnelMessage::TunnelPekoApprovalDecided {
                         recipient_runtime_id,
                         ..
+                    }
+                    | TunnelMessage::TunnelPekoBrowserRequest {
+                        recipient_runtime_id,
+                        ..
+                    }
+                    | TunnelMessage::TunnelPekoBrowser {
+                        recipient_runtime_id,
+                        ..
                     } => runtimes
                         .iter()
                         .position(|r| &r.app.runtime_did() == recipient_runtime_id)
@@ -11257,6 +11346,48 @@ mod tests {
         };
         relay_until(&mut desk, &mut host, || async { listing.is_finished() }).await;
         assert!(listing.await.unwrap().unwrap().is_empty());
+
+        // ADR-119 D6: alice reaches her peko's browser from the desk the
+        // same way. Another account's runtime does not, a forged request
+        // gets no answer, and only a viewer's verbs cross.
+        let browsers = tempfile::tempdir().unwrap();
+        crate::browser::install_test_desk(browsers.path());
+        let ask = |verb: &'static str| {
+            let port = Arc::clone(&desk_port);
+            let channel = channel.clone();
+            tokio::spawn(async move {
+                port.peko_browser(&channel, verb, &serde_json::json!({}))
+                    .await
+            })
+        };
+        let state = ask("state");
+        relay_until(&mut desk, &mut host, || async { state.is_finished() }).await;
+        let state = state.await.unwrap().unwrap();
+        assert_eq!(state["running"], false, "{state}");
+        assert!(state["tabs"].as_array().unwrap().is_empty());
+
+        let stop = ask("stop");
+        relay_until(&mut desk, &mut host, || async { stop.is_finished() }).await;
+        let refused = stop.await.unwrap().expect_err("stopping stays on the host");
+        assert!(refused.to_string().contains("cannot `stop`"), "{refused}");
+
+        assert!(other_port
+            .peko_browser(&channel, "state", &serde_json::json!({}))
+            .await
+            .is_err());
+        host.receive(TunnelMessage::TunnelPekoBrowserRequest {
+            request_id: "forged".into(),
+            source_runtime_id: desk.app.runtime_did(),
+            recipient_runtime_id: host.app.runtime_did(),
+            source_principal_did: format!("user:hub:{account}"),
+            principal_did: peko_did.clone(),
+            verb: "control".into(),
+            args: r#"{"take":true}"#.into(),
+            signature: "not-a-signature".into(),
+        })
+        .await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(host.sent().is_empty(), "no answer to a forgery");
     }
 
     /// ADR-095 D2–D3: a DM between pekos on two runtimes has no host. A

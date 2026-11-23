@@ -18,7 +18,7 @@ use super::access::{Grant, Reach, Unreached};
 /// for a secret (ADR-116): from anyone else's run that would be a way to
 /// phish the owner.
 /// `Changes` undoes the owner's files (ADR-117).
-pub const OWNER_ONLY_TOOLS: &[&str] = &["Plan", "Bash", "Secret", "Changes"];
+pub const OWNER_ONLY_TOOLS: &[&str] = &["Plan", "Bash", "Secret", "Changes", "Browser"];
 
 /// `Channel` actions only the owner decides: `create` / `invite` change
 /// who can reach the principal and whom it can reach (ADR-082 D6);

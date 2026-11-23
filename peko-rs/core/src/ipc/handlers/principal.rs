@@ -290,6 +290,7 @@ impl RequestHandler for PrincipalHandler {
                 | RequestPacket::SecretProvide { .. }
                 | RequestPacket::SecretDecline { .. }
                 | RequestPacket::SecretDelete { .. }
+                | RequestPacket::Browser { .. }
                 | RequestPacket::TurnChanges { .. }
                 | RequestPacket::TurnUndo { .. }
                 | RequestPacket::PrincipalLog { .. }
@@ -502,6 +503,24 @@ impl RequestHandler for PrincipalHandler {
                         request_id,
                         message,
                     });
+                send_response(sink, response).await?;
+            }
+
+            RequestPacket::Browser {
+                request_id,
+                name,
+                verb,
+                args,
+            } => {
+                let response = handle_browser_request(host, &name, &verb, &args, caller)
+                    .await
+                    .map_or_else(
+                        |message| ResponsePacket::Error {
+                            request_id,
+                            message,
+                        },
+                        |body| ResponsePacket::BrowserResult { request_id, body },
+                    );
                 send_response(sink, response).await?;
             }
 
@@ -2176,6 +2195,46 @@ async fn handle_secret_request(
             other.request_id()
         )),
     }
+}
+
+/// `browser` (ADR-119 D6): the owner's own hand on a peko's browser, on
+/// this computer. A picture is handed over as a file the app reads.
+async fn handle_browser_request(
+    host: &dyn PrincipalHost,
+    name: &str,
+    verb: &str,
+    args: &serde_json::Value,
+    caller: &CallerContext,
+) -> Result<serde_json::Value, String> {
+    if !caller.is_local() {
+        return Err("[permission_denied] local callers only".into());
+    }
+    let desk = crate::browser::browser_desk()
+        .ok_or_else(|| "[unavailable] the browser is not available in this runtime".to_string())?;
+    if matches!(verb, "status" | "install") {
+        let started = verb == "install" && desk.found().is_none() && desk.start_install();
+        let found = desk.found();
+        return Ok(serde_json::json!({
+            "available": found.is_some(),
+            "source": found.as_ref().map(|f| f.source),
+            "path": found.as_ref().map(|f| f.executable.display().to_string()),
+            "started": started,
+            "install": desk.install_state(),
+        }));
+    }
+    let principal = owner_principal(host, name, caller).await?;
+    let mut body = crate::browser::verbs::handle(&desk, &principal, "local", verb, args)
+        .await
+        .map_err(|e| format!("[bad_request] {e}"))?;
+    if let Some(data) = body.get("data").and_then(serde_json::Value::as_str) {
+        let path = crate::browser::write_frame_file(desk.browser_dir(), &principal.id.0, data)
+            .map_err(|e| format!("[unavailable] {e}"))?;
+        body["path"] = serde_json::json!(path.display().to_string());
+        if let Some(body) = body.as_object_mut() {
+            body.remove("data");
+        }
+    }
+    Ok(body)
 }
 
 /// An approval request as `approval_list` reports it.

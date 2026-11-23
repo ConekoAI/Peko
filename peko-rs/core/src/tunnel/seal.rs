@@ -82,6 +82,8 @@ pub const SEALED_TYPES: &[&str] = &[
     "tunnel_peko_approvals",
     "tunnel_peko_approval_decide",
     "tunnel_peko_approval_decided",
+    "tunnel_peko_browser_request",
+    "tunnel_peko_browser",
     "tunnel_read_mark",
     "tunnel_group_invitation",
     "tunnel_group_join",

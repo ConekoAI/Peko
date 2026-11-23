@@ -1,12 +1,12 @@
 # Built-in Tools Catalog
 
-Peko exposes **29 built-in tool names**, all in PascalCase. Task, Plan, Cron, Async, Contacts, and Channel each require an explicit `action`; no former per-action tool names are aliases. Session also rejects fields irrelevant to the selected action. This reference
+Peko exposes **30 built-in tool names**, all in PascalCase. Task, Plan, Cron, Async, Contacts, and Channel each require an explicit `action`; no former per-action tool names are aliases. Session also rejects fields irrelevant to the selected action. This reference
 describes the compiled Tool implementations; the emitted descriptions and
 JSON Schemas in source are the executable contract. MCP and workspace tools
 have their own names and schemas and are outside this inventory.
 
 Every registered tool appears in the native wire catalog (ADR-066), except the
-ones the ADR-078 trust floor refuses the run (`Plan`, `Bash`, `Secret` and `Changes` below owner)
+ones the ADR-078 trust floor refuses the run (`Plan`, `Bash`, `Secret`, `Changes` and `Browser` below owner)
 and, for an untrusted run, the ones the owner's `ACCESS.toml` does not list
 (ADR-113). ToolCatalog
 owns registration/lookup; ToolDispatcher validates arguments, writes each call
@@ -518,6 +518,38 @@ Returns `{url, status, content_type, text, total_chars, truncated}`, plus `final
 **Addresses.** Every hop, redirects included, must resolve to public addresses only, and the request is pinned to the address that was checked. Loopback, private, link-local, carrier-NAT and reserved ranges are refused for every run, owner runs included (an owner run has `Bash` for local services).
 
 **Trust.** Every run gets it. A non-owner run's call goes to the policy reviewer first, as `Read` does. Returned text has runtime tags defused and is to be treated as data. Calls may run in parallel.
+
+### Browser
+
+The peko's own browser (ADR-119): a headless Chromium with a profile of the peko's own, for pages `Fetch` cannot read. Its owner can step into the same browser from any of their devices.
+
+**Owner runs only.** A signed-in profile is the owner's authority, as `Bash` is; the floor refuses it to every other run and leaves it out of their wire catalog. `ACCESS.toml` cannot list it.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/browser.rs) · [browser](../../peko-rs/core/src/browser/mod.rs) · [engine](../../peko-rs/core/src/browser/engine.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `action` | `open` \| `read` \| `click` \| `type` \| `press` \| `screenshot` \| `tabs` \| `close` \| `handoff` | yes | — |
+| `url` | string | open | `http` or `https` |
+| `tab` | string | all but `open`, `tabs` | a tab id (`t1`) from `open` or `tabs`; on `open`, reuses that tab |
+| `ref` | integer | click, type | a control's number from the last `read` of that page |
+| `text` | string | type (or `secret`) | replaces what the field holds; for a list, the option to choose |
+| `secret` | string | type (or `text`) | the name of a peko secret (ADR-116) to put in the field |
+| `submit` | boolean | no | false; true presses Enter after typing |
+| `key` | string | press | Enter, Tab, Escape, Backspace, Delete, Space, the arrows, PageUp, PageDown, Home, End |
+| `offset` | integer | no | 0; `read` continues a long page from this character |
+| `max_chars` | integer | no | 30000; 1000–100000 |
+| `why` | string | handoff | 1–300 characters, shown to the owner |
+
+`open` and `read` return `{success, tab, url, title, text}` and `more` when the page continues. The text is the page as it is drawn (scripts have run), with each visible control on a line of its own, `[n] kind "label"`, where `n` is the reference `click` and `type` take; a password field says only whether it is filled. References live until the page navigates. `click`, `type` and `press` return `{success, tab, url, title}` after the action, and `dialog` when the page showed an alert (it is accepted). `screenshot` returns the page as an image for models that take images. `tabs` lists `{tab, url, title}`; at most 12 tabs are open.
+
+**The browser.** One per peko, started on first use from an installed Chrome, Edge, Brave or Chromium (or `PEKO_BROWSER_PATH`), else from the Chrome for Testing build `peko browser install` downloads into `<runtime>/browser/`. Its profile is `<local>/browser/profile`, outside snapshots. It is driven over a pipe it inherits (a loopback port on Windows), and stops after 15 minutes without a call or a viewer, unless a hand-off waits. No downloads or uploads.
+
+**Secrets.** `type` with `secret` reads the value from the vault; it is in no parameter, and every later result of the tool has that value replaced by `[secret:NAME]`.
+
+**Hand-off (ADR-119 D3, D4).** `handoff` records what the peko needs, tells the owner in their conversation (`🌐 Browser needs you`), and returns `{success, status: "waiting"}`. The owner takes control from a viewer: Peko Desktop on this computer (IPC `browser`), a paired phone (device verb `browser`), or Peko Desktop on another of their computers (IPC `channel_peko_browser`, tunnel `tunnel_peko_browser_request`). While a viewer holds control every action of this tool fails with "your owner is using the browser" and changes nothing; nothing the owner sees or types is recorded or reaches the model. When they release it (or their device goes away for 90 seconds) the session that asked gets a completion and reads the page again. A hand-off lapses after 24 hours.
+
+**Trust.** Page text and titles have runtime tags defused and are to be treated as data. Calls run alone (not parallel).
 
 ## Inference and workflows
 

@@ -2,6 +2,7 @@
 
 pub mod async_control;
 pub mod bash;
+pub mod browser;
 pub mod changes;
 pub mod channel;
 pub mod fetch;
@@ -9,7 +10,7 @@ pub mod fs;
 pub mod messaging;
 pub mod paths;
 pub mod plan;
-mod process;
+pub(crate) mod process;
 pub mod secret;
 pub mod session;
 pub mod skill;
@@ -29,6 +30,7 @@ pub mod workflow;
 // Public domain tools and runtime ports.
 pub use async_control::{AsyncRuntime, AsyncTool, SharedAsyncRuntime};
 pub use bash::BashTool;
+pub use browser::BrowserTool;
 pub use changes::ChangesTool;
 pub use channel::{AskTool, AttachTool, ChannelReadTool, ChannelSendTool, SuggestTool};
 pub use fetch::{FetchTool, FETCH_TOOL_NAME};
