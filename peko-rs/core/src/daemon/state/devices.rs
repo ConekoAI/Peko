@@ -268,6 +268,8 @@ impl AppState {
             "secret_provide" => self.verb_secret_answer(device, args, true).await,
             "secret_decline" => self.verb_secret_answer(device, args, false).await,
             "approval_decide" => self.verb_approval_decide(device, args).await,
+            "browsers" => self.verb_browsers().await,
+            "browser" => self.verb_browser(device, args).await,
             "stop" => self.verb_stop(args).await,
             "board" => {
                 let channel = self.person_channel(arg_str(args, "channel")?).await?;
@@ -1095,6 +1097,65 @@ impl AppState {
             )
             .await;
         Ok(json!({ "message": message }))
+    }
+
+    /// ADR-119 D6 (ADR-108 D12): the browsers of the person's pekos on
+    /// this computer that are running or wait for the person's hand.
+    async fn verb_browsers(&self) -> Result<Value, String> {
+        let Some(desk) = crate::browser::browser_desk() else {
+            return Ok(json!({ "browsers": [] }));
+        };
+        let mut rows = Vec::new();
+        for (name, principal) in self.owned_pekos().await {
+            let peko = desk.peko(&principal);
+            let running = peko.running().await.is_some();
+            let handoff = peko.handoff();
+            if !running && handoff.is_none() {
+                continue;
+            }
+            // The address a DM names this peko by (`conversations`).
+            let address = self
+                .channel_port
+                .actor_info(&ActorRef::from(&principal.id))
+                .await
+                .address;
+            rows.push(json!({
+                "peko": name,
+                "address": address,
+                "running": running,
+                "controller": peko.controller().map(|(viewer, _)| viewer),
+                "handoff": handoff.map(|h| json!({
+                    "why": h.why, "tab": h.tab, "url": h.url, "at": h.at.to_rfc3339(),
+                })),
+            }));
+        }
+        Ok(json!({ "browsers": rows }))
+    }
+
+    /// ADR-119 D6 (ADR-108 D12): the person watches a tab of their
+    /// peko's browser, takes control of it, and acts in it from their
+    /// phone (`do`: `state`, `frame`, `control`, `input`, `open`). The
+    /// request arrived sealed to this computer and the pictures leave
+    /// sealed to the phone (ADR-110), so PekoHub reads neither what is
+    /// on the page nor what is typed into it.
+    async fn verb_browser(&self, device: &DeviceRecord, args: &Value) -> Result<Value, String> {
+        let name = arg_str(args, "peko")?;
+        let action = arg_str(args, "do")?;
+        if !matches!(action, "state" | "frame" | "control" | "input" | "open") {
+            return Err(format!("[bad_request] a phone cannot `{action}` a browser"));
+        }
+        let (_, principal) = self
+            .owned_pekos()
+            .await
+            .into_iter()
+            .find(|(owned, _)| owned == name)
+            .ok_or("[forbidden] Only the peko's owner uses its browser.")?;
+        let desk = crate::browser::browser_desk()
+            .ok_or("[not_here] The browser is not available on this computer.")?;
+        let viewer = format!("device:{}", device.device_id);
+        crate::browser::verbs::handle(&desk, &principal, &viewer, action, args)
+            .await
+            .map_err(|e| format!("[bad_request] {e}"))
     }
 
     async fn verb_stop(&self, args: &Value) -> Result<Value, String> {
@@ -2172,6 +2233,23 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+
+        // A browser is reached only with the viewer's verbs, and only a
+        // peko's the person owns here (ADR-119 D6).
+        let refused = rig
+            .ask("browser", json!({ "peko": "mochi", "do": "stop" }))
+            .await
+            .unwrap_err();
+        assert!(refused.starts_with("[bad_request]"), "{refused}");
+        let refused = rig
+            .ask("browser", json!({ "peko": "mochi", "do": "state" }))
+            .await
+            .unwrap_err();
+        assert!(refused.starts_with("[forbidden]"), "{refused}");
+        assert!(rig.ask("browsers", json!({})).await.unwrap()["browsers"]
+            .as_array()
+            .unwrap()
+            .is_empty());
 
         // The same signed request, relayed twice.
         let (request_id, signature) = rig.phone.request(&rig.runtime, "conversations", json!({}));

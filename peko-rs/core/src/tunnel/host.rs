@@ -206,4 +206,17 @@ pub trait TunnelHost: Send + Sync {
         always: bool,
         from_runtime: &str,
     ) -> Result<String, String>;
+
+    /// ADR-119 D6: carry out one browser `verb` for `person` on the
+    /// browser of the peko hosted here whose signing DID is
+    /// `principal_did`, as the viewer `computer:<from_runtime>`. Refused
+    /// unless `person` is the peko's owner.
+    async fn peko_browser_for_owner(
+        &self,
+        principal_did: &str,
+        person: &str,
+        verb: &str,
+        args: &serde_json::Value,
+        from_runtime: &str,
+    ) -> Result<serde_json::Value, String>;
 }

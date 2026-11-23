@@ -58,6 +58,10 @@ pub use tunnel_channel_port::{
     TunnelChannelPort, ATTACHMENT_CHUNK_BYTES, HISTORY_PAGE_LIMIT,
 };
 pub use tunnel_channel_signature::{
+    browser_text_digest, verify_peko_browser, verify_peko_browser_request, PekoBrowserPayload,
+    PekoBrowserRequestPayload, PEKO_BROWSER_REQUEST_VERSION, PEKO_BROWSER_VERSION,
+};
+pub use tunnel_channel_signature::{
     jws_sign, jws_verify, sign_channel_event, sign_channel_invite, sign_history,
     verify_attachment_request, verify_author_signature, verify_channel_event,
     verify_channel_invite, verify_history, verify_history_request, AttachmentRequestPayload,

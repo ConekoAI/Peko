@@ -6,6 +6,32 @@ All notable changes to Peko.
 
 ### Added
 
+- **A peko has its own browser, and you can step into it from any of your
+  devices (ADR-119).** The new owner-only `Browser` built-in (30 in all)
+  drives a headless Chromium with a profile of the peko's own, for pages
+  `Fetch` cannot read: pages drawn by scripts, pages behind a sign-in,
+  sites that turn automated requests away. It reads a page as text with a
+  numbered reference on each control, clicks, types (a peko secret by
+  name, so the value never passes through the model), presses keys, takes
+  screenshots, and keeps its cookies between runs. When a page needs a
+  person (a sign-in, a captcha, a code), the peko hands it to you
+  (`handoff`) and ends its turn. You take control of the same browser, do
+  it, and hand back; the peko is woken and goes on. While you hold control
+  the peko's calls change nothing, and nothing you see or type is recorded
+  or reaches the model.
+  - The runtime uses an installed Chrome, Edge, Brave or Chromium
+    (`PEKO_BROWSER_PATH` names another). With none, `peko browser install`
+    downloads Google's Chrome for Testing (about 190 MB) into the runtime's
+    folder. `peko browser status [peko]` and `peko browser stop <peko>`.
+  - You reach it from Peko Desktop on the same computer (IPC `browser`), a
+    paired phone (device verbs `browsers` and `browser`, ADR-108 D12), and
+    Peko Desktop on another of your computers (IPC `channel_peko_browser`;
+    new sealed tunnel messages `tunnel_peko_browser_request` and
+    `tunnel_peko_browser`, relayed by PekoHub only between two computers of
+    one account). A viewer asks for the newest picture of a tab and sends
+    what you click and type; both cross PekoHub sealed.
+  - New IPC requests and tunnel wire types, so this goes out in a minor
+    bump; PekoHub must relay the new types first.
 - **Give a peko a secret from your phone (ADR-108 D11).** New device verbs
   `secrets`, `secret_provide { peko, id, value }` and `secret_decline`
   list and answer the secret requests (ADR-116) of the pekos you own on

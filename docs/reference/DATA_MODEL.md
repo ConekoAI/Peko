@@ -936,6 +936,78 @@ An answer pushes a completion (`tool_name: "Secret"`, `task_id:
 "secret:<id>"`, result `{secret, status, note}`) into the asking session's
 inbox and wakes it.
 
+### 3.1d A peko's browser (ADR-119)
+
+On disk:
+
+- `<local>/browser/profile/` is the peko's browser profile (cookies,
+  sign-ins). It is in no snapshot. Cookies are stored without the OS
+  keychain (`--use-mock-keychain`), readable by the OS user, like the
+  rest of the peko's local folder.
+- `<local>/browser/screenshots/<id>.jpg`: the newest 20 pictures the
+  `Browser` tool took for the model.
+- `<runtime>/browser/current.json` (`{version, executable}`) and
+  `<runtime>/browser/<version>/`: the Chrome for Testing build `peko
+  browser install` downloaded, when the computer has no Chromium browser.
+- `<runtime>/browser/view/<id>.jpg`: the picture last handed to a viewer
+  on this computer (mode 0600), removed when the viewer hands back or
+  stops asking.
+
+A hand-off, who holds control, and the secrets a peko typed are kept in
+memory only; they end with the engine.
+
+IPC, local callers only:
+
+- `browser {name, verb, args}` → `browser_result {body}`. For peko `name`
+  (owner only): `state` → `{running, available, tabs: [{tab, url, title}],
+  controller: {viewer, since}?, handoff: {why, tab, url, at}?}`; `frame
+  {tab, width, height, after, wait_ms}` → `{seq, tab, width, height, path,
+  controller}`, or `{seq: null, controller}` when no picture newer than
+  `after` came within `wait_ms` (at most 8000) — `path` is a JPEG file on
+  this computer, since a picture does not fit in one packet; `control
+  {take}` → `{held, changed}`; `input {tab, events}` → `{ok}`, only for
+  the viewer holding control, with events `{t: "click"|"move"|"down"|"up",
+  x, y}`, `{t: "wheel", x, y, dx, dy}`, `{t: "key", key}`, `{t: "text",
+  text}`, `{t: "back"}`, `{t: "reload"}` (coordinates in the size the
+  viewer asked the tab to be laid out to; at most 64 events, 4000
+  characters a text); `open {url, tab?}` → `{tab}`; `stop` → `{stopped}`.
+  With an empty `name`: `status` and `install` → `{available, source,
+  path, started, install: {running, done_bytes, total_bytes, error?}}`.
+- `channel_peko_browser {channel, verb, args}` → `browser_result {body}`:
+  the same `state`, `frame`, `control`, `input`, `open` for your peko on
+  another of your computers, in your DM `channel` with it.
+
+A viewer is `local`, `device:<device id>` or `computer:<runtime id>`. One
+holds control at a time; it lapses 90 seconds after the runtime last heard
+from that viewer. Taking and releasing control are audited
+(`browser.owner_control`, Security: `{viewer, change}`), never what was
+seen or typed. Releasing pushes a completion (`tool_name: "Browser"`,
+`task_id: "browser:<id>"`, result `{status: "owner_done", tab, note}`) into
+the session that asked with `handoff`, and wakes it.
+
+Device verbs (ADR-108 D12), sealed both ways: `browsers` → `{browsers:
+[{peko, address, running, controller, handoff}]}` for the person's pekos
+on that computer whose browser runs or waits; `browser {peko, do, …}`
+with `do` one of `state`, `frame`, `control`, `input`, `open` and the
+arguments above, answering with the picture as base64 (`data`) in place
+of `path`.
+
+Tunnel, sealed (ADR-110), relayed by PekoHub only between two runtimes of
+one account, and acted on only from a computer on the account's device
+list (ADR-111):
+
+- `tunnel_peko_browser_request {requestId, sourceRuntimeId,
+  recipientRuntimeId, sourcePrincipalDid, principalDid, verb, args,
+  signature}`: `args` is JSON text; the signature covers
+  `PekoBrowserRequestPayload {v: "peko-peko-browser-request/1", request_id,
+  source_runtime_id, recipient_runtime_id, source_principal_did,
+  principal_did, verb, args_digest, iat, exp}`, where a digest is the
+  unpadded base64url SHA-256 of the text.
+- `tunnel_peko_browser {requestId, sourceRuntimeId, recipientRuntimeId,
+  principalDid, ok, body, signature}`: `body` is JSON text when `ok`, else
+  the reason; the signature covers `PekoBrowserPayload {v:
+  "peko-peko-browser/1", …, ok, body_digest, iat, exp}`.
+
 ### 3.1c Turn changes (ADR-117)
 
 Per principal, beside the ledger in the local tier, `<local>/changes/`:

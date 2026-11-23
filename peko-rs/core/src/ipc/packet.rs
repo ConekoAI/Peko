@@ -713,6 +713,21 @@ pub enum RequestPacket {
         secret: String,
     },
 
+    /// One thing a viewer asks of a peko's browser (ADR-119 D4–D6):
+    /// `state`, `frame`, `control`, `input`, `open`, `stop` for peko
+    /// `name`; or, with no peko, `status` (is there a browser to start)
+    /// and `install` (download the runtime's own). Owner only, local
+    /// callers only. Answered with `BrowserResult`.
+    #[serde(rename = "browser")]
+    Browser {
+        request_id: u64,
+        #[serde(default)]
+        name: String,
+        verb: String,
+        #[serde(default)]
+        args: serde_json::Value,
+    },
+
     /// Recent turns of a peko that changed files, newest first (ADR-117):
     /// those in `channel` when given, or with `dm`, in the DM of `peer`
     /// (the caller when absent) as `principal_log` resolves it. Owner
@@ -1232,6 +1247,19 @@ pub enum RequestPacket {
         always: bool,
     },
 
+    /// One thing you ask of the browser of the peko in `channel`, your
+    /// DM with a peko on another of your computers (ADR-119 D6): `verb`
+    /// is `state`, `frame`, `control`, `input` or `open`, carried out by
+    /// its host. Local callers only; answered with `BrowserResult`.
+    #[serde(rename = "channel_peko_browser")]
+    ChannelPekoBrowser {
+        request_id: u64,
+        channel: String,
+        verb: String,
+        #[serde(default)]
+        args: serde_json::Value,
+    },
+
     /// The groups inviting this runtime's person (ADR-092 D2), newest
     /// first. Local callers only; answered with `ChannelInvitationsResult`.
     #[serde(rename = "channel_invitations")]
@@ -1466,6 +1494,7 @@ impl RequestPacket {
             | Self::SecretProvide { request_id, .. }
             | Self::SecretDecline { request_id, .. }
             | Self::SecretDelete { request_id, .. }
+            | Self::Browser { request_id, .. }
             | Self::TurnChanges { request_id, .. }
             | Self::TurnUndo { request_id, .. }
             | Self::QuotaGet { request_id, .. }
@@ -1493,6 +1522,7 @@ impl RequestPacket {
             | Self::ChannelPekoModels { request_id, .. }
             | Self::ChannelPekoApprovals { request_id, .. }
             | Self::ChannelPekoApprovalDecide { request_id, .. }
+            | Self::ChannelPekoBrowser { request_id, .. }
             | Self::ChannelInvitations { request_id }
             | Self::ChannelPersonGroups { request_id }
             | Self::ChannelInvitationAnswer { request_id, .. }
@@ -2975,6 +3005,15 @@ pub enum ResponsePacket {
         skipped: Vec<UndoSkipped>,
     },
 
+    /// The answer to a `browser` request (ADR-119). A `frame` names the
+    /// picture as a file on this computer (`path`), not as data: a
+    /// picture does not fit in one packet.
+    #[serde(rename = "browser_result")]
+    BrowserResult {
+        request_id: u64,
+        body: serde_json::Value,
+    },
+
     /// What `secret_provide` / `secret_decline` / `secret_delete` did.
     #[serde(rename = "secret_done")]
     SecretDone { request_id: u64, message: String },
@@ -3783,6 +3822,7 @@ impl ResponsePacket {
             | Self::ApprovalDecided { request_id, .. }
             | Self::SecretList { request_id, .. }
             | Self::SecretDone { request_id, .. }
+            | Self::BrowserResult { request_id, .. }
             | Self::TurnChanges { request_id, .. }
             | Self::TurnUndone { request_id, .. }
             | Self::PrincipalExported { request_id, .. }
@@ -3900,6 +3940,7 @@ impl ResponsePacket {
             Self::ApprovalDecided { .. } => "ApprovalDecided",
             Self::SecretList { .. } => "SecretList",
             Self::SecretDone { .. } => "SecretDone",
+            Self::BrowserResult { .. } => "BrowserResult",
             Self::TurnChanges { .. } => "TurnChanges",
             Self::TurnUndone { .. } => "TurnUndone",
             Self::PrincipalExported { .. } => "PrincipalExported",

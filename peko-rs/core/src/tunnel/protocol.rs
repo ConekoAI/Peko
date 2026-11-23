@@ -763,6 +763,41 @@ pub enum TunnelMessage {
         signature: String,
     },
 
+    /// ADR-119 D6: the person (`source_principal_did`, `user:hub:<id>`)
+    /// asks the runtime hosting the peko whose signing DID is
+    /// `principal_did` one thing of its browser (`verb`: `state`,
+    /// `frame`, `control`, `input`, `open`), with `args` as JSON text.
+    /// The host answers only the peko's owner. Relayed like
+    /// `TunnelPekoApprovalsRequest`. `signature` covers every other field
+    /// (`PekoBrowserRequestPayload`, which carries a digest of `args`).
+    #[serde(rename = "tunnel_peko_browser_request", rename_all = "camelCase")]
+    TunnelPekoBrowserRequest {
+        request_id: String,
+        source_runtime_id: String,
+        recipient_runtime_id: String,
+        source_principal_did: String,
+        principal_did: String,
+        verb: String,
+        args: String,
+        signature: String,
+    },
+
+    /// ADR-119 D6: the host's answer: `ok` and `body` as JSON text (a
+    /// picture of the page for `frame`), or not `ok` and `body` the
+    /// reason as plain text. Relayed like `TunnelPekoApprovals`.
+    /// `signature` covers every other field (`PekoBrowserPayload`, which
+    /// carries a digest of `body`).
+    #[serde(rename = "tunnel_peko_browser", rename_all = "camelCase")]
+    TunnelPekoBrowser {
+        request_id: String,
+        source_runtime_id: String,
+        recipient_runtime_id: String,
+        principal_did: String,
+        ok: bool,
+        body: String,
+        signature: String,
+    },
+
     /// ADR-108 D3: one device verb for the runtime `runtime_id`, from a
     /// phone on the account's device list (ADR-111 D5). PekoHub relays it
     /// only from a phone signed in to the account that runtime is

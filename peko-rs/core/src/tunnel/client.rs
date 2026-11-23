@@ -757,6 +757,8 @@ impl TunnelClient {
             | TunnelMessage::TunnelPekoApprovals { .. }
             | TunnelMessage::TunnelPekoApprovalDecide { .. }
             | TunnelMessage::TunnelPekoApprovalDecided { .. }
+            | TunnelMessage::TunnelPekoBrowserRequest { .. }
+            | TunnelMessage::TunnelPekoBrowser { .. }
             | TunnelMessage::TunnelDeviceRequest { .. }
             | TunnelMessage::TunnelDeviceResponse { .. }
             | TunnelMessage::TunnelDeviceEvent { .. }

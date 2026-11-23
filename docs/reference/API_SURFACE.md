@@ -28,6 +28,35 @@ This document defines the public API surface for Peko, including the new Unified
   `ResponsePacket::{TurnChanges, TurnUndone}` with `UndoSkipped`;
   `DaemonClient::{turn_changes, turn_undo}`. CLI `peko undo`.
 
+## A peko's browser (ADR-119)
+
+- `peko_core::browser`: `BrowserDesk` (`found`, `start_install`,
+  `install_state`, `peko`, `start`, `stop`, `ask_owner`, `view`, `control`,
+  `frame`, `input`, `navigate`, `tidy`), `PekoBrowser` (`peko_may_act`,
+  `remember_typed`, `scrub`, `handoff`, `controller`), `Handoff`,
+  `ControlChange`, `InstallState`, `install_browser_desk`, `browser_desk`,
+  `write_frame_file`; constants `BROWSER_TOOL_NAME`, `IDLE_STOP`,
+  `VIEWER_GONE`, `HANDOFF_TTL_HOURS`.
+- `browser::engine`: `Browser` (`launch`, `tabs`, `open`, `read`, `click`,
+  `type_text`, `press`, `screenshot`, `after`, `input`, `frame`,
+  `end_watch`), `Transport` (`Pipe` / `Port`), `TabInfo`, `Snapshot`,
+  `Frame`, `MAX_FRAME_BASE64`, `MAX_TABS`.
+- `browser::cdp`: `Cdp` (`call`, `subscribe`), `over_pipe`,
+  `over_websocket`. `browser::install`: `find`, `installed`, `downloaded`,
+  `download`, `BROWSER_PATH_ENV`.
+- `browser::verbs::handle(desk, principal, viewer, verb, args)`: the one
+  table of what a viewer asks (`state`, `frame`, `control`, `input`,
+  `open`, `stop`), behind IPC, device verbs and the tunnel.
+- Built-in `Browser` (`tools::builtin::BrowserTool`), owner-only.
+- IPC `RequestPacket::{Browser, ChannelPekoBrowser}` →
+  `ResponsePacket::BrowserResult`; `DaemonClient::browser`. CLI `peko
+  browser status|install|stop`.
+- Tunnel `TunnelMessage::{TunnelPekoBrowserRequest, TunnelPekoBrowser}`
+  with `PekoBrowserRequestPayload` / `PekoBrowserPayload`
+  (`browser_text_digest`, `verify_peko_browser_request`,
+  `verify_peko_browser`); `TunnelChannelPort::peko_browser`;
+  `TunnelHost::peko_browser_for_owner`.
+
 ## Secret requests (ADR-116)
 
 - `peko_core::principal::secret_requests`: `Target` (`Peko {name}` /

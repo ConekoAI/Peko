@@ -880,6 +880,14 @@ impl AppState {
             Arc::clone(&inbox_registry),
             Arc::downgrade(&principal_manager),
         );
+        // ADR-119: each peko's browser lives under the runtime folder
+        // and wakes the session that asked for its owner's hand.
+        crate::browser::install_browser_desk(
+            &path_resolver.runtime_dir(),
+            Arc::clone(&inbox_registry),
+            Arc::downgrade(&principal_manager),
+            Arc::clone(&observability),
+        );
 
         // ADR-034: Initialize auth components
         let auth_config = peko_auth::config::AuthConfig::load(&path_resolver)?;
@@ -2417,6 +2425,30 @@ impl crate::tunnel::TunnelHost for AppState {
         )
         .await
         .map_err(|e| format!("{e}"))
+    }
+
+    async fn peko_browser_for_owner(
+        &self,
+        principal_did: &str,
+        person: &str,
+        verb: &str,
+        args: &serde_json::Value,
+        from_runtime: &str,
+    ) -> Result<serde_json::Value, String> {
+        // What a viewer does; stopping the browser stays on its computer.
+        if !matches!(verb, "state" | "frame" | "control" | "input" | "open") {
+            return Err(format!("another computer cannot `{verb}` a browser"));
+        }
+        let Some(principal) = self.owned_principal(principal_did, person).await else {
+            tracing::warn!(%principal_did, %from_runtime, "browser request refused: not the peko's owner");
+            return Err("Only the peko's owner uses its browser.".into());
+        };
+        let desk = crate::browser::browser_desk()
+            .ok_or("The browser is not available on the computer hosting this peko.")?;
+        let viewer = format!("computer:{from_runtime}");
+        crate::browser::verbs::handle(&desk, &principal, &viewer, verb, args)
+            .await
+            .map_err(|e| format!("{e}"))
     }
 
     /// ADR-090 D5: start the turn of each peko bound to DM `channel` for a

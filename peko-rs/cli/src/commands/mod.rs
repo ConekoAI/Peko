@@ -17,6 +17,7 @@ pub mod config;
 pub mod credential;
 // 2026-08-25: `peko cron` retired. The cron module was deleted;
 // principals manage schedules through the `tool:Cron*` grants.
+pub mod browser;
 pub mod daemon;
 pub mod device;
 pub mod log;
@@ -192,6 +193,19 @@ pub enum Commands {
     ///   peko secret set mochi GITHUB_TOKEN
     #[command(subcommand)]
     Secret(secret::SecretCommands),
+
+    /// The browser your pekos use
+    ///
+    /// Each peko has a browser of its own for pages that need one. You
+    /// step into it (to sign in, or pass a check) in the Peko app.
+    ///
+    /// Examples:
+    ///   peko browser status
+    ///   peko browser status mochi
+    ///   peko browser install
+    ///   peko browser stop mochi
+    #[command(subcommand)]
+    Browser(browser::BrowserCommands),
 
     /// Undo what a peko's turn changed in your files
     ///

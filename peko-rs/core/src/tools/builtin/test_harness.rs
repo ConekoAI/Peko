@@ -205,6 +205,7 @@ pub(crate) fn builtin_tools(backends: &Backends, fakes: &Fakes) -> Vec<Arc<dyn T
         Arc::new(AskTool::new(backends.channels.clone())),
         Arc::new(FetchTool::new()),
         Arc::new(crate::tools::builtin::SecretTool::new()),
+        Arc::new(crate::tools::builtin::BrowserTool::new()),
         Arc::new(channel::contacts::ContactsTool::new(
             backends.channels.clone(),
             Weak::new(),
@@ -609,6 +610,9 @@ mod tests {
                 json!({"action":"request", "name":"github_token", "why":"gh"}),
                 "environment variable name",
             ),
+            // Checked before a browser is looked for (its pages are
+            // covered in `browser::tests`, against a real browser).
+            ("Browser", json!({"action":"open"}), "needs `url`"),
         ];
 
         let mut covered = BTreeSet::new();
