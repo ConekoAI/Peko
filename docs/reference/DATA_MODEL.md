@@ -3976,7 +3976,7 @@ Quick-reference table of all primitive types used across formats.
 
 | Version | Date | Changes |
 |---------|------|---------|
-| 0.4.2+ | 2026-11-21 | ADR-114: `posted` events gain optional `ask` and `answers` (§5¾.2⅞⁻⁻ `ask`); `PrincipalLogMessage` gains `msg_id`, `ask`, `answers`; `principal_sent_done` gains `ask`; `principal_send(_stream)`, `channel_post`, and the phone `post` verb take `answers`. |
+| 0.5.0 | 2026-11-23 | ADR-114: `posted` events gain optional `ask` and `answers` (§5¾.2⅞⁻⁻ `ask`); `PrincipalLogMessage` gains `msg_id`, `ask`, `answers`; `principal_sent_done` gains `ask`; `principal_send(_stream)`, `channel_post`, and the phone `post` verb take `answers`. |
 | 0.1.0 | 2026-11-09 | IPC `channel_undelivered { channel }` → `channel_undelivered_result { channel, msg_ids }`: posts of a conversation still in the outbox for a member on another runtime, by `msg_id`, oldest first (members only). |
 | 0.1.0 | 2026-11-09 | ADR-101: `posted` events gain optional `board` (§5¾.2⅞⁻⁻⁻); channels keep `board_check_ins.json`; IPC `channel_board` / `channel_board_result`; group `meta.json` `history` retired (every member reads the whole group). |
 | 0.1.0 | 2026-11-04 | ADR-094: attachments gain optional `sha256`; channels keep crossing files in `<channel dir>/files/<sha256>/<safe name>`; `channel_post` gains `attachments`; tunnel gains `tunnel_attachment_request` / `tunnel_attachment_chunk`; `channel_delivery/wanted_files.json` (§5¾.2⅞⁻). |
