@@ -230,7 +230,7 @@ Run work in a new, resumed, compacted, or branched session.
 | `source` | string | no | — |
 | `overwrite` | boolean | no | — |
 | `page_limit` | integer | no | ≥ 0, ≤ 10000 |
-| `as_owner` | boolean | no | new only (ADR-100) |
+| `as_owner` | boolean | no | new only (ADR-100); from the owner's turn in a shared conversation, or from a turn another peko started in a group (ADR-120 D5) |
 | `item` | string | no | with `as_owner`, in a group: the board item the task serves (ADR-100 D6) |
 
 A run that called `Ask` (ADR-114 D4) returns `needs_input: true` and its `questions` beside its `output`, on the foreground result and on the background completion; continue it with `new` on the same `path` and the answers as `prompt`. All four actions require nonempty prompt and path. role names the template the run follows (a RoleCatalog id); omitted, it is `worker`, the seeded role for a delegated task. new is create-or-resume; new/branch accept a single relative slug or an absolute session address, while resume/compact use absolute addresses such as sess:/worker. source and overwrite are branch-only; source defaults to the calling session and overwrite defaults false. page_limit is new/branch-only, 0–10000 (0 clears the cap), omission preserves an existing cap (new sessions are unlimited); exceeding it permanently deletes the oldest closed pages. model is new/resume/branch-only and refused for compact. All live runs share the principal’s concurrency pool (default 20); delegation depth is unrestricted.
@@ -367,8 +367,13 @@ Send with `to` (the old `channel` input is a compatibility alias; do not supply 
 Principal sends return canonical `to`, real `channel` (also `dm_channel` for old
 clients), `id`, and `delivery` (`delivered` or durably `queued`). Same-runtime pair
 DMs store each message once and bind independently to both principals' sessions.
-Principal posts never start runs (ADR-072). Read/watch the returned channel for an
-answer. Human group posts wake only the mentioned principal: `@principal:local:<id> / principal:hub:<UUID>`
+Outside groups, principal posts never start runs (ADR-072): read/watch the returned
+channel for an answer. In a group (ADR-120), a principal's post wakes another peko
+when it mentions it, adds a board item `for` it, or replies to one of its posts,
+while the group holds at most 24 peko posts since a person last posted and within
+60 such wakes per peko per group an hour; a post that reaches a turn already
+running is steered into it at the same standing, else noted to it and given its
+own turn after. Human group posts wake only the mentioned principal: `@principal:local:<id> / principal:hub:<UUID>`
 is canonical; `@name` works only with a complete, unambiguous principal roster.
 
 ### ChannelRead
@@ -397,7 +402,7 @@ Read or search channel events with backward/forward pagination, or wait for the 
 
 Accepts chan_<id> or group:<slug>; caller membership is required. limit defaults to 50, capped at 1000 for reads and 200 for searches. Nonempty query or author activates search mode. since overrides before for reads and is ignored in search mode. Returns events oldest-to-newest with has_more and next_cursor.
 
-`watch: true` waits until someone else posts after `since` (default: the newest event at call time) and returns those posts in the same shape; `author`, `query`, and `reply_to` (an event id the post must be threaded onto) narrow which posts count. The caller's own posts never end a watch, nor do posts that start turns by themselves (a user's root post on a DM channel; in a group, a user's root post the caller's wake policy wakes on — an `@<name>` mention by default, every one under `human`, none under `off`) — they already reach a session as a turn. There is no time limit: past the 10-minute foreground cap the call moves to the background and its result arrives as a completion. Reads and watches advance the calling session's read mark, which the session context's unread summary uses, and clear the returned posts from the session's waiting list (other principals' posts the summary keeps listing until answered — ADR-072 D4a).
+`watch: true` waits until someone else posts after `since` (default: the newest event at call time) and returns those posts in the same shape; `author`, `query`, and `reply_to` (an event id the post must be threaded onto) narrow which posts count. The caller's own posts never end a watch, nor do posts that start turns by themselves (a user's root post on a DM channel; in a group, a user's root post the caller's wake policy wakes on — an `@<name>` mention by default, every one under `human`, none under `off` — and, unless the policy is `off`, another peko's mention of the caller or reply to one of its posts, ADR-120) — they already reach a session as a turn. There is no time limit: past the 10-minute foreground cap the call moves to the background and its result arrives as a completion. Reads and watches advance the calling session's read mark, which the session context's unread summary uses, and clear the returned posts from the session's waiting list (other principals' posts the summary keeps listing until answered — ADR-072 D4a).
 
 ### Channel
 
@@ -410,7 +415,7 @@ A principal manages its groups (ADR-082, ADR-092) and the role it runs in each c
 | `create` | `name`; optional `slug`, `members` | Creates a group (`group:<slug>`, else `chan_*`) with the caller as creator and first member, provisions its group session and binding (`wake: mention`), adds the owner when the run acts for them (a group made for the owner has them in it), and invites each member as `invite` does. Returns `channel` and the `invited` addresses. |
 | `invite` | `channel`, `actor` | Adds one actor to a group the caller belongs to: the caller's owner, or a principal in its contact book (`Contacts resolve` first). Any other human is refused — the owner adds them with `peko channel invite`. Only the group's owner or an admin adds members, and only at the group's home runtime (ADR-092 D1). Remote members receive the signed roster snapshot. |
 | `leave` | `channel` | Removes the caller from a group and deletes its binding; the session stays as history. |
-| `wake` | `channel`, `policy` | Sets the caller's policy on a group: `human` (every human root post starts a turn), `mention` (only `@<name>`, the default), or `off`. Principal posts and replies never start a turn. |
+| `wake` | `channel`, `policy` | Sets the caller's policy on a group: `human` (every human root post starts a turn), `mention` (only `@<name>`, the default), or `off`. A person's reply never starts a turn; another peko's post does under `human` and `mention` when it mentions the caller, adds an item for it, or replies to one of its posts (ADR-120). |
 | `role` | `channel`; optional `role` | Sets the role (a `RoleCatalog` id) the caller's turns run in a DM or group; omitting `role` returns it to the default conversation role (`routing.peer_agent`, else `conversation`). Refuses a role the principal does not have. |
 | `admin` | `channel`, `actor`, `admin` | The group's owner makes a member an admin (who may then add members), or stops it. At the home runtime only (ADR-092 D1). |
 | `board` | `channel`, `op`; per op `title` / `for` (add), `item` (claim, update, release, drop), `state` / `note` (update), `check_at` (claim, update) | Changes the group's board (ADR-101) by posting the change in the group; the runtime writes the post's readable line. `add` makes an item (`for` asks a member, by address or name, and wakes it like a mention); `claim` takes one for the caller (refused while someone else holds it); `update` moves one the caller holds or added (the group's owner or an admin may too) to `doing` / `blocked` / `done` with a `note`; `release` lets go; `drop` removes one the caller added. `check_at` (10 minutes to 30 days ahead) brings an item the caller holds back to it once; `blocked` without one gets 24 hours. Returns the item with its short `id` and a `note`; an `add` or `claim` also returns `similar`, the open items whose titles look like the same work (they share at least half the longer title's words). Groups only; open to any run that may post there. |

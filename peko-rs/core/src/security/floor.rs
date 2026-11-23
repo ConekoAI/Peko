@@ -54,10 +54,25 @@ pub fn is_owner_task(tool_name: &str, params: &serde_json::Value) -> bool {
     tool_name == "Agent" && params["as_owner"].as_bool() == Some(true)
 }
 
+/// Whether `stamp` is a run another peko started in a group (ADR-120
+/// D5): it acts for that peko, at the group's ceiling or below. Such a
+/// run may hand work that needs the owner's full access up to the owner,
+/// who decides; nothing runs with that access until they approve.
+#[must_use]
+pub fn is_peer_request(stamp: &ActingFor) -> bool {
+    !stamp.is_owner()
+        && stamp.actor.starts_with("principal:")
+        && stamp
+            .compartment
+            .channel()
+            .is_some_and(|c| c.starts_with("group:") || c.starts_with("chan_"))
+}
+
 /// Why `stamp` may not hand this task to the owner, if it may not
-/// (ADR-100 D1). Only a run the owner started in a conversation others
-/// share may: the owner's own runs need no hand-off, and no one else's
-/// run may fill the owner's queue.
+/// (ADR-100 D1, ADR-120 D5). Only a run the owner started in a
+/// conversation others share may, or one another peko started in a
+/// group: the owner's own runs need no hand-off, and no one else's run
+/// (a visitor's) may fill the owner's queue.
 #[must_use]
 pub fn owner_task_refusal(
     stamp: &ActingFor,
@@ -74,10 +89,10 @@ pub fn owner_task_refusal(
                 .into(),
         );
     }
-    if !stamp.owner_request {
+    if !stamp.owner_request && !is_peer_request(stamp) {
         return Some(format!(
-            "Only a turn your owner started in this conversation can hand work to them \
-             (as_owner); this run acts for {}.",
+            "Only a turn your owner, or another peko in a group, started can hand work to your \
+             owner (as_owner); this run acts for {}.",
             shown_actor(&stamp.actor)
         ));
     }
@@ -628,6 +643,42 @@ mod tests {
         }
     }
 
+    /// ADR-120 D5: a turn another peko started in a group may hand a task
+    /// to the owner; in a DM, or for a person who is not the owner, it
+    /// may not.
+    #[test]
+    fn another_pekos_request_in_a_group_hands_a_task_to_the_owner() {
+        let task = serde_json::json!({
+            "prompt": "Clone the repo and run the tests; report which fail",
+            "path": "run-tests",
+            "as_owner": true,
+        });
+        let peer = |channel: &str| ActingFor {
+            actor: "principal:hub:5d0c".into(),
+            name: Some("juno".into()),
+            compartment: Compartment::Conversation {
+                channel: channel.into(),
+            },
+            ..stamp(Trust::Untrusted)
+        };
+        for group in ["group:stats-team", "chan_ab12cd34"] {
+            assert!(is_peer_request(&peer(group)), "{group}");
+            assert!(
+                owner_task_refusal(&peer(group), "Agent", &task).is_none(),
+                "{group}"
+            );
+        }
+        let in_dm = peer("dm_00ff");
+        assert!(!is_peer_request(&in_dm));
+        assert!(owner_task_refusal(&in_dm, "Agent", &task).is_some());
+        let visitor = ActingFor {
+            actor: "visitor:hub:9".into(),
+            ..peer("group:stats-team")
+        };
+        assert!(!is_peer_request(&visitor));
+        assert!(owner_task_refusal(&visitor, "Agent", &task).is_some());
+    }
+
     /// ADR-100 D1: only the owner's own turn in a shared room hands a
     /// task to them, as a new task with a short-enough brief.
     #[test]
@@ -659,7 +710,7 @@ mod tests {
             &task(serde_json::json!({})),
         )
         .expect("a guest's turn is refused");
-        assert!(guest.contains("Only a turn your owner started"), "{guest}");
+        assert!(guest.contains("Only a turn your owner"), "{guest}");
         let owner = owner_task_refusal(&stamp(Trust::Owner), "Agent", &task(serde_json::json!({})))
             .expect("the owner's own run needs no hand-off");
         assert!(owner.contains("without as_owner"), "{owner}");

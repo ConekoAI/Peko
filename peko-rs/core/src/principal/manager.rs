@@ -3416,6 +3416,100 @@ mod tests {
         assert!(start["params"].get("as_owner").is_none(), "{start}");
     }
 
+    /// ADR-120 D5: a task another peko asked for in a group goes to the
+    /// owner, at most [`MAX_PEER_TASKS_PER_GROUP`] waiting per group, and
+    /// once approved runs as the owner, not as that peko.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn a_task_another_peko_asked_for_runs_as_the_owner_once_approved() {
+        use crate::principal::policy_gate::{
+            decide_request, pending_requests, request_kind, Decision, PrincipalPolicyGate,
+            MAX_PEER_TASKS_PER_GROUP,
+        };
+        use crate::security::judge::{GatedCall, PolicyGate};
+        use peko_tools_core::{ActingFor, Compartment, Origin, Trust};
+        let (_temp, manager, adapter, id) = setup().await;
+        let principal = manager.get(id.clone()).await.unwrap();
+        let gate = PrincipalPolicyGate::new(Arc::downgrade(&manager));
+        let call = |n: usize| GatedCall {
+            call_id: Some(format!("call_peer_{n}")),
+            principal_id: id.0.clone(),
+            principal_name: None,
+            session_id: Some("group-session".into()),
+            agent_id: None,
+            workspace: None,
+            stamp: ActingFor {
+                actor: "principal:hub:5d0c".into(),
+                name: Some("juno".into()),
+                trust: Trust::Untrusted,
+                compartment: Compartment::Conversation {
+                    channel: "group:stats-team".into(),
+                },
+                origin: Origin::Ingress { channel: None },
+                owner_request: false,
+            },
+            tool_name: "Agent".into(),
+            params: serde_json::json!({
+                "prompt": format!("Clone the repo and run the tests ({n}); report which fail."),
+                "path": format!("run-tests-{n}"),
+                "as_owner": true,
+            }),
+        };
+
+        let mut requests = Vec::new();
+        for n in 0..MAX_PEER_TASKS_PER_GROUP {
+            requests.push(gate.ask_owner(&call(n), "ignored").await.unwrap());
+        }
+        let refused = gate
+            .ask_owner(&call(MAX_PEER_TASKS_PER_GROUP), "ignored")
+            .await
+            .expect_err("a group's pekos fill the owner's queue only so far");
+        assert!(refused.to_string().contains("already wait"), "{refused}");
+        let listed = pending_requests(&principal);
+        assert_eq!(listed.len(), MAX_PEER_TASKS_PER_GROUP);
+        assert_eq!(request_kind(&listed[0]).as_deref(), Some("owner_task"));
+
+        adapter.queue_text("2 tests fail.");
+        decide_request(
+            &manager,
+            &principal,
+            &requests[0],
+            Decision::Approve { always: false },
+        )
+        .await
+        .unwrap();
+        let ledger_dir =
+            crate::security::ledger::dir_for_sessions(&principal.memory.sessions_dir());
+        let mut replayed = None;
+        for _ in 0..50 {
+            replayed = crate::security::ledger::read::load_calls(&ledger_dir, None)
+                .unwrap_or_default()
+                .into_iter()
+                .find(|c| {
+                    c.start
+                        .as_ref()
+                        .is_some_and(|s| s["parent"]["kind"] == "approval")
+                });
+            if replayed.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        let start = replayed
+            .expect("the approved task is in the ledger")
+            .start
+            .unwrap();
+        assert_eq!(start["acting_for"]["trust"], "owner", "{start}");
+        assert_ne!(
+            start["acting_for"]["actor"], "principal:hub:5d0c",
+            "it acts for the owner, not the peko that asked: {start}"
+        );
+        assert_eq!(
+            start["acting_for"]["compartment"]["kind"], "internal",
+            "{start}"
+        );
+    }
+
     /// ADR-100 D5: two pekos asked for the same fix each hand it to their
     /// owner. Approved in the same moment, the task whose twin was added
     /// first does not run, and its item says why; an unrelated task runs
@@ -3563,6 +3657,31 @@ mod tests {
         .unwrap();
         assert!(reply.contains("Running it as you"), "{reply}");
         assert_eq!(state_of(unrelated).await.0, BoardState::Doing);
+
+        // Its item dropped before the owner approved (the peko left the
+        // work to its twin): it does not run either.
+        let dropped = take(id.clone(), "Push a second branch").await;
+        let request = gate
+            .ask_owner(&call(&dropped, "second"), "ignored")
+            .await
+            .unwrap();
+        board(
+            &id,
+            BoardOp::Drop {
+                item: dropped.clone(),
+            },
+        )
+        .await;
+        let reply = decide_request(
+            &manager,
+            &principal,
+            &request,
+            Decision::Approve { always: false },
+        )
+        .await
+        .unwrap();
+        assert!(reply.contains("It did not run"), "{reply}");
+        assert!(reply.contains("no longer on the board"), "{reply}");
     }
 
     /// ADR-081 D8: a cron job's trust is re-derived when it fires and only

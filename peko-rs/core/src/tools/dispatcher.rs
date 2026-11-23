@@ -885,8 +885,20 @@ impl ToolDispatcher {
         // ADR-113 D2: a visitor's run gets only the tools and MCP servers
         // the owner's `ACCESS.toml` lists, unless the owner approved this
         // very call.
-        if let Some((reason, grant)) =
-            crate::security::floor::unlisted_tool(&stamp, &tool_name, mcp_server, reach.as_ref())
+        // A task handed to the owner passed `owner_task_refusal` above
+        // and waits for the owner's own decision, whatever `ACCESS.toml`
+        // lists (ADR-100 D2, ADR-120 D5).
+        let owner_task = crate::security::floor::is_owner_task(&tool_name, &call.params);
+        if let Some((reason, grant)) = (!owner_task)
+            .then(|| {
+                crate::security::floor::unlisted_tool(
+                    &stamp,
+                    &tool_name,
+                    mcp_server,
+                    reach.as_ref(),
+                )
+            })
+            .flatten()
         {
             if let Some(refused) = self
                 .unlisted(call, &stamp, &gated, reach.as_ref(), &reason, &grant)

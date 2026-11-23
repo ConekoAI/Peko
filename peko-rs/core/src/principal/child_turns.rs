@@ -823,7 +823,15 @@ impl PeerChildTurns {
         self.settle(session_id, &lane, &outcome, stopped.as_ref())
             .await;
         self.note_activity(&stamp).await;
-        outcome
+        // An invite link the model retyped goes out as the one this
+        // session made (`invite_links`).
+        outcome.map(|mut outcome| {
+            outcome.final_text = crate::tools::builtin::channel::invite_links::repair(
+                session_id,
+                &outcome.final_text,
+            );
+            outcome
+        })
     }
 
     /// [`Self::drive_turn_streaming_with_media`] for a turn whose reply is

@@ -46,6 +46,11 @@ pub struct SubagentMetadata {
     /// distinct from the generic `AsyncTaskEntry.result` which is
     /// the raw JSON returned by the execution closure.
     pub subagent_result: Option<SubagentResult>,
+    /// Whom the run acts for, once re-capped against the session it
+    /// runs in (ADR-078). A post that arrives mid-run is steered into it
+    /// only when it would get the same stamp (ADR-120 D2). `None` for
+    /// runs registered without one.
+    pub acting_for: Option<peko_tools_core::ActingFor>,
 }
 
 pub use crate::tools::builtin::messaging::SubagentResult;
@@ -407,6 +412,30 @@ impl AsyncTaskRegistry {
                     }
                     _ => false,
                 }
+        })
+    }
+
+    /// The stamp of the non-terminal subagent run registered for `child`
+    /// (id or overlay key). `None` when no run is active or it has no
+    /// stamp.
+    #[must_use]
+    pub fn active_subagent_stamp_for_child(
+        &self,
+        child: &str,
+    ) -> Option<peko_tools_core::ActingFor> {
+        self.tasks.values().find_map(|e| {
+            if e.tool_name != "Agent" || e.status.is_terminal() {
+                return None;
+            }
+            match &e.metadata {
+                TaskMetadata::Subagent(m)
+                    if m.child_session_key == child
+                        || m.child_session_id.as_deref() == Some(child) =>
+                {
+                    m.acting_for.clone()
+                }
+                _ => None,
+            }
         })
     }
 

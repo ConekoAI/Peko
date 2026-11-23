@@ -763,6 +763,18 @@ impl SubagentExecutor {
             .has_active_subagent_run_for_child(child_session_key)
     }
 
+    /// The stamp of the run in flight for `child_session_key`
+    /// (ADR-120 D2): `None` when no run is active or it has no stamp.
+    pub async fn active_run_stamp_for_child(
+        &self,
+        child_session_key: &str,
+    ) -> Option<peko_tools_core::ActingFor> {
+        self.registry()
+            .read()
+            .await
+            .active_subagent_stamp_for_child(child_session_key)
+    }
+
     /// Get a reference to the unified executor
     #[must_use]
     pub fn unified_executor(&self) -> &AsyncExecutor {
@@ -2093,6 +2105,7 @@ impl SubagentExecutor {
             cleanup: peko_session::types::SpawnCleanupPolicy::Keep,
             depth: child_depth,
             subagent_result: None,
+            acting_for: config.acting_for.clone(),
         });
 
         // Execute using unified async executor — this is the ONLY registration point

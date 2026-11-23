@@ -72,6 +72,11 @@ pub struct ApprovalRecord {
 /// or expire. Tasks the owner hands themselves (ADR-100) do not count.
 pub const MAX_PENDING_PER_CONVERSATION: usize = 5;
 
+/// ADR-120 D5: most tasks other pekos' requests may have waiting for the
+/// owner from one group at once. The owner decides each; this keeps a
+/// busy group from filling their queue.
+pub const MAX_PEER_TASKS_PER_GROUP: usize = 3;
+
 fn approvals_dir(principal: &Principal) -> PathBuf {
     // `<local>/sessions` is the sessions dir; approvals sit beside it.
     let sessions = principal.memory.sessions_dir();
@@ -305,6 +310,19 @@ impl PrincipalPolicyGate {
         let dir = approvals_dir(&principal);
         // ADR-100 D2: the owner learns where the task was asked for.
         let reason = if is_owner_task(call) {
+            if crate::security::floor::is_peer_request(&call.stamp) {
+                let waiting = pending_records(&dir)
+                    .iter()
+                    .filter(|r| is_owner_task(&r.call))
+                    .filter(|r| crate::security::floor::is_peer_request(&r.call.stamp))
+                    .filter(|r| r.call.stamp.compartment == call.stamp.compartment)
+                    .count();
+                anyhow::ensure!(
+                    waiting < MAX_PEER_TASKS_PER_GROUP,
+                    "{waiting} tasks other pekos asked for here already wait for your owner; \
+                     no more are taken until they decide some. Say this one waits for now"
+                );
+            }
             owner_task_origin(&manager, call).await
         } else {
             let waiting = pending_records(&dir)
@@ -349,7 +367,26 @@ impl PrincipalPolicyGate {
         };
         let call = &record.call;
         let peko = principal.name().await;
-        let note = if is_owner_task(call) {
+        let note = if is_owner_task(call) && crate::security::floor::is_peer_request(&call.stamp) {
+            // ADR-120 D5: another peko asked for it, not the owner.
+            format!(
+                "{APPROVAL_NOTICE_PREFIX} ({id}): {asker}, another peko, asked {peko} for \
+                 something {reason}, and it needs your full access. Approved, it runs as you, \
+                 outside that conversation, with only this brief, and its report goes back \
+                 there:\n\n{brief}\n\nApprove or deny it in the Peko app, or with `peko approve \
+                 {peko} {id}` / `peko deny {peko} {id}`. Expires {exp}.",
+                id = record.id,
+                asker = peko_tools_core::neutralize_runtime_tags(
+                    call.stamp
+                        .name
+                        .as_deref()
+                        .unwrap_or(call.stamp.actor.as_str())
+                ),
+                reason = record.reason,
+                brief = owner_task_brief(call),
+                exp = record.expires_at.format("%Y-%m-%d %H:%M UTC"),
+            )
+        } else if is_owner_task(call) {
             format!(
                 "{APPROVAL_NOTICE_PREFIX} ({id}): you asked {peko} for something {reason}, and it \
                  needs your full access. Approved, it runs as you, outside that conversation, \
@@ -1531,6 +1568,22 @@ async fn owner_task_board(
     let reference = record.call.params["item"].as_str();
     let served = match port.owner_task_item(&channel, reference, &me).await {
         Ok(Some(served)) => served,
+        // The task named its item, and the item is gone from the group's
+        // board: the peko dropped it, most often to leave the work to
+        // another member that holds the same (live, 2026-11-23: a second
+        // branch pushed after otto dropped its duplicate item).
+        Ok(None)
+            if reference.is_some()
+                && port
+                    .conversation_kind(&channel)
+                    .await
+                    .is_ok_and(|kind| kind == peko_channel::ConversationKind::Group) =>
+        {
+            return Err(format!(
+                "its board item #{} is no longer on the board",
+                reference.unwrap_or_default()
+            ));
+        }
         Ok(None) => return Ok(()),
         Err(e) => {
             tracing::warn!(%channel, "owner task: board check failed; running it: {e}");
@@ -1613,6 +1666,15 @@ async fn replay(
         // ADR-100 D3: the brief runs as the owner, in a new session of
         // the owner's own tree, with none of the conversation it was
         // asked in; its report still wakes that conversation.
+        // ADR-120 D5: one another peko asked for runs as the owner too,
+        // who approved it, not as that peko.
+        if crate::security::floor::is_peer_request(&call.stamp) {
+            let owner = crate::principal::trust::stamps_for(principal, manager.channel_port())
+                .owner_driver()
+                .await;
+            stamp.actor = owner.actor;
+            stamp.name = owner.name;
+        }
         stamp.trust = peko_tools_core::Trust::Owner;
         stamp.compartment = peko_tools_core::Compartment::Internal;
         stamp.owner_request = false;
