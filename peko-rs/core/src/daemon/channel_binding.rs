@@ -45,12 +45,16 @@
 //!   detached task so the subscriber's cursor keeps advancing; turns
 //!   for one channel serialize on a per-responder mutex, so a second
 //!   mention mid-run queues behind the first.
-//! - **Run-active collision → queued steering.** When another path
-//!   already runs a turn in the session (`err_run_active`), the post is
-//!   pushed into the session's steering inbox, which the running loop
-//!   drains at its next iteration. The responder then waits for that run
-//!   to end, drains any steering it left behind, and drives one successor
-//!   turn per leftover message, posting each reply as a root post.
+//! - **Run-active collision → its own turn, after.** When another path
+//!   already runs a turn in the session (`err_run_active`: a completion
+//!   wake, an `Agent` resume), a person's post waits for that run to end
+//!   and then gets its own turn, acting for its author, with the reply
+//!   threaded onto it. It is not steered into the running turn, which
+//!   acts for someone else: the owner's request in a shared group would
+//!   lose its ADR-100 standing there (seen live: `as_owner` refused, the
+//!   owner told to ask again elsewhere). A post with no author falls back
+//!   to queued steering: the running loop drains it at its next
+//!   iteration, and the responder drives one successor turn per leftover.
 //! - **Failures are log-only**: a broken wake must never post errors into
 //!   a channel other members read.
 //! - **Restart semantics.** Subscriber cursors are persisted and loaded at
@@ -212,44 +216,23 @@ impl ResponderInner {
             .drive_turn(&session_id, &text, author.as_ref())
             .await
         {
-            Ok(reply) => {
-                // Only group channels get a responder (`select_responder`).
-                let Some(reply) = crate::principal::quiet_reply::postable(&reply, true) else {
-                    debug!(
-                        channel = %self.channel,
-                        session = %session_id,
-                        "channel binding: turn produced no reply; posting nothing"
-                    );
-                    return;
-                };
-                // Phase 12a: the reply is threaded onto the triggering
-                // event so `response_trigger`'s root-post-only rule
-                // never reacts to it — here (self-author skip already
-                // covers the local echo) and on every remote mirror the
-                // reply fans out to. `via` stamps the bound session's
-                // slug path (see the `ResponderInner::via` docs).
-                let mut msg = PostMsg::reply(event_id, reply);
-                msg.via = self.via.clone();
-                if let Err(e) = self
-                    .port
-                    .post(&self.channel, &ActorRef::from(&self.principal), msg)
-                    .await
-                {
-                    warn!(
-                        channel = %self.channel,
-                        "channel binding: reply post failed: {e}"
-                    );
-                }
-            }
+            Ok(reply) => self.post_reply(&session_id, event_id, &reply).await,
             Err(e) => {
                 // Run-active collision: another path (Agent-tool
-                // resume, streaming ingress) is driving a run on the
-                // bound session. Convert the wake to queued steering
-                // instead of dropping it — see `handle_busy_collision`
-                // and the module docs' "Run-active collision" bullet.
-                // Every other failure keeps the log-only skip.
+                // resume, completion wake) is driving a run on the
+                // bound session. A person's post gets its own turn once
+                // that run ends; one with no author is queued as
+                // steering — see the module docs' "Run-active
+                // collision" bullet. Every other failure keeps the
+                // log-only skip.
                 if is_run_active_error(&e) {
-                    self.handle_busy_collision(&session_id, &text).await;
+                    match author {
+                        Some(author) if self.driver.steering_inbox().is_some() => {
+                            self.turn_after_active_run(&session_id, event_id, &text, &author)
+                                .await;
+                        }
+                        _ => self.handle_busy_collision(&session_id, &text).await,
+                    }
                 } else {
                     warn!(
                         channel = %self.channel,
@@ -261,8 +244,85 @@ impl ResponderInner {
         }
     }
 
-    /// Run-active collision recovery: the bound session already has a
-    /// run in flight, so the wake could not drive its own turn. Push
+    /// Post a wake turn's reply threaded onto the post that started it
+    /// (`event_id`), unless the turn chose to say nothing.
+    async fn post_reply(&self, session_id: &str, event_id: String, reply: &str) {
+        // Only group channels get a responder (`select_responder`).
+        let Some(reply) = crate::principal::quiet_reply::postable(reply, true) else {
+            debug!(
+                channel = %self.channel,
+                session = %session_id,
+                "channel binding: turn produced no reply; posting nothing"
+            );
+            return;
+        };
+        // Phase 12a: the reply is threaded onto the triggering
+        // event so `response_trigger`'s root-post-only rule
+        // never reacts to it — here (self-author skip already
+        // covers the local echo) and on every remote mirror the
+        // reply fans out to. `via` stamps the bound session's
+        // slug path (see the `ResponderInner::via` docs).
+        let mut msg = PostMsg::reply(event_id, reply);
+        msg.via = self.via.clone();
+        if let Err(e) = self
+            .port
+            .post(&self.channel, &ActorRef::from(&self.principal), msg)
+            .await
+        {
+            warn!(
+                channel = %self.channel,
+                "channel binding: reply post failed: {e}"
+            );
+        }
+    }
+
+    /// A person's post met a run another path drives on the bound
+    /// session. Wait for that run to end, then drive the post's own
+    /// turn, acting for `author` (ADR-078; for the owner in a shared
+    /// group that is an ADR-100 owner request), and thread the reply
+    /// onto the post. Should yet another run have started in between,
+    /// wait for that one too. Still holding `turn_lock`, so the
+    /// channel's posts keep their order. No deadline: runs have no time
+    /// limit, and stopping the active run ends the wait.
+    async fn turn_after_active_run(
+        &self,
+        session_id: &str,
+        event_id: String,
+        text: &str,
+        author: &ActorRef,
+    ) {
+        debug!(
+            channel = %self.channel,
+            session = %session_id,
+            "channel binding: run-active collision; the post waits for its own turn"
+        );
+        loop {
+            while self.driver.has_active_run(session_id).await {
+                tokio::time::sleep(Duration::from_millis(COMPLETION_POLL_MS)).await;
+            }
+            match self.driver.drive_turn(session_id, text, Some(author)).await {
+                Ok(reply) => {
+                    self.post_reply(session_id, event_id, &reply).await;
+                    return;
+                }
+                Err(e) if is_run_active_error(&e) => {
+                    tokio::time::sleep(Duration::from_millis(COMPLETION_POLL_MS)).await;
+                }
+                Err(e) => {
+                    warn!(
+                        channel = %self.channel,
+                        session = %session_id,
+                        "channel binding: turn after the active run failed (posting nothing): {e:#}"
+                    );
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Run-active collision recovery for a post with no author: the
+    /// bound session already has a run in flight, so the wake could not
+    /// drive its own turn. Push
     /// the post into the session's daemon-shared steering inbox — the
     /// running loop drains steering as user-role input at its next
     /// iteration boundary, whichever path drives that run — then
@@ -1841,6 +1901,7 @@ mod tests {
     /// the test can observe.
     struct CollisionStubDriver {
         calls: Arc<StdMutex<Vec<(String, String)>>>,
+        authors: Arc<StdMutex<Vec<Option<String>>>>,
         reply: String,
         inbox: Arc<peko_session::InboxRegistry>,
         active_runs: Arc<AtomicUsize>,
@@ -1851,6 +1912,7 @@ mod tests {
         fn new(reply: &str, first_error: anyhow::Error) -> Self {
             Self {
                 calls: Arc::new(StdMutex::new(Vec::new())),
+                authors: Arc::new(StdMutex::new(Vec::new())),
                 reply: reply.to_string(),
                 inbox: crate::async_exec::executor::standalone_inbox_registry(),
                 active_runs: Arc::new(AtomicUsize::new(0)),
@@ -1865,12 +1927,16 @@ mod tests {
             &self,
             session_id: &str,
             message: &str,
-            _author: Option<&ActorRef>,
+            author: Option<&ActorRef>,
         ) -> anyhow::Result<String> {
             self.calls
                 .lock()
                 .unwrap()
                 .push((session_id.to_string(), message.to_string()));
+            self.authors
+                .lock()
+                .unwrap()
+                .push(author.map(ToString::to_string));
             if let Some(err) = self.first_error.lock().unwrap().take() {
                 return Err(err);
             }
@@ -1886,20 +1952,24 @@ mod tests {
         }
     }
 
-    /// Collision with no active run by the time the watcher polls:
-    /// the post converts to steering, the watcher's first poll sees
-    /// the run gone, the drain picks the steering back up, and a
-    /// successor turn drives it — with the reply posted as a ROOT
-    /// post (the original event correlation is lost in the steering
-    /// conversion, so there is nothing to thread onto).
+    /// A person's post that meets another path's run waits for it to
+    /// end, then gets its own turn acting for its author, with the reply
+    /// threaded onto the post. It is never steered into the running
+    /// turn, which acts for someone else (live, 2026-11-23: the owner's
+    /// "please fix it" landed in a completion wake acting for the group,
+    /// and its `as_owner` hand-off was refused).
     #[tokio::test(flavor = "multi_thread")]
-    async fn run_active_collision_converts_to_steering_and_drives_successor() {
+    async fn run_active_collision_waits_then_runs_the_post_as_its_author() {
         let driver = CollisionStubDriver::new(
-            "the successor reply",
+            "the reply",
             crate::session::ownership::err_run_active("session-1"),
         );
         let calls = Arc::clone(&driver.calls);
+        let authors = Arc::clone(&driver.authors);
+        let active_runs = Arc::clone(&driver.active_runs);
         let inbox_registry = Arc::clone(&driver.inbox);
+        // The colliding run is in flight when the wake hits.
+        active_runs.store(1, Ordering::SeqCst);
         let resolver = StubResolver {
             id: "session-1".into(),
             calls: Arc::new(AtomicUsize::new(0)),
@@ -1913,7 +1983,6 @@ mod tests {
             .post(&channel, &other, PostMsg::root("@self hi"))
             .await
             .unwrap();
-
         responder
             .consider_response(respond_ctx(
                 &principal,
@@ -1924,28 +1993,34 @@ mod tests {
             .await
             .unwrap();
 
-        // Two drive_turn calls: the refused wake, then the successor
-        // turn for the leftover steering (same session, same text).
-        assert!(eventually(|| async { calls.lock().unwrap().len() == 2 }).await);
-        assert_eq!(
-            calls.lock().unwrap()[0],
-            ("session-1".to_string(), "user:alice: @self hi".to_string())
+        // Refused once; nothing reaches the running turn, and no second
+        // turn starts while it runs.
+        assert!(eventually(|| async { calls.lock().unwrap().len() == 1 }).await);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        assert!(
+            inbox_registry
+                .get_or_create("session-1")
+                .await
+                .drain_all()
+                .await
+                .is_empty(),
+            "a person's post is not steered into another run"
         );
+
+        // The run ends: the post gets its own turn, for its author.
+        active_runs.store(0, Ordering::SeqCst);
+        assert!(eventually(|| async { calls.lock().unwrap().len() == 2 }).await);
         assert_eq!(
             calls.lock().unwrap()[1],
             ("session-1".to_string(), "user:alice: @self hi".to_string())
         );
-
-        // The steering round-tripped through the inbox: the watcher
-        // drained it, so nothing is left queued.
-        let inbox = inbox_registry.get_or_create("session-1").await;
-        assert!(
-            inbox.drain_all().await.is_empty(),
-            "the watcher must have drained the collision steering"
+        assert_eq!(
+            authors.lock().unwrap()[1].as_deref(),
+            Some(other.to_string().as_str())
         );
 
-        // The successor reply lands as a ROOT post (parent: None),
-        // NOT threaded onto the triggering event.
+        // Its reply is threaded onto the post, like any wake's.
         let store2 = Arc::clone(&store);
         let channel2 = channel.clone();
         let principal2 = principal.clone();
@@ -1959,95 +2034,61 @@ mod tests {
                     .any(|ev| {
                         matches!(ev, ChannelEvent::Posted { author, text, parent, .. }
                     if *author == format!("principal:local:{}",principal2.0)
-                        && text == "the successor reply"
-                        && parent.is_none())
+                        && text == "the reply"
+                        && parent.is_some())
                     })
             })
             .await,
-            "successor reply must land as a ROOT post"
+            "the reply must be threaded onto the post"
         );
     }
 
-    /// Collision where the ACTIVE RUN drains the steering itself (the
-    /// common case): the watcher finds the inbox empty after the run
-    /// ends, drives NO successor, and posts nothing.
+    /// A post with no author (none a channel delivers today, but the
+    /// path stays) still converts to steering: the watcher drains the
+    /// leftover once the run ends and drives a successor turn, posted
+    /// as a ROOT post (the event correlation is lost in the steering).
     #[tokio::test(flavor = "multi_thread")]
-    async fn run_active_collision_drained_by_active_run_posts_nothing() {
+    async fn run_active_collision_without_author_converts_to_steering() {
         let driver = CollisionStubDriver::new(
-            "unused",
+            "the successor reply",
             crate::session::ownership::err_run_active("session-1"),
         );
         let calls = Arc::clone(&driver.calls);
-        let active_runs = Arc::clone(&driver.active_runs);
-        // The colliding run is in flight when the wake hits.
-        active_runs.store(1, Ordering::SeqCst);
-        let drain_registry = Arc::clone(&driver.inbox);
+        let authors = Arc::clone(&driver.authors);
+        let inbox_registry = Arc::clone(&driver.inbox);
         let resolver = StubResolver {
             id: "session-1".into(),
             calls: Arc::new(AtomicUsize::new(0)),
         };
         let (responder, store, channel, principal, _tmp) =
             bound_responder("prin_self", driver, resolver).await;
-
-        // Simulate the active run's iteration-boundary drain: wait
-        // for the steering to land, drain it, then mark the run
-        // finished — the watcher's next poll sees the run gone and
-        // its drain comes back empty.
-        let drain_active = Arc::clone(&active_runs);
-        tokio::spawn(async move {
-            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-            loop {
-                if let Some(inbox) = drain_registry.peek_inbox("session-1").await {
-                    if !inbox.drain_all().await.is_empty() {
-                        break;
-                    }
-                }
-                assert!(
-                    tokio::time::Instant::now() < deadline,
-                    "collision steering never landed in the inbox"
-                );
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-            drain_active.store(0, Ordering::SeqCst);
-        });
-
-        let other = ActorRef::User("alice".into());
-        store.invite(&channel, &principal, &other).await.unwrap();
         let line = store
-            .post(&channel, &other, PostMsg::root("@self hi"))
+            .post(&channel, &ActorRef::from(&principal), PostMsg::root("tick"))
             .await
             .unwrap();
         responder
-            .consider_response(respond_ctx(
-                &principal,
-                &channel,
-                &line,
-                posted("user:alice", "@self hi"),
-            ))
-            .await
-            .unwrap();
+            .inner
+            .run_turn(line, "tick".to_string(), None)
+            .await;
 
-        // The refused wake happened, and the simulated run ended.
-        assert!(eventually(|| async { calls.lock().unwrap().len() == 1 }).await);
-        assert!(eventually(|| async { active_runs.load(Ordering::SeqCst) == 0 }).await);
-        // Give the watcher time to run its (empty) drain and exit.
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        assert_eq!(
-            calls.lock().unwrap().len(),
-            1,
-            "no successor turn when the active run drained the steering itself"
+        assert_eq!(calls.lock().unwrap().len(), 2);
+        assert_eq!(*authors.lock().unwrap(), vec![None, None]);
+        assert!(
+            inbox_registry
+                .get_or_create("session-1")
+                .await
+                .drain_all()
+                .await
+                .is_empty(),
+            "the watcher must have drained the collision steering"
         );
         let events = store
             .peek(&channel, &peko_channel::Checkpoint::default())
             .await
             .unwrap();
-        assert!(
-            !events
-                .iter()
-                .any(|ev| matches!(ev, ChannelEvent::Posted { author, .. }
-                if *author == format!("principal:local:{}", principal.0))),
-            "nothing may be posted when the steering was already drained; got {events:?}"
-        );
+        assert!(events.iter().any(|ev| matches!(ev,
+            ChannelEvent::Posted { text, parent, .. }
+                if text == "the successor reply" && parent.is_none())));
     }
 
     // -- select_responder ---------------------------------------------------

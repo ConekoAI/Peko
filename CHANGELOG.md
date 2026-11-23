@@ -141,6 +141,20 @@ All notable changes to Peko.
   and `worker` roles say when to use it. An unedited seeded role is
   updated on the next start; an edited one is left alone.
 
+### Fixed
+
+- **Your request in a group could be refused because a peko was still
+  busy.** When you asked a peko for something in a group while it was
+  still finishing an earlier turn there (for example reporting a task it
+  had handed you), your post was slipped into that turn, which acts for
+  the group, not for you. Asked to do work only you may approve
+  (`Agent` `as_owner`, ADR-100), the peko was refused and told you to ask
+  it again in your direct conversation. A person's post now waits for the
+  running turn to end and then gets its own turn, acting for them, with
+  the reply threaded onto it.
+- `peko secret list` no longer says a peko "has no secrets" above the
+  requests it is waiting on; it lists them under "is waiting for".
+
 ## [0.4.2] - 2026-11-21
 
 ### Changed
