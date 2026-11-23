@@ -55,8 +55,12 @@ impl ChannelReadTool {
         let mut abort = ctx.abort_signal();
         let mut abort_live = true;
         // What starts a turn on its own here (ADR-082 D3): every human
-        // root post on a DM, and per the binding's policy in a group.
-        let wake = match self.port.conversation_kind(channel).await? {
+        // root post on a DM, and per the binding's policy in a group,
+        // where other pekos' mentions and replies to this peko's posts
+        // start turns too (ADR-120 D1).
+        let kind = self.port.conversation_kind(channel).await?;
+        let group = kind == peko_channel::ConversationKind::Group;
+        let wake = match kind {
             peko_channel::ConversationKind::Dm => WakePolicy::Human,
             peko_channel::ConversationKind::Group => self
                 .port
@@ -90,10 +94,16 @@ impl ChannelReadTool {
                 .filter(|(id, _)| cursor.as_ref() != Some(id))
                 .collect();
             let observed = after.last().map(|(id, _)| id.clone());
-            let hits: Vec<_> = after
-                .into_iter()
-                .filter(|(_, ev)| filter.matches(ev, wake))
-                .collect();
+            let mut hits = Vec::new();
+            for (id, ev) in after {
+                if filter.matches(&ev, wake, group)
+                    && !(group
+                        && wake != WakePolicy::Off
+                        && self.replies_to_me(channel, filter, &ev).await)
+                {
+                    hits.push((id, ev));
+                }
+            }
             if !hits.is_empty() {
                 let has_more = hits.len() > limit;
                 let page: Vec<_> = hits.into_iter().take(limit).collect();
@@ -127,6 +137,35 @@ impl ChannelReadTool {
     }
 }
 
+impl ChannelReadTool {
+    /// Whether `ev` is another peko's reply to one of the watching
+    /// peko's posts, which in a group starts a turn by itself (ADR-120
+    /// D1).
+    async fn replies_to_me(
+        &self,
+        channel: &ChannelId,
+        filter: &WatchFilter,
+        ev: &ChannelEvent,
+    ) -> bool {
+        let ChannelEvent::Posted {
+            author,
+            reply_to: Some(parent),
+            ..
+        } = ev
+        else {
+            return false;
+        };
+        if !author.starts_with("principal:") {
+            return false;
+        }
+        matches!(
+            self.port.find_post(channel, parent).await,
+            Ok(Some((_, ChannelEvent::Posted { author: by, .. })))
+                if by == filter.me.as_str() || filter.me.strip_prefix("principal:") == Some(by.as_str())
+        )
+    }
+}
+
 /// How often a watch re-reads its channel without a broadcast wake.
 const WATCH_RECHECK: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -152,9 +191,10 @@ impl WatchFilter {
     /// start a turn on its own under `wake`: a user's root post on a DM
     /// (it drives the session bound to that DM) or, in a group, a user's
     /// root post the binding's policy wakes on (it wakes the group's
-    /// session). Reporting those here too would hand the same message to
-    /// two sessions.
-    fn matches(&self, ev: &ChannelEvent, wake: WakePolicy) -> bool {
+    /// session), or another peko's post mentioning this one (ADR-120
+    /// D1). Reporting those here too would hand the same message to two
+    /// sessions.
+    fn matches(&self, ev: &ChannelEvent, wake: WakePolicy, group: bool) -> bool {
         let ChannelEvent::Posted {
             author,
             text,
@@ -167,19 +207,23 @@ impl WatchFilter {
         if *author == self.me || self.me.strip_prefix("principal:") == Some(author.as_str()) {
             return false;
         }
+        let mentions_me = || {
+            peko_channel::mentions(text, &self.name)
+                || peko_channel::mentions(text, &self.me)
+                || self
+                    .hub
+                    .as_ref()
+                    .is_some_and(|h| peko_channel::mentions(text, h))
+        };
+        if group && wake != WakePolicy::Off && author.starts_with("principal:") && mentions_me() {
+            return false;
+        }
         if (author.starts_with("user:") || author.starts_with("visitor:"))
             && parent.is_none()
             && match wake {
                 WakePolicy::Human => true,
                 WakePolicy::Off => false,
-                WakePolicy::Mention => {
-                    peko_channel::mentions(text, &self.name)
-                        || peko_channel::mentions(text, &self.me)
-                        || self
-                            .hub
-                            .as_ref()
-                            .is_some_and(|h| peko_channel::mentions(text, h))
-                }
+                WakePolicy::Mention => mentions_me(),
             }
         {
             return false;
@@ -206,7 +250,7 @@ impl Tool for ChannelReadTool {
         r#"Read a channel you are a member of, search it, or wait for its next post. `channel` is a channel id (`chan_…`) or `group:<slug>`.
 - Read (default): the newest `limit` events (default 50, at most 1000); `before` pages to older ones, `since` catches up on newer ones (and overrides `before`).
 - Search: `query` (case-insensitive text) and/or `author` scan back from `before` or the tip and return only matching posts, at most 200 per call.
-- Watch: `watch: true` waits until someone else posts after `since` (default: now) and returns those posts; `query`, `author` and `reply_to` narrow which posts count. This is how you wait for an answer, since posting never wakes another principal. It has no time limit: a long wait moves to the background and its result arrives with the post. Your own posts never end a watch, nor do posts that start turns by themselves (a user's DM, a user's @mention of you), which reach you as turns.
+- Watch: `watch: true` waits until someone else posts after `since` (default: now) and returns those posts; `query`, `author` and `reply_to` narrow which posts count. This is how you wait for an answer on a DM, since posting there never wakes another principal; in a group, another peko's mention of you or reply to your post reaches you by itself, so don't watch for it there. It has no time limit: a long wait moves to the background and its result arrives with the post. Your own posts never end a watch, nor do posts that start turns by themselves (a user's DM, an @mention of you, a peko's reply to your post in a group), which reach you as turns.
 
 Returns `{channel, events, has_more, next_cursor}`, events oldest first, each with an `id` and a `kind` (created, posted, member_joined, member_left). With `has_more`, pass `next_cursor` as `before` (or as `since` after a forward read or a watch). A post may carry `options`, replies its author suggested: answer in your own words; picking one means only what it says. A post may carry `ask`, questions its author asks, and a person's post `answers` to the questions of the post `answers.to`; its `text` reads the same answers. Reading the posts listed under "waiting on you" takes them off that list, as does posting on their channel."#
             .to_string()

@@ -19,15 +19,20 @@
 //!   D3), read per post: `mention` (the default) — a human ROOT post
 //!   that mentions the principal (`@<name>`, case-insensitive, whole
 //!   word); `human` — every human root post; `off` — nothing.
-//!   Principal-authored posts never wake anyone — the responder's own
-//!   reply is one of them — and replies (`parent: Some`) never wake.
-//!   Everything else is read, not pushed.
-//! - **Peer-post nudge** (ADR-086). Every responder is wrapped so a post
-//!   by another principal, on a DM or in a group, brings the recipient's
-//!   attention-gated `keepalive` forward through the cron engine
-//!   ([`PeerPostNudge`]). It starts no run itself: the keepalive fires on
-//!   the next poll, at least two minutes after its last turn and within
-//!   an hourly budget, and the attention check decides whether it runs.
+//!   A person's reply (`parent: Some`) never wakes. Another peko's post
+//!   wakes the principal when it asks it for something (ADR-120 D1): it
+//!   mentions it, adds a board item for it, or replies to one of its
+//!   posts — while the group holds at most [`MAX_PEKO_CHAIN`] peko posts
+//!   since a person last posted, and within [`PEER_WAKES_PER_GROUP_HOUR`]
+//!   (D3). The principal's own posts never wake it. Everything else is
+//!   read, not pushed.
+//! - **Peer-post nudge** (ADR-086). A post by another principal that
+//!   starts no turn — every one on a DM, and in a group one that does not
+//!   wake the principal — brings the recipient's attention-gated
+//!   `keepalive` forward through the cron engine ([`PeerPostNudge`]). The
+//!   nudge starts no run itself: the keepalive fires on the next poll, at
+//!   least two minutes after its last turn and within an hourly budget,
+//!   and the attention check decides whether it runs.
 //!
 //! ## The group wake
 //!
@@ -45,16 +50,20 @@
 //!   detached task so the subscriber's cursor keeps advancing; turns
 //!   for one channel serialize on a per-responder mutex, so a second
 //!   mention mid-run queues behind the first.
-//! - **Run-active collision → its own turn, after.** When another path
-//!   already runs a turn in the session (`err_run_active`: a completion
-//!   wake, an `Agent` resume), a person's post waits for that run to end
-//!   and then gets its own turn, acting for its author, with the reply
-//!   threaded onto it. It is not steered into the running turn, which
-//!   acts for someone else: the owner's request in a shared group would
-//!   lose its ADR-100 standing there (seen live: `as_owner` refused, the
-//!   owner told to ask again elsewhere). A post with no author falls back
-//!   to queued steering: the running loop drains it at its next
-//!   iteration, and the responder drives one successor turn per leftover.
+//! - **A post that meets a running turn (ADR-120 D2).** When a turn
+//!   already runs in the session (this responder's, a completion wake,
+//!   an `Agent` resume), a post with that turn's standing — the same
+//!   stamp (`same_standing`) — is steered into it, as a DM post is: the
+//!   running loop takes it in at its next step. A post with other
+//!   standing is not: the turn acts for someone else, and the post would
+//!   borrow its tools (the owner's request in a shared group would also
+//!   lose its ADR-100 standing, seen live: `as_owner` refused). The
+//!   running turn gets a note of it instead, and the post waits for the
+//!   run to end and gets its own turn, acting for its author, threaded
+//!   onto it. What a run ended without taking in is settled before the
+//!   next turn (`ResponderInner::settle_leftovers`): a steered post
+//!   gets its own turn, a note is dropped. A post with no author falls
+//!   back to queued steering and one successor turn per leftover.
 //! - **Failures are log-only**: a broken wake must never post errors into
 //!   a channel other members read.
 //! - **Restart semantics.** Subscriber cursors are persisted and loaded at
@@ -94,6 +103,20 @@ use crate::session::ownership::is_run_active_error;
 /// Poll interval while the collision watch waits for another path's
 /// run on the bound session to end.
 const COMPLETION_POLL_MS: u64 = 50;
+
+/// ADR-120 D3: a peko's post wakes another peko only while the group
+/// holds at most this many peko posts since a person last posted there
+/// (this one included). Past it, peko posts wait for the keepalive as
+/// unmentioned ones do, until a person posts again.
+pub(crate) const MAX_PEKO_CHAIN: usize = 24;
+
+/// ADR-120 D3: most wakes and steers other pekos' posts may cause in one
+/// peko, per group, per rolling hour. Counted by the receiving runtime,
+/// so it holds however a remote runtime labels its posts.
+pub(crate) const PEER_WAKES_PER_GROUP_HOUR: usize = 60;
+
+/// How far back the chain check reads a group's log.
+const CHAIN_LOOKBACK: usize = 100;
 
 /// The daemon's in-flight streaming-run registry (`AppState::streaming_runs`),
 /// keyed by session id; `PrincipalStop` cancels runs through it.
@@ -146,6 +169,65 @@ pub(crate) trait BoundTurnDriver: Send + Sync + 'static {
         let _ = session_id;
         false
     }
+
+    /// The stamp of the run in flight in `session_id` (ADR-120 D2).
+    /// `None` (the default) when no run is active, or it is not known
+    /// whom it acts for; a post then waits for its own turn.
+    async fn running_stamp(&self, session_id: &str) -> Option<peko_tools_core::ActingFor> {
+        let _ = session_id;
+        None
+    }
+
+    /// The stamp a turn `author` starts in `session_id` gets — what
+    /// [`Self::drive_turn`] would give it. `None` (the default) when it
+    /// cannot be told.
+    async fn stamp_for(
+        &self,
+        session_id: &str,
+        author: &ActorRef,
+    ) -> Option<peko_tools_core::ActingFor> {
+        let _ = (session_id, author);
+        None
+    }
+}
+
+/// Whether two stamps give a run the same standing: whom it acts for, at
+/// what trust, where, and whether it is the owner's request (ADR-100).
+/// Where the chain started does not matter.
+fn same_standing(a: &peko_tools_core::ActingFor, b: &peko_tools_core::ActingFor) -> bool {
+    a.actor == b.actor
+        && a.trust == b.trust
+        && a.compartment == b.compartment
+        && a.owner_request == b.owner_request
+}
+
+/// What the responder pushed into a running turn (ADR-120 D2), keyed by
+/// the steering message's id, so what the turn did not take in is
+/// handled once it ends.
+#[derive(Debug, Clone)]
+enum Pushed {
+    /// A post steered into the run: it acts with the run's standing. If
+    /// the run ends without taking it in, it gets its own turn, threaded
+    /// onto it.
+    Steered {
+        event_id: String,
+        text: String,
+        author: ActorRef,
+    },
+    /// A note that a post with other standing waits for its own turn.
+    /// That turn is coming anyway, so a note the run did not take in is
+    /// dropped.
+    Notice,
+}
+
+/// The note a running turn gets for a post that waits for its own turn
+/// (ADR-120 D2): it hears the post now, without acting on it.
+fn waiting_notice(input: &str) -> String {
+    format!(
+        "(Posted in the group while you work. It gets its own turn, acting for its author, \
+         once this one ends. Keep it in mind, but do not act on it in this turn.)\n{}",
+        peko_tools_core::neutralize_runtime_tags(input)
+    )
 }
 
 /// Resolves the session a channel's turns run in (for a group channel,
@@ -184,9 +266,130 @@ struct ResponderInner {
     /// queues behind the in-flight turn instead of double-running the
     /// bound session.
     turn_lock: tokio::sync::Mutex<()>,
+    /// What this responder pushed into running turns and has not seen
+    /// settled yet (ADR-120 D2).
+    pushed: std::sync::Mutex<HashMap<uuid::Uuid, (std::time::Instant, Pushed)>>,
+    /// When other pekos' posts woke or steered this peko here in the
+    /// last hour (ADR-120 D3, [`PEER_WAKES_PER_GROUP_HOUR`]).
+    peer_wakes: std::sync::Mutex<std::collections::VecDeque<std::time::Instant>>,
 }
 
 impl ResponderInner {
+    /// The session this channel's turns run in, resolved once and
+    /// cached. `None` (logged) when resolution fails; the next event
+    /// retries.
+    async fn session(&self) -> Option<String> {
+        match self
+            .resolved_session
+            .get_or_try_init(|| self.resolver.resolve(&self.binding))
+            .await
+        {
+            Ok(id) => Some(id.clone()),
+            Err(e) => {
+                warn!(
+                    channel = %self.channel,
+                    binding = %self.binding,
+                    "channel binding: resolution failed (will retry on next event): {e:#}"
+                );
+                None
+            }
+        }
+    }
+
+    /// Hand a post that wakes this peko to its session (ADR-120 D2).
+    /// When a turn already runs there, a post with that turn's standing
+    /// is steered into it, as a DM post is; a post with other standing
+    /// is shown to it as a note and then gets its own turn, acting for
+    /// its author. With no turn running, or none whose standing is
+    /// known, the post gets its own turn.
+    async fn deliver(&self, event_id: String, text: String, author: Option<ActorRef>) {
+        if let Some(author) = author.as_ref() {
+            if let Some(session_id) = self.session().await {
+                if self
+                    .steer_into_running(&session_id, &event_id, &text, author)
+                    .await
+                {
+                    return;
+                }
+            }
+        }
+        self.run_turn(event_id, text, author).await;
+    }
+
+    /// ADR-120 D2: push `text` into the run in flight in `session_id`.
+    /// Returns `true` when the post was steered (the run acts with its
+    /// author's standing); its leftover, if the run ends without taking
+    /// it in, is settled here before returning. Returns `false` when the
+    /// post still needs its own turn: no run, no steering inbox, or a
+    /// run of other standing (which gets a note of the post).
+    async fn steer_into_running(
+        &self,
+        session_id: &str,
+        event_id: &str,
+        text: &str,
+        author: &ActorRef,
+    ) -> bool {
+        let Some(inbox_registry) = self.driver.steering_inbox() else {
+            return false;
+        };
+        if !self.driver.has_active_run(session_id).await {
+            return false;
+        }
+        let running = self.driver.running_stamp(session_id).await;
+        let mine = self.driver.stamp_for(session_id, author).await;
+        let steer = matches!((&running, &mine), (Some(r), Some(m)) if same_standing(r, m));
+        let (message, pushed) = if steer {
+            (
+                SteeringMessage::from_peer(text.to_string()),
+                Pushed::Steered {
+                    event_id: event_id.to_string(),
+                    text: text.to_string(),
+                    author: author.clone(),
+                },
+            )
+        } else {
+            // Marked as someone in the conversation writing, so a long
+            // call the run waits in (a `ChannelRead` watch, which no longer
+            // returns this post) moves to the background and the run ends:
+            // the post's own turn waits for it.
+            (
+                SteeringMessage::from_peer(waiting_notice(text)),
+                Pushed::Notice,
+            )
+        };
+        self.pushed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(message.id, (std::time::Instant::now(), pushed));
+        inbox_registry
+            .get_or_create(session_id)
+            .await
+            .push(message.into())
+            .await;
+        debug!(
+            channel = %self.channel,
+            session = %session_id,
+            steer,
+            "channel binding: post reached a running turn"
+        );
+        if !steer {
+            return false;
+        }
+        // Whatever the run did not take in gets handled once it ends.
+        let _turn_guard = self.turn_lock.lock().await;
+        self.wait_for_no_run(session_id).await;
+        self.settle_leftovers(session_id).await;
+        true
+    }
+
+    /// Wait until no run is in flight in `session_id`. No deadline: runs
+    /// have no time limit, and stopping the run ends the wait.
+    async fn wait_for_no_run(&self, session_id: &str) {
+        while self.driver.has_active_run(session_id).await {
+            tokio::time::sleep(Duration::from_millis(COMPLETION_POLL_MS)).await;
+        }
+    }
+
     /// One full passive-binding cycle for `text`: resolve the binding
     /// (cached), drive the turn (serialized per channel), post the
     /// reply threaded onto the triggering event (`event_id`). Failures
@@ -195,21 +398,15 @@ impl ResponderInner {
     async fn run_turn(&self, event_id: String, text: String, author: Option<ActorRef>) {
         let _turn_guard = self.turn_lock.lock().await;
 
-        let session_id = match self
-            .resolved_session
-            .get_or_try_init(|| self.resolver.resolve(&self.binding))
-            .await
-        {
-            Ok(id) => id.clone(),
-            Err(e) => {
-                warn!(
-                    channel = %self.channel,
-                    binding = %self.binding,
-                    "channel binding: resolution failed (will retry on next event): {e:#}"
-                );
-                return;
-            }
+        let Some(session_id) = self.session().await else {
+            return;
         };
+        // Settle what an ended run left behind (stale notes, steered
+        // posts it never took in) before this post's own turn reads the
+        // inbox.
+        if !self.driver.has_active_run(&session_id).await {
+            self.settle_leftovers(&session_id).await;
+        }
 
         match self
             .driver
@@ -276,6 +473,26 @@ impl ResponderInner {
         }
     }
 
+    /// Post a successor turn's reply as a root post (its post's
+    /// correlation was lost to steering).
+    async fn post_root(&self, reply: &str) {
+        let Some(reply) = crate::principal::quiet_reply::postable(reply, true) else {
+            return;
+        };
+        let mut msg = PostMsg::root(reply);
+        msg.via = self.via.clone();
+        if let Err(e) = self
+            .port
+            .post(&self.channel, &ActorRef::from(&self.principal), msg)
+            .await
+        {
+            warn!(
+                channel = %self.channel,
+                "channel binding: successor-turn reply post failed: {e}"
+            );
+        }
+    }
+
     /// A person's post met a run another path drives on the bound
     /// session. Wait for that run to end, then drive the post's own
     /// turn, acting for `author` (ADR-078; for the owner in a shared
@@ -297,9 +514,8 @@ impl ResponderInner {
             "channel binding: run-active collision; the post waits for its own turn"
         );
         loop {
-            while self.driver.has_active_run(session_id).await {
-                tokio::time::sleep(Duration::from_millis(COMPLETION_POLL_MS)).await;
-            }
+            self.wait_for_no_run(session_id).await;
+            self.settle_leftovers(session_id).await;
             match self.driver.drive_turn(session_id, text, Some(author)).await {
                 Ok(reply) => {
                     self.post_reply(session_id, event_id, &reply).await;
@@ -320,28 +536,93 @@ impl ResponderInner {
         }
     }
 
+    /// Handle the steering an ended run left in `session_id`'s inbox
+    /// (the IPC ingress path's "Gap-2" race: steering pushed during a
+    /// run's FINAL iteration is never drained by it). Call with no run
+    /// in flight and `turn_lock` held. Atomically drains STEERING only —
+    /// completion events stay queued (P0-2, 2026-09-27) — and then, in
+    /// order:
+    ///
+    /// - a post this responder steered (ADR-120 D2) gets its own turn,
+    ///   acting for its author, threaded onto it;
+    /// - a note this responder pushed is dropped (its post's own turn
+    ///   follows anyway);
+    /// - anything else (a post with no author, converted to steering)
+    ///   gets one successor turn, posted as a ROOT post: its event
+    ///   correlation was lost, so there is nothing to thread onto.
+    ///   Principal-authored root posts wake no one unless they mention
+    ///   a peko, which the chain limit bounds (ADR-120 D3).
+    ///
+    /// Failures are log-only. No re-queue: the steering was consumed by
+    /// the drain, and an infinite retry loop is worse than the log-only
+    /// skip every other failure gets.
+    async fn settle_leftovers(&self, session_id: &str) {
+        let Some(inbox_registry) = self.driver.steering_inbox() else {
+            return;
+        };
+        let Some(inbox) = inbox_registry.peek_inbox(session_id).await else {
+            return;
+        };
+        let drained_at = std::time::Instant::now();
+        let leftovers = inbox.drain_steering().await;
+        for envelope in leftovers {
+            let pushed = self
+                .pushed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&envelope.id)
+                .map(|(_, pushed)| pushed);
+            match pushed {
+                Some(Pushed::Notice) => {}
+                Some(Pushed::Steered {
+                    event_id,
+                    text,
+                    author,
+                }) => match self
+                    .driver
+                    .drive_turn(session_id, &text, Some(&author))
+                    .await
+                {
+                    Ok(reply) => self.post_reply(session_id, event_id, &reply).await,
+                    Err(e) => warn!(
+                        channel = %self.channel,
+                        session = %session_id,
+                        "channel binding: turn for a steered post the run left failed \
+                         (posting nothing): {e:#}"
+                    ),
+                },
+                None => match self
+                    .driver
+                    .drive_turn(session_id, &envelope.content, None)
+                    .await
+                {
+                    Ok(reply) => self.post_root(&reply).await,
+                    Err(e) => warn!(
+                        channel = %self.channel,
+                        session = %session_id,
+                        "channel binding: successor turn failed (posting nothing): {e:#}"
+                    ),
+                },
+            }
+        }
+        // What the ended run took in itself is settled too; anything
+        // pushed since the drain belongs to a newer run.
+        self.pushed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|_, (at, _)| *at > drained_at);
+    }
+
     /// Run-active collision recovery for a post with no author: the
     /// bound session already has a run in flight, so the wake could not
-    /// drive its own turn. Push
-    /// the post into the session's daemon-shared steering inbox — the
-    /// running loop drains steering as user-role input at its next
-    /// iteration boundary, whichever path drives that run — then
-    /// watch for leftovers: steering pushed during the active run's
-    /// FINAL iteration would sit undrained forever (the IPC ingress
-    /// path's "Gap-2" race, see `drain_pending_steering` in
-    /// `ipc::handlers::principal`). Still holding `turn_lock`, so
-    /// per-channel ordering is preserved.
-    ///
-    /// Once the active run ends, atomically drain the inbox and drive
-    /// one successor turn per leftover steering message, posting each
-    /// reply as a ROOT post — NOT threaded: the original event
-    /// correlation is lost once the post was converted to steering, so
-    /// there is nothing to thread onto. Principal-authored root posts
-    /// are self-suppressed by `response_trigger`, so this is
-    /// loop-safe. An empty drain means the active run consumed the
-    /// steering itself (the common case) and nothing more happens. The
-    /// watch has no deadline: runs have no time limit, and stopping the
-    /// active run (`peko stop`, `Async stop`) ends it.
+    /// drive its own turn. Push the post into the session's
+    /// daemon-shared steering inbox — the running loop drains steering
+    /// as user-role input at its next iteration boundary, whichever
+    /// path drives that run — then, once the run ends, settle what it
+    /// left ([`Self::settle_leftovers`]). Still holding `turn_lock`, so
+    /// per-channel ordering is preserved. The watch has no deadline:
+    /// runs have no time limit, and stopping the active run
+    /// (`peko stop`, `Async stop`) ends it.
     async fn handle_busy_collision(&self, session_id: &str, text: &str) {
         let Some(inbox_registry) = self.driver.steering_inbox() else {
             warn!(
@@ -366,57 +647,11 @@ impl ResponderInner {
             "channel binding: run-active collision converted to queued steering"
         );
 
-        // Leftover watch: poll until the in-flight run ends.
-        while self.driver.has_active_run(session_id).await {
-            tokio::time::sleep(Duration::from_millis(COMPLETION_POLL_MS)).await;
-        }
-
-        // Atomic drain of STEERING only: IPC-queued and collision-queued
-        // steering share the inbox; whoever drains it drives the turn, so
-        // there is no double-driving. Completion events stay queued
-        // (P0-2, 2026-09-27 — the previous `drain_all` silently destroyed
-        // them); they get their own successor turns below. An empty drain
-        // is the common case — the active run consumed the steering at its
-        // own iteration boundary.
+        self.wait_for_no_run(session_id).await;
+        self.settle_leftovers(session_id).await;
         let Some(inbox) = inbox_registry.peek_inbox(session_id).await else {
             return;
         };
-        let leftovers = inbox.drain_steering().await;
-        for envelope in leftovers {
-            match self
-                .driver
-                .drive_turn(session_id, &envelope.content, None)
-                .await
-            {
-                Ok(reply) => {
-                    let Some(reply) = crate::principal::quiet_reply::postable(&reply, true) else {
-                        continue;
-                    };
-                    let mut msg = PostMsg::root(reply);
-                    msg.via = self.via.clone();
-                    if let Err(e) = self
-                        .port
-                        .post(&self.channel, &ActorRef::from(&self.principal), msg)
-                        .await
-                    {
-                        warn!(
-                            channel = %self.channel,
-                            "channel binding: successor-turn reply post failed: {e}"
-                        );
-                    }
-                }
-                Err(e) => {
-                    // No re-queue: the steering was consumed by the
-                    // drain, and an infinite retry loop is worse than
-                    // the log-only skip every other failure gets.
-                    warn!(
-                        channel = %self.channel,
-                        session = %session_id,
-                        "channel binding: successor turn failed (posting nothing): {e:#}"
-                    );
-                }
-            }
-        }
 
         // §6.1b: completions that raced the predecessor's final
         // iteration (or landed while the collision watch was waiting)
@@ -440,23 +675,7 @@ impl ResponderInner {
                 )
                 .await
             {
-                Ok(reply) => {
-                    let Some(reply) = crate::principal::quiet_reply::postable(&reply, true) else {
-                        continue;
-                    };
-                    let mut msg = PostMsg::root(reply);
-                    msg.via = self.via.clone();
-                    if let Err(e) = self
-                        .port
-                        .post(&self.channel, &ActorRef::from(&self.principal), msg)
-                        .await
-                    {
-                        warn!(
-                            channel = %self.channel,
-                            "channel binding: completion-wake reply post failed: {e}"
-                        );
-                    }
-                }
+                Ok(reply) => self.post_root(&reply).await,
                 Err(e) => {
                     warn!(
                         channel = %self.channel,
@@ -479,7 +698,7 @@ fn spawn_turn(inner: Arc<ResponderInner>, ctx: RespondCtx, input: String) {
         ChannelEvent::Posted { author, .. } => ActorRef::from_str(author).ok(),
         _ => None,
     };
-    tokio::spawn(async move { inner.run_turn(ctx.event_id, input, author).await });
+    tokio::spawn(async move { inner.deliver(ctx.event_id, input, author).await });
 }
 
 // ---------------------------------------------------------------------------
@@ -499,6 +718,10 @@ pub(crate) struct GroupWakeResponder {
     /// The principal's name: a user post wakes it only when it mentions
     /// `@<name>`.
     name: String,
+    /// ADR-086 / ADR-120: where another peko's post that does not wake
+    /// this one nudges its keepalive. Unset until the cron engine
+    /// exists; an unset slot nudges nothing.
+    nudge: PeerNudgeSlot,
 }
 
 impl GroupWakeResponder {
@@ -532,8 +755,166 @@ impl GroupWakeResponder {
                 driver,
                 resolved_session: tokio::sync::OnceCell::new(),
                 turn_lock: tokio::sync::Mutex::new(()),
+                pushed: std::sync::Mutex::new(HashMap::new()),
+                peer_wakes: std::sync::Mutex::new(std::collections::VecDeque::new()),
             }),
             name,
+            nudge: Arc::default(),
+        }
+    }
+
+    /// Nudge the keepalive through `slot` for other pekos' posts that do
+    /// not wake this peko (ADR-086).
+    #[must_use]
+    pub(crate) fn with_nudge(mut self, slot: PeerNudgeSlot) -> Self {
+        self.nudge = slot;
+        self
+    }
+
+    /// Another peko's post (ADR-120 D1): `(author, text)` for a post by
+    /// a principal that is not this one.
+    fn peer_post<'e>(&self, event: &'e ChannelEvent) -> Option<(&'e str, &'e str)> {
+        match event {
+            ChannelEvent::Posted { author, text, .. }
+                if matches!(ActorRef::from_str(author), Ok(ActorRef::Principal(_)))
+                    && !self.is_me(author) =>
+            {
+                Some((author.as_str(), text.as_str()))
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether another peko's post asks this one for something (ADR-120
+    /// D1): it mentions it, adds a board item for it, or replies to one
+    /// of its posts.
+    async fn peer_asks_me(&self, event: &ChannelEvent, text: &str) -> bool {
+        let ChannelEvent::Posted {
+            board, reply_to, ..
+        } = event
+        else {
+            return false;
+        };
+        if let Some(op) = board {
+            return board_asks(self.inner.port.as_ref(), op, &self.inner.principal);
+        }
+        if let Some(parent) = reply_to {
+            if self.asked_by_me(parent).await {
+                return true;
+            }
+        }
+        self.mentions_me(text).await
+    }
+
+    /// Whether `text` mentions this peko: its address, its Hub address,
+    /// or its short name when that is unique in the group.
+    async fn mentions_me(&self, text: &str) -> bool {
+        let me = self
+            .inner
+            .port
+            .actor_info(&ActorRef::from(&self.inner.principal))
+            .await;
+        if peko_channel::mentions(text, &me.address)
+            || me
+                .hub_address()
+                .is_some_and(|h| peko_channel::mentions(text, &h))
+        {
+            return true;
+        }
+        if !peko_channel::mentions(text, &self.name) {
+            return false;
+        }
+        match self.inner.port.participants(&self.inner.channel).await {
+            Ok(roster) => peko_channel::short_name_unambiguous(&roster, &self.name, &me.address),
+            Err(_) => false,
+        }
+    }
+
+    /// ADR-120 D3: whether the group's peko posts since a person last
+    /// posted, `event_id` included, are still within
+    /// [`MAX_PEKO_CHAIN`]. Unreadable history holds the chain.
+    async fn chain_allows(&self, event_id: &str) -> bool {
+        let Ok(page) = self
+            .inner
+            .port
+            .peek_tail(
+                &self.inner.channel,
+                CHAIN_LOOKBACK,
+                Some(&event_id.to_string()),
+            )
+            .await
+        else {
+            return false;
+        };
+        let mut chain = 1usize;
+        for (_, earlier) in page.events.iter().rev() {
+            let ChannelEvent::Posted { author, .. } = earlier else {
+                continue;
+            };
+            match ActorRef::from_str(author) {
+                Ok(ActorRef::User(_) | ActorRef::Visitor(_)) => break,
+                Ok(ActorRef::Principal(_)) => chain += 1,
+                _ => {}
+            }
+            if chain > MAX_PEKO_CHAIN {
+                return false;
+            }
+        }
+        chain <= MAX_PEKO_CHAIN
+    }
+
+    /// ADR-120 D3: spend one of this peko's hourly wakes by other pekos
+    /// here; `false` once [`PEER_WAKES_PER_GROUP_HOUR`] are spent.
+    fn spend_peer_wake(&self) -> bool {
+        let now = std::time::Instant::now();
+        let hour = Duration::from_hours(1);
+        let mut spent = self
+            .inner
+            .peer_wakes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while spent
+            .front()
+            .is_some_and(|at| now.duration_since(*at) >= hour)
+        {
+            spent.pop_front();
+        }
+        if spent.len() >= PEER_WAKES_PER_GROUP_HOUR {
+            return false;
+        }
+        spent.push_back(now);
+        true
+    }
+
+    /// Another peko's post (ADR-120 D1, D3): it wakes this peko — or is
+    /// steered into its running turn — when it asks it for something,
+    /// the binding wakes at all, and the chain and the hourly budget
+    /// allow. Otherwise it nudges the keepalive (ADR-086), unless it is
+    /// a board change that asks nothing of this peko (ADR-101 D2).
+    async fn consider_peer_post(&self, ctx: RespondCtx, wake: WakePolicy) {
+        let Some((author, text)) = self.peer_post(&ctx.event) else {
+            return;
+        };
+        let input = format!("{author}: {text}");
+        let asks = self.peer_asks_me(&ctx.event, text).await;
+        if asks && wake != WakePolicy::Off && self.chain_allows(&ctx.event_id).await {
+            if self.spend_peer_wake() {
+                spawn_turn(Arc::clone(&self.inner), ctx, input);
+                return;
+            }
+            debug!(
+                channel = %self.inner.channel,
+                principal = %self.inner.principal,
+                "channel binding: hourly budget of wakes by other pekos is spent; \
+                 the post waits for the keepalive"
+            );
+        }
+        let board_only = matches!(&ctx.event, ChannelEvent::Posted { board: Some(_), .. });
+        if board_only && !asks {
+            return;
+        }
+        if let Some(nudge) = self.nudge.get() {
+            nudge.peer_posted(&ctx.principal, &ctx.channel).await;
         }
     }
 
@@ -681,6 +1062,12 @@ impl ChannelResponder for GroupWakeResponder {
             .binding_for(&self.inner.channel, &self.inner.principal)
             .await?
             .map_or(WakePolicy::Mention, |b| b.wake);
+        // ADR-120 D1: another peko's post, whatever the policy (an
+        // unwoken one still nudges the keepalive).
+        if self.peer_post(&ctx.event).is_some() {
+            self.consider_peer_post(ctx, wake).await;
+            return Ok(());
+        }
         if wake == WakePolicy::Off {
             return Ok(());
         }
@@ -986,6 +1373,32 @@ impl BoundTurnDriver for PeerTurnDriver {
             .has_active_run_for_child(session_id)
             .await
     }
+
+    /// The stamp the executor registered for the run in flight.
+    async fn running_stamp(&self, session_id: &str) -> Option<peko_tools_core::ActingFor> {
+        self.turns
+            .executor()
+            .active_run_stamp_for_child(session_id)
+            .await
+    }
+
+    /// The stamp [`Self::drive_turn`] gives a turn `author` starts.
+    async fn stamp_for(
+        &self,
+        session_id: &str,
+        author: &ActorRef,
+    ) -> Option<peko_tools_core::ActingFor> {
+        let driver = self.turns.driver(author, author).await;
+        Some(
+            self.turns
+                .root_stamp(
+                    Some(&driver),
+                    session_id,
+                    peko_tools_core::Origin::Ingress { channel: None },
+                )
+                .await,
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1091,17 +1504,21 @@ pub(crate) fn select_responder(
     port: Arc<dyn ChannelPort>,
     kind: ConversationKind,
     drivers: Option<ResponderDrivers>,
+    nudge: PeerNudgeSlot,
 ) -> Arc<dyn ChannelResponder> {
     match (kind, drivers) {
-        (ConversationKind::Group, Some(drivers)) => Arc::new(GroupWakeResponder::new(
-            channel,
-            principal,
-            drivers.name,
-            port,
-            drivers.group_resolver,
-            drivers.turn,
-        )),
-        _ => Arc::new(NoopChannelResponder),
+        (ConversationKind::Group, Some(drivers)) => Arc::new(
+            GroupWakeResponder::new(
+                channel,
+                principal,
+                drivers.name,
+                port,
+                drivers.group_resolver,
+                drivers.turn,
+            )
+            .with_nudge(nudge),
+        ),
+        _ => with_peer_nudge(Arc::new(NoopChannelResponder), port, nudge),
     }
 }
 
@@ -1320,11 +1737,7 @@ impl ChannelBindingSupervisor {
             }
         };
 
-        let responder = with_peer_nudge(
-            self.responder_for(&principal, &channel).await,
-            Arc::clone(&self.port),
-            Arc::clone(&self.peer_nudge),
-        );
+        let responder = self.responder_for(&principal, &channel).await;
         let sub = ChannelSubscriber::new(
             channel,
             principal.id.clone(),
@@ -1353,13 +1766,21 @@ impl ChannelBindingSupervisor {
                     channel = %channel,
                     "channel subscribers: kind read failed; no wake: {e}"
                 );
-                return Arc::new(NoopChannelResponder);
+                return with_peer_nudge(
+                    Arc::new(NoopChannelResponder),
+                    Arc::clone(&self.port),
+                    Arc::clone(&self.peer_nudge),
+                );
             }
         };
         // A DM never wakes the principal from here (see
         // `select_responder`), so it needs no driver.
         if kind == ConversationKind::Dm {
-            return Arc::new(NoopChannelResponder);
+            return with_peer_nudge(
+                Arc::new(NoopChannelResponder),
+                Arc::clone(&self.port),
+                Arc::clone(&self.peer_nudge),
+            );
         }
         let name = principal.config.read().await.name.clone();
         let drivers = self
@@ -1376,6 +1797,7 @@ impl ChannelBindingSupervisor {
             Arc::clone(&self.port),
             kind,
             drivers,
+            Arc::clone(&self.peer_nudge),
         )
     }
 
@@ -1439,7 +1861,11 @@ impl ChannelBindingSupervisor {
         };
 
         let principal_name = principal.config.read().await.name.clone();
-        let turns = Arc::new(turns);
+        // The port the turns' channel checks read: without it a group
+        // turn that already posted in its group with `ChannelSend` posted
+        // its final text on top, and one that overlapped another session's
+        // posts was never asked again (`drive_conversation_turn`).
+        let turns = Arc::new(turns.with_channel_port(Some(Arc::clone(&self.port))));
         let turn_driver = Arc::new(PeerTurnDriver::new(
             Arc::clone(&turns),
             self.streaming_runs.clone(),
@@ -1906,18 +2332,44 @@ mod tests {
         inbox: Arc<peko_session::InboxRegistry>,
         active_runs: Arc<AtomicUsize>,
         first_error: StdMutex<Option<anyhow::Error>>,
+        /// Whom the run in flight acts for (`running_stamp`); `None`
+        /// leaves its standing unknown.
+        running_for: Arc<StdMutex<Option<String>>>,
     }
 
     impl CollisionStubDriver {
         fn new(reply: &str, first_error: anyhow::Error) -> Self {
+            Self {
+                first_error: StdMutex::new(Some(first_error)),
+                ..Self::steady(reply)
+            }
+        }
+
+        /// A driver whose turns all succeed.
+        fn steady(reply: &str) -> Self {
             Self {
                 calls: Arc::new(StdMutex::new(Vec::new())),
                 authors: Arc::new(StdMutex::new(Vec::new())),
                 reply: reply.to_string(),
                 inbox: crate::async_exec::executor::standalone_inbox_registry(),
                 active_runs: Arc::new(AtomicUsize::new(0)),
-                first_error: StdMutex::new(Some(first_error)),
+                first_error: StdMutex::new(None),
+                running_for: Arc::new(StdMutex::new(None)),
             }
+        }
+    }
+
+    /// The stamp a stub turn acting for `actor` gets.
+    fn stub_stamp(actor: &str) -> peko_tools_core::ActingFor {
+        peko_tools_core::ActingFor {
+            actor: actor.to_string(),
+            name: None,
+            trust: peko_tools_core::Trust::Untrusted,
+            compartment: peko_tools_core::Compartment::Conversation {
+                channel: "group:stub".into(),
+            },
+            origin: peko_tools_core::Origin::Ingress { channel: None },
+            owner_request: false,
         }
     }
 
@@ -1929,6 +2381,12 @@ mod tests {
             message: &str,
             author: Option<&ActorRef>,
         ) -> anyhow::Result<String> {
+            let first_error = self.first_error.lock().unwrap().take();
+            // A steady driver refuses as the executor does while a run
+            // is in flight.
+            if first_error.is_none() && self.active_runs.load(Ordering::SeqCst) > 0 {
+                return Err(crate::session::ownership::err_run_active(session_id));
+            }
             self.calls
                 .lock()
                 .unwrap()
@@ -1937,7 +2395,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(author.map(ToString::to_string));
-            if let Some(err) = self.first_error.lock().unwrap().take() {
+            if let Some(err) = first_error {
                 return Err(err);
             }
             Ok(self.reply.clone())
@@ -1949,6 +2407,21 @@ mod tests {
 
         async fn has_active_run(&self, _session_id: &str) -> bool {
             self.active_runs.load(Ordering::SeqCst) > 0
+        }
+
+        async fn running_stamp(&self, _session_id: &str) -> Option<peko_tools_core::ActingFor> {
+            if self.active_runs.load(Ordering::SeqCst) == 0 {
+                return None;
+            }
+            self.running_for.lock().unwrap().as_deref().map(stub_stamp)
+        }
+
+        async fn stamp_for(
+            &self,
+            _session_id: &str,
+            author: &ActorRef,
+        ) -> Option<peko_tools_core::ActingFor> {
+            Some(stub_stamp(&author.to_string()))
         }
     }
 
@@ -1998,14 +2471,18 @@ mod tests {
         assert!(eventually(|| async { calls.lock().unwrap().len() == 1 }).await);
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert_eq!(calls.lock().unwrap().len(), 1);
+        // The running turn only hears of it: a note, not steering it
+        // would act on (ADR-120 D2).
+        let pending = inbox_registry
+            .get_or_create("session-1")
+            .await
+            .drain_all()
+            .await;
+        assert_eq!(pending.len(), 1);
         assert!(
-            inbox_registry
-                .get_or_create("session-1")
-                .await
-                .drain_all()
-                .await
-                .is_empty(),
-            "a person's post is not steered into another run"
+            matches!(&pending[0], peko_session::AsyncInboxItem::Steering(m)
+                if m.content.contains("do not act on it")),
+            "a person's post is not steered into another run: {pending:?}"
         );
 
         // The run ends: the post gets its own turn, for its author.
@@ -2127,6 +2604,7 @@ mod tests {
             Arc::clone(&store) as Arc<dyn ChannelPort>,
             ConversationKind::Group,
             Some(stub_drivers(driver, "session-1")),
+            Arc::default(),
         );
         // A principal-authored root post must NOT fire (D4 loop safety).
         responder
@@ -2182,6 +2660,7 @@ mod tests {
             Arc::clone(&store) as Arc<dyn ChannelPort>,
             ConversationKind::Dm,
             None,
+            Arc::default(),
         );
         responder
             .consider_response(respond_ctx(
@@ -2214,6 +2693,7 @@ mod tests {
             Arc::clone(&store) as Arc<dyn ChannelPort>,
             ConversationKind::Dm,
             Some(stub_drivers(driver, "session-1")),
+            Arc::default(),
         );
         for (line, author) in [("1", "prin_other"), ("2", "user:alice")] {
             responder
@@ -2654,6 +3134,7 @@ mod tests {
             Arc::clone(&store) as Arc<dyn ChannelPort>,
             ConversationKind::Group,
             Some(stub_drivers(driver, "session-1")),
+            Arc::default(),
         );
 
         store
@@ -2720,6 +3201,7 @@ mod tests {
             Arc::clone(&store) as Arc<dyn ChannelPort>,
             ConversationKind::Group,
             Some(stub_drivers(driver, "session-1")),
+            Arc::default(),
         );
         store
             .set_wake(&channel, &principal, WakePolicy::Human)
@@ -2792,6 +3274,7 @@ mod tests {
             Arc::clone(&store) as Arc<dyn ChannelPort>,
             ConversationKind::Group,
             Some(stub_drivers(driver, "session-1")),
+            Arc::default(),
         );
         // For someone else, so Alice's post counts only by what it names
         // (an own-words answer is the next test's).
@@ -2867,6 +3350,7 @@ mod tests {
             Arc::clone(&store) as Arc<dyn ChannelPort>,
             ConversationKind::Group,
             Some(stub_drivers(driver, "session-1")),
+            Arc::default(),
         );
         let me = ActorRef::from(&principal);
         let ask = |for_actor: Option<&str>| peko_protocol::channel::Ask {
@@ -3193,6 +3677,417 @@ mod tests {
             calls.lock().unwrap().len(),
             1,
             "self-authored reply observed after restart must not drive a turn"
+        );
+    }
+
+    // -- ADR-120: a group is a live conversation ---------------------------
+
+    /// Post `msg` as `author` and hand the stored event to `responder`.
+    async fn post_and_consider(
+        store: &Arc<ChannelStore>,
+        responder: &dyn ChannelResponder,
+        me: &PrincipalId,
+        channel: &ChannelId,
+        author: &ActorRef,
+        msg: PostMsg,
+    ) -> String {
+        let line = store.post(channel, author, msg).await.unwrap();
+        let (_, event) = store
+            .peek_with_ids(channel, &peko_channel::Checkpoint::default())
+            .await
+            .unwrap()
+            .into_iter()
+            .rev()
+            .find(|(id, _)| *id == line)
+            .unwrap();
+        responder
+            .consider_response(respond_ctx(me, channel, &line, event))
+            .await
+            .unwrap();
+        line
+    }
+
+    /// How a post mentions `me` unambiguously: by its address.
+    async fn tag(store: &Arc<ChannelStore>, me: &PrincipalId) -> String {
+        format!("@{}", store.actor_info(&ActorRef::from(me)).await.address)
+    }
+
+    /// Records the keepalive nudges another peko's posts cause.
+    struct NudgeRecorder(std::sync::Mutex<usize>);
+
+    #[async_trait]
+    impl PeerPostNudge for NudgeRecorder {
+        async fn peer_posted(&self, _principal: &PrincipalId, _channel: &ChannelId) {
+            *self.0.lock().unwrap() += 1;
+        }
+    }
+
+    /// A group with `me`, another peko and a person, its responder
+    /// nudging into a recorder.
+    async fn peko_group(
+        driver: impl BoundTurnDriver,
+    ) -> (
+        GroupWakeResponder,
+        Arc<ChannelStore>,
+        ChannelId,
+        PrincipalId,
+        ActorRef,
+        Arc<NudgeRecorder>,
+        tempfile::TempDir,
+    ) {
+        let resolver = StubResolver {
+            id: "session-1".into(),
+            calls: Arc::new(AtomicUsize::new(0)),
+        };
+        let (responder, store, channel, me, tmp) =
+            bound_responder("prin_self", driver, resolver).await;
+        let peer = ActorRef::Principal("prin_peer".into());
+        store.invite(&channel, &me, &peer).await.unwrap();
+        store
+            .invite(&channel, &me, &ActorRef::User("alice".into()))
+            .await
+            .unwrap();
+        let recorder = Arc::new(NudgeRecorder(std::sync::Mutex::new(0)));
+        let slot: PeerNudgeSlot = Arc::default();
+        let _ = slot.set(Arc::clone(&recorder) as Arc<dyn PeerPostNudge>);
+        (
+            responder.with_nudge(slot),
+            store,
+            channel,
+            me,
+            peer,
+            recorder,
+            tmp,
+        )
+    }
+
+    /// ADR-120 D1: another peko's mention wakes this one, acting for that
+    /// peko, with the reply threaded onto its post; it nudges nothing.
+    #[tokio::test]
+    async fn a_pekos_mention_wakes_the_peko_it_names() {
+        let driver = CollisionStubDriver::steady("on it");
+        let calls = Arc::clone(&driver.calls);
+        let authors = Arc::clone(&driver.authors);
+        let (responder, store, channel, me, peer, nudges, _tmp) = peko_group(driver).await;
+
+        post_and_consider(
+            &store,
+            &responder,
+            &me,
+            &channel,
+            &peer,
+            PostMsg::root(format!(
+                "{} can you review the parser?",
+                tag(&store, &me).await
+            )),
+        )
+        .await;
+
+        assert!(eventually(|| async { calls.lock().unwrap().len() == 1 }).await);
+        let expected = format!(
+            "{}: {} can you review the parser?",
+            store.actor_info(&peer).await.address,
+            tag(&store, &me).await
+        );
+        assert_eq!(calls.lock().unwrap()[0].1, expected);
+        assert_eq!(
+            authors.lock().unwrap()[0].as_deref(),
+            Some(peer.to_string().as_str())
+        );
+        let (store2, channel2) = (Arc::clone(&store), channel.clone());
+        assert!(
+            eventually(|| async {
+                store2
+                    .peek(&channel2, &peko_channel::Checkpoint::default())
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|ev| {
+                        matches!(ev, ChannelEvent::Posted { text, parent, .. }
+                        if text == "on it" && parent.is_some())
+                    })
+            })
+            .await
+        );
+        assert_eq!(*nudges.0.lock().unwrap(), 0, "a woken post nudges nothing");
+    }
+
+    /// ADR-120 D1: a peko's post that asks nothing of this one starts no
+    /// turn and nudges the keepalive, as before.
+    #[tokio::test]
+    async fn a_pekos_unmentioned_post_only_nudges() {
+        let driver = CollisionStubDriver::steady("x");
+        let calls = Arc::clone(&driver.calls);
+        let (responder, store, channel, me, peer, nudges, _tmp) = peko_group(driver).await;
+
+        post_and_consider(
+            &store,
+            &responder,
+            &me,
+            &channel,
+            &peer,
+            PostMsg::root("tests pass on my side"),
+        )
+        .await;
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(calls.lock().unwrap().is_empty());
+        assert_eq!(*nudges.0.lock().unwrap(), 1);
+    }
+
+    /// ADR-120 D1: a peko's reply to this peko's post wakes it: the
+    /// answer reaches the asker without polling.
+    #[tokio::test]
+    async fn a_pekos_reply_to_my_post_wakes_me() {
+        let driver = CollisionStubDriver::steady("thanks");
+        let calls = Arc::clone(&driver.calls);
+        let (responder, store, channel, me, peer, _nudges, _tmp) = peko_group(driver).await;
+        let mine = store
+            .post(
+                &channel,
+                &ActorRef::from(&me),
+                PostMsg::root("which file has the bug?"),
+            )
+            .await
+            .unwrap();
+
+        post_and_consider(
+            &store,
+            &responder,
+            &me,
+            &channel,
+            &peer,
+            PostMsg::reply(mine, "src/parse.rs, line 40"),
+        )
+        .await;
+
+        assert!(eventually(|| async { calls.lock().unwrap().len() == 1 }).await);
+    }
+
+    /// ADR-120 D3: past [`MAX_PEKO_CHAIN`] peko posts since a person
+    /// last posted, a peko's mention waits for the keepalive; a person's
+    /// post starts a new chain.
+    #[tokio::test]
+    async fn a_long_peko_chain_waits_for_the_keepalive() {
+        let driver = CollisionStubDriver::steady("x");
+        let calls = Arc::clone(&driver.calls);
+        let (responder, store, channel, me, peer, nudges, _tmp) = peko_group(driver).await;
+        let alice = ActorRef::User("alice".into());
+        store
+            .post(&channel, &alice, PostMsg::root("let's start"))
+            .await
+            .unwrap();
+        for i in 0..MAX_PEKO_CHAIN {
+            store
+                .post(&channel, &peer, PostMsg::root(format!("step {i}")))
+                .await
+                .unwrap();
+        }
+
+        post_and_consider(
+            &store,
+            &responder,
+            &me,
+            &channel,
+            &peer,
+            PostMsg::root(format!("{} your turn", tag(&store, &me).await)),
+        )
+        .await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(calls.lock().unwrap().is_empty(), "the chain is held");
+        assert_eq!(*nudges.0.lock().unwrap(), 1, "it waits for the keepalive");
+
+        store
+            .post(&channel, &alice, PostMsg::root("keep going"))
+            .await
+            .unwrap();
+        post_and_consider(
+            &store,
+            &responder,
+            &me,
+            &channel,
+            &peer,
+            PostMsg::root(format!("{} your turn", tag(&store, &me).await)),
+        )
+        .await;
+        assert!(eventually(|| async { calls.lock().unwrap().len() == 1 }).await);
+    }
+
+    /// ADR-120 D3: the hourly budget of wakes by other pekos.
+    #[tokio::test]
+    async fn the_hourly_peer_wake_budget_runs_out() {
+        let (responder, _store, _channel, _me, _peer, _nudges, _tmp) =
+            peko_group(CollisionStubDriver::steady("x")).await;
+        for _ in 0..PEER_WAKES_PER_GROUP_HOUR {
+            assert!(responder.spend_peer_wake());
+        }
+        assert!(!responder.spend_peer_wake());
+    }
+
+    /// ADR-120 D2: a post with the running turn's standing is steered
+    /// into it, as a DM post is. Taken in by the run, it needs nothing
+    /// more.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_post_with_the_running_turns_standing_is_steered_into_it() {
+        let driver = CollisionStubDriver::steady("done");
+        let calls = Arc::clone(&driver.calls);
+        let active = Arc::clone(&driver.active_runs);
+        let inbox = Arc::clone(&driver.inbox);
+        *driver.running_for.lock().unwrap() = Some(ActorRef::User("alice".into()).to_string());
+        active.store(1, Ordering::SeqCst);
+        let (responder, store, channel, me, _peer, _nudges, _tmp) = peko_group(driver).await;
+        let alice = ActorRef::User("alice".into());
+
+        post_and_consider(
+            &store,
+            &responder,
+            &me,
+            &channel,
+            &alice,
+            PostMsg::root(format!(
+                "{} stop, I've got the tests",
+                tag(&store, &me).await
+            )),
+        )
+        .await;
+
+        let session_inbox = inbox.get_or_create("session-1").await;
+        assert!(eventually(|| async { session_inbox.len().await == 1 }).await);
+        // The run takes it in at its next step, then ends.
+        let steered = session_inbox.drain_steering().await;
+        assert_eq!(steered.len(), 1);
+        assert!(steered[0].from_peer);
+        assert_eq!(
+            steered[0].content,
+            format!(
+                "{}: {} stop, I've got the tests",
+                store.actor_info(&alice).await.address,
+                tag(&store, &me).await
+            )
+        );
+        active.store(0, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "a steered post the run took in starts no turn"
+        );
+    }
+
+    /// ADR-120 D2: a steered post the run ended without taking in gets
+    /// its own turn, acting for its author, threaded onto it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_steered_post_the_run_left_gets_its_own_turn() {
+        let driver = CollisionStubDriver::steady("got it");
+        let calls = Arc::clone(&driver.calls);
+        let authors = Arc::clone(&driver.authors);
+        let active = Arc::clone(&driver.active_runs);
+        let inbox = Arc::clone(&driver.inbox);
+        *driver.running_for.lock().unwrap() = Some(ActorRef::User("alice".into()).to_string());
+        active.store(1, Ordering::SeqCst);
+        let (responder, store, channel, me, _peer, _nudges, _tmp) = peko_group(driver).await;
+        let alice = ActorRef::User("alice".into());
+
+        post_and_consider(
+            &store,
+            &responder,
+            &me,
+            &channel,
+            &alice,
+            PostMsg::root(format!("{} also update the docs", tag(&store, &me).await)),
+        )
+        .await;
+        let session_inbox = inbox.get_or_create("session-1").await;
+        assert!(eventually(|| async { session_inbox.len().await == 1 }).await);
+
+        active.store(0, Ordering::SeqCst);
+        assert!(eventually(|| async { calls.lock().unwrap().len() == 1 }).await);
+        let expected = format!(
+            "{}: {} also update the docs",
+            store.actor_info(&alice).await.address,
+            tag(&store, &me).await
+        );
+        assert_eq!(calls.lock().unwrap()[0].1, expected);
+        assert_eq!(
+            authors.lock().unwrap()[0].as_deref(),
+            Some(alice.to_string().as_str())
+        );
+        assert!(session_inbox.is_empty().await);
+        let (store2, channel2) = (Arc::clone(&store), channel.clone());
+        assert!(
+            eventually(|| async {
+                store2
+                    .peek(&channel2, &peko_channel::Checkpoint::default())
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|ev| {
+                        matches!(ev, ChannelEvent::Posted { text, parent, .. }
+                        if text == "got it" && parent.is_some())
+                    })
+            })
+            .await
+        );
+    }
+
+    /// ADR-120 D2: a post with other standing than the running turn's is
+    /// only shown to it, as a note, and gets its own turn once the run
+    /// ends; the note is not a turn of its own.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_post_with_other_standing_is_noted_then_gets_its_own_turn() {
+        let driver = CollisionStubDriver::steady("sure");
+        let calls = Arc::clone(&driver.calls);
+        let authors = Arc::clone(&driver.authors);
+        let active = Arc::clone(&driver.active_runs);
+        let inbox = Arc::clone(&driver.inbox);
+        *driver.running_for.lock().unwrap() = Some(ActorRef::User("bob".into()).to_string());
+        active.store(1, Ordering::SeqCst);
+        let (responder, store, channel, me, _peer, _nudges, _tmp) = peko_group(driver).await;
+        let alice = ActorRef::User("alice".into());
+
+        post_and_consider(
+            &store,
+            &responder,
+            &me,
+            &channel,
+            &alice,
+            PostMsg::root(format!("{} deploy it", tag(&store, &me).await)),
+        )
+        .await;
+        let session_inbox = inbox.get_or_create("session-1").await;
+        assert!(eventually(|| async { session_inbox.len().await == 1 }).await);
+        let pending = session_inbox.drain_steering().await;
+        assert!(
+            pending[0].from_peer && pending[0].content.contains("do not act on it"),
+            "a note moves a long call aside but is not acted on: {pending:?}"
+        );
+        // Not taken in by the run: put it back for the settle below.
+        session_inbox
+            .push(
+                SteeringMessage {
+                    id: pending[0].id,
+                    content: pending[0].content.clone(),
+                    queued_at: pending[0].queued_at,
+                    from_peer: true,
+                }
+                .into(),
+            )
+            .await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(calls.lock().unwrap().is_empty());
+
+        active.store(0, Ordering::SeqCst);
+        assert!(eventually(|| async { calls.lock().unwrap().len() == 1 }).await);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(calls.lock().unwrap().len(), 1, "the note gets no turn");
+        let expected = format!(
+            "{}: {} deploy it",
+            store.actor_info(&alice).await.address,
+            tag(&store, &me).await
+        );
+        assert_eq!(calls.lock().unwrap()[0].1, expected);
+        assert_eq!(
+            authors.lock().unwrap()[0].as_deref(),
+            Some(alice.to_string().as_str())
         );
     }
 }

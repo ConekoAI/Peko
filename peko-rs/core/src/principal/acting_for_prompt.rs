@@ -223,9 +223,23 @@ pub fn render(
             "<acting-for>\nYou are acting for your owner, {who}. Because others take part in \
              this conversation, you work here with {}.\nFor work that needs their full \
              access (the shell, their files), write a brief and hand it to them with Agent \
-             `as_owner: true`; they approve it on their computer. Never ask anyone else here to \
+             `as_owner: true`; they approve it on their computer. Do this instead of saying you \
+             can't, and instead of marking the work blocked. Never ask anyone else here to \
              approve.\nOrigin: {}\n",
             room_limits(stamp.trust),
+            origin_line(&stamp.origin)
+        )
+    } else if crate::security::floor::is_peer_request(stamp) {
+        // ADR-120 D5: another peko asked, in a group; the owner decides
+        // what needs their access.
+        format!(
+            "<acting-for>\nYou are acting for: {who} — another peko in this group, {}\nFor \
+             work it asks of you that needs your owner's full access (the shell, their files), \
+             write a brief and hand it to your owner with Agent `as_owner: true`; they decide on \
+             their computer, not anyone in the group, so you need no one here to approve it. \
+             Do this instead of saying you can't. Hand up only what was asked of you \
+             here.\nOrigin: {}\n",
+            trust_line(stamp.trust),
             origin_line(&stamp.origin)
         )
     } else {
@@ -477,5 +491,26 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(none, "restricted");
+    }
+
+    /// ADR-120 D5: a turn another peko started in a group is told it may
+    /// hand work that needs the owner's access up to them.
+    #[test]
+    fn another_pekos_request_learns_it_can_hand_work_up() {
+        let stamp = ActingFor {
+            actor: "principal:hub:5d0c".into(),
+            name: Some("juno".into()),
+            trust: Trust::Untrusted,
+            compartment: peko_tools_core::Compartment::Conversation {
+                channel: "group:stats-team".into(),
+            },
+            origin: Origin::Ingress {
+                channel: Some("group:stats-team".into()),
+            },
+            owner_request: false,
+        };
+        let text = render(&stamp, None, &peko_subject::CanonicalKeys, 0);
+        assert!(text.contains("another peko in this group"), "{text}");
+        assert!(text.contains("`as_owner: true`"), "{text}");
     }
 }

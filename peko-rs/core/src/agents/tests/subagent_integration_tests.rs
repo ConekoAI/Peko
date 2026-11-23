@@ -2534,6 +2534,7 @@ async fn streaming_resume_refused_while_other_driver_active_on_same_child() {
             cleanup: SpawnCleanupPolicy::Keep,
             depth: 1,
             subagent_result: None,
+            acting_for: None,
         }),
     );
     entry.status = AsyncTaskStatus::Running;

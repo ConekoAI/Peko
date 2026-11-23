@@ -577,12 +577,74 @@ async fn the_owners_turn_in_a_shared_room_hands_work_to_them() {
             .call_as(&Caller::acting_for(stamp), "Agent", brief.clone())
             .await;
         assert!(
-            !out.success && out.display.contains("Only a turn your owner started"),
+            !out.success && out.display.contains("Only a turn your owner"),
             "{}",
             out.display
         );
     }
     assert_eq!(gate.asked.lock().unwrap().len(), 1, "no one else files one");
+}
+
+/// ADR-120 D5: another peko's turn in a group hands work to the owner,
+/// although `ACCESS.toml` lists no `Agent` for visitors; in a DM it may
+/// not.
+#[tokio::test]
+async fn another_pekos_turn_in_a_group_hands_work_to_the_owner() {
+    let h = ToolHarness::new().await;
+    std::fs::write(
+        h.workspace().join(crate::security::access::ACCESS_FILE),
+        ASKING,
+    )
+    .unwrap();
+    let gate = FakeGate::new(Verdict::Allow);
+    h.tooling.dispatcher().set_policy_gate(gate.clone());
+    let brief = json!({
+        "prompt": "Clone the repo and run the tests; report which fail",
+        "path": "run-tests",
+        "as_owner": true,
+    });
+    let peer = |channel: &str| ActingFor {
+        actor: "principal:hub:5d0c".into(),
+        name: Some("juno".into()),
+        compartment: Compartment::Conversation {
+            channel: channel.into(),
+        },
+        ..guest(Trust::Untrusted)
+    };
+
+    let out = h
+        .call_as(
+            &Caller::acting_for(peer("group:stats-team")),
+            "Agent",
+            brief.clone(),
+        )
+        .await;
+    assert_eq!(out.value["pending_approval"], "apr_test", "{}", out.display);
+    assert_eq!(*gate.reviewed.lock().unwrap(), 0, "only the owner decides");
+
+    let out = h
+        .call_as(&Caller::acting_for(peer("dm_00ff")), "Agent", brief.clone())
+        .await;
+    assert!(!out.success, "{}", out.display);
+    // An ordinary Agent call stays what `ACCESS.toml` makes it.
+    let out = h
+        .call_as(
+            &Caller::acting_for(peer("group:stats-team")),
+            "Agent",
+            json!({"prompt": "x", "path": "y"}),
+        )
+        .await;
+    assert!(
+        !out.success || out.value.get("pending_approval").is_some(),
+        "{}",
+        out.display
+    );
+    assert_eq!(
+        gate.asked.lock().unwrap().len(),
+        2,
+        "{:?}",
+        gate.asked.lock().unwrap()
+    );
 }
 
 /// A gate that only classifies hot-memory sources (ADR-080 D4), and

@@ -1982,6 +1982,7 @@ mod tests {
                     cleanup: peko_session::types::SpawnCleanupPolicy::Keep,
                     depth: 1,
                     subagent_result: None,
+                    acting_for: None,
                 }),
             ));
 

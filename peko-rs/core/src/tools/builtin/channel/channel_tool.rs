@@ -606,6 +606,9 @@ impl Tool for ChannelTool {
                     .group_invite_link(&channel, &id, days)
                     .await
                     .map_err(|e| anyhow::anyhow!("Channel: link: {e}"))?;
+                if let Some(session) = ctx.session_id.as_deref() {
+                    super::invite_links::remember(session, &link);
+                }
                 let expires = chrono::DateTime::from_timestamp(expires, 0)
                     .map(|t| t.to_rfc3339())
                     .unwrap_or_default();

@@ -4,6 +4,61 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Changed
+
+- **Pekos in a group work with each other as they go (ADR-120).** A peko
+  could not call on another one in a group: "@kai can you review this?"
+  from juno waited for kai's keepalive, at least two minutes and at most
+  six times an hour. Now another peko's post wakes a peko right away when
+  it mentions it, adds a board item for it, or replies to one of its
+  posts, so an answer reaches the peko that asked without polling. To
+  keep pekos from waking each other forever, this holds while the group
+  has at most 24 peko posts since a person last posted there, and for at
+  most 60 such wakes per peko per group an hour; past either, posts wait
+  for the keepalive as before. A post that asks nothing of a peko still
+  only brings its keepalive forward.
+- **A peko can ask another for real work in a group (ADR-120 D5).** A
+  turn another peko's post starts acts for that peko, without a shell, and
+  could not hand anything to its owner, so "@otto can you run the tests?"
+  got "I can't". Now it writes a brief and hands it to its owner with
+  `Agent` `as_owner`, as your own request in a group can: you get "juno,
+  another peko, asked otto for something in “stats-team”", read the whole
+  brief, and approve or deny it. Approved, it runs as you, outside the
+  group, and its report goes back there. At most 3 such tasks wait for you
+  from one group at once.
+- **A post that reaches a busy peko in a group reaches its turn.** In a
+  DM, what you write while a peko works is taken into its running turn at
+  its next step; in a group it waited until the turn ended. Now a post
+  that would wake the peko is steered into the turn it is running when it
+  would get the same standing (in practice, a further post by whoever the
+  turn acts for). A post by someone else is shown to the running turn as
+  a note it must not act on, and then gets its own turn, acting for its
+  author, as before. A steered post the turn never took in gets its own
+  turn once the turn ends, with the reply threaded onto it.
+- **An invite link a peko gives you works.** A model retyping a group's
+  long invite link into its reply could garble it (seen with Claude Haiku:
+  the same bytes wrong twice in a row), and the person got a link that
+  does not work. The runtime now remembers the links a conversation's
+  session makes and sends its replies and `ChannelSend` posts with those
+  links as made. `peko send` prints the corrected link after the reply
+  when what streamed differed.
+- **A group turn that already posted its answer no longer posts again.**
+  A peko that sent its answer in a group with `ChannelSend` also had its
+  closing remark posted ("I've asked otto… it hasn't replied yet"), and a
+  group reply written while another of its sessions posted there was never
+  checked against those posts. The checks existed for DMs; group turns were
+  built without the channel they need.
+- **A task you approve after its peko dropped the work no longer runs.**
+  A peko that handed you a task for a board item, then dropped the item
+  to leave the work to another peko holding the same, still ran it once
+  you approved (live: two branches pushed for one fix). It now stands
+  down, and you are told its item is no longer on the board.
+- `ChannelRead` `watch` in a group no longer returns other pekos'
+  mentions of you or replies to your posts: those now start your turns.
+  The seeded `conversation` role says how to hand work to another peko
+  and not to wait for the answer; an unedited copy is updated on the next
+  start.
+
 ## [0.5.0] - 2026-11-23
 
 ### Added

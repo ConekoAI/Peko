@@ -312,6 +312,7 @@ async fn process_response_stream(
     let mut options: Vec<String> = Vec::new();
     // Questions asked with the answer (ADR-114), shown the same way.
     let mut asked: Option<peko_protocol::channel::Ask> = None;
+    let mut streamed = String::new();
     while let Some(packet) = next_or_stop(
         &mut stream,
         &ctrl_c_signal,
@@ -331,6 +332,7 @@ async fn process_response_stream(
                     std::io::stdout().flush()?;
                     has_started_line = true;
                 }
+                streamed.push_str(&content);
                 print!("{}", content);
                 std::io::stdout().flush()?;
             }
@@ -349,6 +351,13 @@ async fn process_response_stream(
                     print!("\n{}: {}", args.principal, content);
                     std::io::stdout().flush()?;
                     has_started_line = true;
+                } else {
+                    // The runtime may correct what streamed (an invite
+                    // link the model garbled): show the links as sent.
+                    for link in links_not_streamed(&content, &streamed) {
+                        print!("\n\nInvite link as sent: {link}");
+                        std::io::stdout().flush()?;
+                    }
                 }
             }
             // RunSummary is emitted by the daemon *before* `Done`.
@@ -553,6 +562,19 @@ async fn wait_for_queued_reply(
     }
 }
 
+/// The group invite links in `content` (the reply as sent) that the
+/// streamed text did not show as they are.
+fn links_not_streamed(content: &str, streamed: &str) -> Vec<String> {
+    content
+        .split_whitespace()
+        .map(|w| {
+            w.trim_matches(|c: char| matches!(c, '<' | '>' | '(' | ')' | '[' | ']' | '`' | '*'))
+        })
+        .filter(|w| w.contains("/g/") && w.contains("?invite=") && !streamed.contains(*w))
+        .map(str::to_string)
+        .collect()
+}
+
 /// Race `stream.next()` against a Ctrl-C signal. On the first Ctrl-C,
 /// sends a `PrincipalStop` for this send's (principal, peer) thread to
 /// the engine and continues reading the stream (the engine will
@@ -621,6 +643,20 @@ async fn resolve_message(args: &SendArgs) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_link_the_runtime_corrected_is_shown_as_sent() {
+        let sent = "Link for Noah: <http://h/g/12?invite=good.tok.sig> (7 days)";
+        assert_eq!(
+            super::links_not_streamed(
+                sent,
+                "Link for Noah: <http://h/g/12?invite=bad.tok.sig> (7 days)"
+            ),
+            vec!["http://h/g/12?invite=good.tok.sig".to_string()]
+        );
+        assert!(super::links_not_streamed(sent, sent).is_empty());
+        assert!(super::links_not_streamed("no link", "no link").is_empty());
+    }
+
     use crate::commands::{from_cli, Cli, Commands};
     use clap::Parser;
     use peko_channel::ChannelPort as _;

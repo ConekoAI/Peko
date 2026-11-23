@@ -660,10 +660,10 @@ impl Tool for ChannelSendTool {
     }
 
     fn description(&self) -> String {
-        r#"Post a message; every send returns at once. Posting never starts a run in another principal: it sees your message the next time it reads the channel. `to` picks where it goes (Contacts lists and resolves actors and channels):
+        r#"Post a message; every send returns at once. Outside a group, posting never starts a run in another principal: it sees your message the next time it reads the channel. `to` picks where it goes (Contacts lists and resolves actors and channels):
 - `principal:local:<id>` / `principal:hub:<id>`: on your DM channel with that principal (`dm_channel` in the result). Its answer, if any, is a post there: read it later with ChannelRead, or wait for it with ChannelRead `watch: true`.
 - `user:…` / `visitor:…` (local or hub): a note to that user's conversation. It shows in their next turn, and their answer arrives in their conversation with you.
-- `dm_<hash>` / `chan_<id>` / `group:<slug>`: a post to a channel you are a member of; `parent` threads it. In a group an `@<name>` mention does not wake a principal either; only users' mentions do.
+- `dm_<hash>` / `chan_<id>` / `group:<slug>`: a post to a channel you are a member of; `parent` threads it. In a group, a post that mentions a peko (`@<name>`) or replies to one of its posts reaches it: it starts its turn, or reaches the turn it is in. Its answer reaches you the same way, so don't watch for it.
 Each post carries your session path as `via`. To run work in your own principal's sessions, use Agent instead.
 
 Result: to a principal `{success, kind: "principal", id, dm_channel, delivery, note}`, where `delivery` is `delivered`, or `queued` until the target's runtime confirms it (it may be offline; the message is resent until it arrives); to a user `{success, kind: "user", response}`; to a channel `{success, id, channel}`, the `id` ChannelRead reports, usable as `parent`. A send that cannot go out (not a member, unknown channel or principal) is an error."#
@@ -726,6 +726,16 @@ Result: to a principal `{success, kind: "principal", id, dm_channel, delivery, n
         params: serde_json::Value,
         ctx: &peko_tools_core::exec::ToolContext,
     ) -> anyhow::Result<serde_json::Value> {
+        // An invite link the model retyped goes out as the one this
+        // session made (`invite_links`).
+        let mut params = params;
+        if let (Some(session), Some(text)) = (
+            ctx.session_id.as_deref(),
+            params.get("text").and_then(|v| v.as_str()),
+        ) {
+            let repaired = super::invite_links::repair(session, text);
+            params["text"] = serde_json::Value::String(repaired);
+        }
         // Parse + validate arguments.
         anyhow::ensure!(
             params.get("channel").is_none(),
