@@ -297,7 +297,7 @@ jsonwebtoken = { version = "10.3", features = ["rust_crypto"] }
 jsonschema = { version = "0.48", default-features = false }
 html2text = "0.17"
 # ADR-119: unpacking the Chrome for Testing archive.
-zip = { version = "2.4", default-features = false, features = ["deflate"] }
+zip = { version = "9.0", default-features = false, features = ["deflate"] }
 encoding_rs = "0.8"
 
 # ADR-058 D6: per-message peer-uid check (SO_PASSCRED + SCM_CREDENTIALS)
