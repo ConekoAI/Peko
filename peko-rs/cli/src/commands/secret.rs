@@ -101,10 +101,13 @@ pub async fn handle_secret(
                     );
                     return Ok(());
                 }
-                if secrets.is_empty() {
-                    println!("{peko} has no secrets.");
-                } else {
+                if !secrets.is_empty() {
                     println!("{peko}'s secrets: {}", secrets.join(", "));
+                } else if waiting.is_empty() {
+                    println!("{peko} has no secrets.");
+                }
+                if !waiting.is_empty() {
+                    println!("{peko} is waiting for:");
                 }
                 for request in &waiting {
                     println!(
