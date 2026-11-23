@@ -264,6 +264,9 @@ impl AppState {
                 Ok(json!({ "moved": moved == peko_channel::PersonMarkMove::Moved }))
             }
             "approvals" => self.verb_approvals().await,
+            "secrets" => self.verb_secrets().await,
+            "secret_provide" => self.verb_secret_answer(device, args, true).await,
+            "secret_decline" => self.verb_secret_answer(device, args, false).await,
             "approval_decide" => self.verb_approval_decide(device, args).await,
             "stop" => self.verb_stop(args).await,
             "board" => {
@@ -1005,6 +1008,92 @@ impl AppState {
         )
         .await
         .map_err(|e| format!("{e}"))?;
+        Ok(json!({ "message": message }))
+    }
+
+    /// This engine's secret desk (ADR-116): its own vault and principals.
+    fn secret_desk(&self) -> crate::principal::secret_requests::SecretDesk {
+        crate::principal::secret_requests::SecretDesk::new(
+            Arc::clone(&self.vault),
+            self.principal_manager.shared_inbox_registry(),
+            Arc::downgrade(&self.principal_manager),
+        )
+    }
+
+    /// ADR-116 D7 (amended): the secret requests the person's pekos on
+    /// this computer have waiting, names only.
+    async fn verb_secrets(&self) -> Result<Value, String> {
+        use crate::principal::secret_requests::{waiting, Target};
+        let mut rows = Vec::new();
+        for (name, principal) in self.owned_pekos().await {
+            // The address a DM names this peko by (`conversations`).
+            let address = self
+                .channel_port
+                .actor_info(&ActorRef::from(&principal.id))
+                .await
+                .address;
+            for r in waiting(&principal) {
+                rows.push(json!({
+                    "peko": name,
+                    "address": address,
+                    "id": r.id,
+                    "secret": r.target.label(),
+                    "kind": match r.target { Target::Peko { .. } => "peko", Target::Mcp { .. } => "mcp" },
+                    "why": r.why,
+                    "created_at": r.created_at.to_rfc3339(),
+                    "expires_at": r.expires_at.to_rfc3339(),
+                }));
+            }
+        }
+        Ok(json!({ "secrets": rows }))
+    }
+
+    /// ADR-116 D7 (amended): the person gives (`provide`) or declines a
+    /// secret from their phone. The request arrived sealed to this
+    /// computer (ADR-110), and the value goes to the vault and nowhere
+    /// else: not the audit, not the answer.
+    async fn verb_secret_answer(
+        &self,
+        device: &DeviceRecord,
+        args: &Value,
+        provide: bool,
+    ) -> Result<Value, String> {
+        use crate::principal::secret_requests::{decline, provide as give};
+        let name = arg_str(args, "peko")?;
+        let id = arg_str(args, "id")?;
+        let (_, principal) = self
+            .owned_pekos()
+            .await
+            .into_iter()
+            .find(|(owned, _)| owned == name)
+            .ok_or("[forbidden] Only the peko's owner gives it secrets.")?;
+        let desk = self.secret_desk();
+        let message = if provide {
+            let value = arg_str(args, "value")?;
+            give(
+                &desk,
+                &principal,
+                id,
+                secrecy::SecretString::from(value.to_string()),
+            )
+            .await
+        } else {
+            decline(&desk, &principal, id).await
+        }
+        .map_err(|e| format!("[bad_request] {e}"))?;
+        let _ = self
+            .observability
+            .audit_security(
+                "secret.owner_answer",
+                None,
+                json!({
+                    "peko": name,
+                    "request_id": id,
+                    "via_device": device.device_id,
+                    "decision": if provide { "provide" } else { "decline" },
+                }),
+            )
+            .await;
         Ok(json!({ "message": message }))
     }
 
@@ -2520,6 +2609,142 @@ mod tests {
     /// The phone lists the requests waiting for the person on this
     /// computer and decides one: the owner's own action, audited with the
     /// device it came from.
+    #[tokio::test]
+    async fn a_phone_gives_a_secret_its_peko_asked_for() {
+        use crate::principal::config::{
+            PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig,
+            PrincipalIntentConfig, PrincipalRoutingConfig,
+        };
+        use crate::principal::secret_requests::{self, Target};
+
+        let mut rig = Rig::new().await;
+        let roles = rig
+            .app
+            .config
+            .data_dir
+            .join("pekos")
+            .join("mochi")
+            .join("roles");
+        tokio::fs::create_dir_all(&roles).await.unwrap();
+        tokio::fs::write(
+            roles.join("primary.md"),
+            "---\ndescription: \"Test\"\n---\n\nYou are mochi.\n",
+        )
+        .await
+        .unwrap();
+        let peko = rig
+            .app
+            .principal_manager()
+            .create(PrincipalConfig {
+                actor_key: None,
+                name: "mochi".into(),
+                id: None,
+                did: None,
+                owner: me(),
+                identity: PrincipalIdentityConfig {
+                    display_name: Some("mochi".into()),
+                    description: None,
+                    avatar: None,
+                },
+                intent: PrincipalIntentConfig::default(),
+                governance: PrincipalGovernanceConfig::default(),
+                routing: PrincipalRoutingConfig::default(),
+                exposure: peko_auth::Exposure::LocalOnly,
+                status: None,
+                boot_state: None,
+                permissions: Vec::new(),
+                preferred_model_id: None,
+                quota: None,
+                children: Default::default(),
+            })
+            .await
+            .unwrap();
+        let record = secret_requests::request(
+            &peko,
+            Target::parse("GITHUB_TOKEN", None).unwrap(),
+            "to open pull requests",
+            Some("sess-asker".into()),
+        )
+        .await
+        .unwrap();
+
+        let listed = rig.ask("secrets", json!({})).await.unwrap();
+        let waiting = listed["secrets"].as_array().unwrap();
+        assert_eq!(waiting.len(), 1);
+        assert_eq!(waiting[0]["peko"], "mochi");
+        assert_eq!(waiting[0]["id"], record.id.as_str());
+        assert_eq!(waiting[0]["secret"], "GITHUB_TOKEN");
+        let address = rig
+            .app
+            .channel_port
+            .actor_info(&ActorRef::from(&peko.id))
+            .await
+            .address;
+        assert_eq!(waiting[0]["address"], address.as_str());
+
+        let refused = rig
+            .ask(
+                "secret_provide",
+                json!({ "peko": "someone-elses", "id": record.id, "value": "ghp_phone_value_1" }),
+            )
+            .await
+            .unwrap_err();
+        assert!(refused.starts_with("[forbidden]"), "{refused}");
+        let given = rig
+            .ask(
+                "secret_provide",
+                json!({ "peko": "mochi", "id": record.id, "value": "ghp_phone_value_1" }),
+            )
+            .await
+            .unwrap();
+        assert!(
+            given["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("Saved GITHUB_TOKEN"),
+            "{given}"
+        );
+        assert!(!given.to_string().contains("ghp_phone_value_1"));
+        let stored = rig
+            .app
+            .secret_desk()
+            .peko_secret(&peko.id.0, "GITHUB_TOKEN")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            secrecy::ExposeSecret::expose_secret(&stored),
+            "ghp_phone_value_1"
+        );
+        assert!(rig.ask("secrets", json!({})).await.unwrap()["secrets"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+
+        // Declined from the phone too.
+        let second = secret_requests::request(
+            &peko,
+            Target::parse("FLY_API_TOKEN", None).unwrap(),
+            "to deploy",
+            None,
+        )
+        .await
+        .unwrap();
+        let declined = rig
+            .ask(
+                "secret_decline",
+                json!({ "peko": "mochi", "id": second.id }),
+            )
+            .await
+            .unwrap();
+        assert!(
+            declined["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("Declined"),
+            "{declined}"
+        );
+    }
+
     #[tokio::test]
     async fn a_phone_decides_an_approval_request_as_the_owner() {
         use crate::principal::config::{

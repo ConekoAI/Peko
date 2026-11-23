@@ -6,6 +6,11 @@ All notable changes to Peko.
 
 ### Added
 
+- **Give a peko a secret from your phone (ADR-108 D11).** New device verbs
+  `secrets`, `secret_provide { peko, id, value }` and `secret_decline`
+  list and answer the secret requests (ADR-116) of the pekos you own on
+  that computer. The request is sealed to the computer (ADR-110); the
+  value goes to the vault and is in no answer and no audit record.
 - **A peko can answer with a page (ADR-118).** An `.html` file it sends
   with `Attach` shows in the conversation as a page in Peko Desktop: a
   chart, a table, a timeline or a mockup, its scripts running in a sandbox
