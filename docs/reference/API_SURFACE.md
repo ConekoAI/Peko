@@ -157,7 +157,7 @@ items `code` and `pinned_code`. CLI: `peko code [<who>]`.
 A phone's own requests never use IPC. They arrive as `tunnel_device_request`
 and are carried out by the verb table in `daemon/state/devices.rs`:
 `conversations`, `read`, `post`, `mark_read`, `approvals`,
-`approval_decide`, `stop`, `board`, `watch`, `unwatch`, `unpair`.
+`approval_decide`, `secrets`, `secret_provide`, `secret_decline`, `stop`, `board`, `watch`, `unwatch`, `unpair`.
 `tunnel::devices::DeviceGate` decides whether a device message is believed;
 `TunnelHost::device_message` is the dispatcher's way in.
 `peko_channel::ChannelStore` gains `mark_person_read`, `person_read`,
