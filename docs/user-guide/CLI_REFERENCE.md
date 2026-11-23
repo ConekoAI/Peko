@@ -1,6 +1,6 @@
 # Peko CLI Reference
 
-Generated from the CLI's own `--help` output by `scripts/gen_cli_reference.py` (peko 0.4.2). Regenerate it after changing any command; `peko <command> --help` shows the same text.
+Generated from the CLI's own `--help` output by `scripts/gen_cli_reference.py` (peko 0.5.0). Regenerate it after changing any command; `peko <command> --help` shows the same text.
 
 ## `peko`
 
@@ -41,6 +41,7 @@ Commands:
   model          LLM model management (runtime model catalog)
   device         Your account's computers and phones
   secret         Secrets your pekos asked you for
+  browser        The browser your pekos use
   undo           Undo what a peko's turn changed in your files
   code           An identity's code, to read to its owner
   quota          How many tokens and requests a peko may use
@@ -1384,6 +1385,60 @@ Usage: peko secret delete [OPTIONS] <PEKO> <NAME>
 Arguments:
   <PEKO>  The peko
   <NAME>  The secret's name
+
+```
+
+## `peko browser`
+
+```text
+The browser your pekos use
+
+Each peko has a browser of its own for pages that need one. You step into it (to sign in, or pass a check) in the Peko app.
+
+Examples: peko browser status peko browser status mochi peko browser install peko browser stop mochi
+
+Usage: peko browser [OPTIONS] <COMMAND>
+
+Commands:
+  status   Show which browser Peko uses, or a peko's open tabs
+  install  Download a browser for your pekos (about 190 MB, from Google)
+  stop     Stop a peko's browser (it starts again when the peko next uses it)
+  help     Print this message or the help of the given subcommand(s)
+
+```
+
+### `peko browser status`
+
+```text
+Show which browser Peko uses, or a peko's open tabs
+
+Usage: peko browser status [OPTIONS] [PEKO]
+
+Arguments:
+  [PEKO]  A peko, to list its tabs and who has control
+
+```
+
+### `peko browser install`
+
+```text
+Download a browser for your pekos (about 190 MB, from Google)
+
+Only needed when this computer has no Chrome, Edge, Brave or Chromium.
+
+Usage: peko browser install [OPTIONS]
+
+```
+
+### `peko browser stop`
+
+```text
+Stop a peko's browser (it starts again when the peko next uses it)
+
+Usage: peko browser stop [OPTIONS] <PEKO>
+
+Arguments:
+  <PEKO>  The peko
 
 ```
 

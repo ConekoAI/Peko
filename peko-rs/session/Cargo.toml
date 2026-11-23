@@ -1,6 +1,6 @@
 [package]
 name = "peko-session"
-version = "0.4.2"
+version = "0.5.0"
 edition = "2021"
 authors = ["Peko <peko@peko.ai>"]
 description = "Session JSONL persistence, ownership, inbox contracts, and compaction storage"
