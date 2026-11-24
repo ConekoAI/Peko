@@ -864,6 +864,11 @@ http_hosts = ["peko:11436"]      # Required when `http` is not a loopback
 # Never store keys in this file. A ChatGPT plan sign-in
 # (`peko credential login chatgpt`, ADR-115) is one such credential too.
 
+# ── The owner's computer (ADR-123) ─────────────────────────────────────────
+
+[computer]
+enabled = true                   # Optional. false: no peko gets `Computer`.
+
 # Tooling is supplied by workspace files; no capability installation settings.
 
 # ── Principal workspace ──────────────────────────────────────────────────────
@@ -1017,6 +1022,47 @@ list (ADR-111):
   principalDid, ok, body, signature}`: `body` is JSON text when `ok`, else
   the reason; the signature covers `PekoBrowserPayload {v:
   "peko-peko-browser/1", …, ok, body_digest, iat, exp}`.
+
+### 3.1e A peko using the computer (ADR-123)
+
+`runtime.toml`:
+
+```toml
+[computer]
+enabled = true   # false: no peko on this computer gets `Computer`.
+                 # Read on every run; on by default.
+```
+
+On disk: `<local>/computer/screenshots/<id>.jpg`, the newest 50 pictures
+`Computer` took for the model (mode 0600), in no snapshot. Frames, the hand
+on the screen, a pause and the secrets a peko typed are kept in memory only;
+they end with the engine.
+
+IPC, local callers only, each answered with `computer_result {body}`
+(all `internal`):
+
+- `computer_state {}` → `{system, available, unavailable?, enabled,
+  permissions: {screen_recording?, accessibility?, responsible_app?},
+  using: {principal_id, peko, session_id, action, at}?, paused:
+  {principal_id, peko, session_id, since}?, watching_owner_input?,
+  watch_error?}`. `using` is set while a peko acted in the last 30 seconds
+  (or is paused); `action` names what it did, never text it typed
+  (`typing 12 characters in Peko`). Peko Desktop asks about once a second
+  for its indicator.
+- `computer_resume {}` → the same, plus `resumed`: lifts the pause and
+  pushes a completion (`tool_name: "Computer"`, `task_id: "computer:<id>"`,
+  result `{status: "continue", note}`) into the paused session, waking it.
+- `computer_stop {}` → the same, plus `stopped: {peko, principal_id,
+  session_id, run_cancelled}?`: the run using the screen is refused from
+  then on (10 minutes) and its streaming run, if any, is cancelled.
+- `computer_setup {}` → the same, plus `opened` (macOS: the grants it asked
+  for and the System Settings panes it opened).
+
+The audit records the owner's hand (`computer.owner_input`, Security:
+`{change: "paused" | "continued" | "continued_by_message", session_id}`) and
+Stop (`computer.stop`, `{session_id}`). The ledger's `params` for
+`Computer` `type` keep `"text": "[N characters]"`, never the text, and a
+typed secret as `"secret_name": "NAME"`.
 
 ### 3.1c Turn changes (ADR-117)
 

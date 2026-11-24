@@ -224,9 +224,32 @@ pub fn start_record(start: &Start<'_>, redactor: &Redactor) -> Map<String, Value
     record.insert("tool".into(), json!(spec.tool_name));
     insert_some(&mut record, "action", start.action);
     insert_some(&mut record, "source", start.source);
-    record.insert("params".into(), redactor.params(&spec.params));
+    record.insert(
+        "params".into(),
+        redactor.params(&ledger_params(&spec.tool_name, &spec.params)),
+    );
     record.insert("params_digest".into(), json!(start.params_digest));
     record
+}
+
+/// What of a call's params the ledger keeps. Everything, redacted, except
+/// the text `Computer` types (ADR-123 D6): its length only. A secret it
+/// types is kept by name, as `secret_name` (a key called `secret` would be
+/// redacted whole); its value is in no parameter.
+#[must_use]
+pub fn ledger_params(tool_name: &str, params: &Value) -> Value {
+    if tool_name != crate::computer::COMPUTER_TOOL_NAME {
+        return params.clone();
+    }
+    let mut kept = params.clone();
+    if let Some(text) = params.get("text").and_then(Value::as_str) {
+        kept["text"] = json!(format!("[{} characters]", text.chars().count()));
+    }
+    if let (Some(name), Some(map)) = (params.get("secret").cloned(), kept.as_object_mut()) {
+        map.remove("secret");
+        map.insert("secret_name".into(), name);
+    }
+    kept
 }
 
 /// Facts an `end` record carries.
@@ -381,5 +404,27 @@ mod tests {
         assert_eq!(detached_task_id(&receipt).as_deref(), Some("Bash:1"));
         let spawned = json!({ "_async_status": "queued", "task_id": "Bash:1" });
         assert_eq!(detached_task_id(&spawned), None);
+    }
+}
+
+#[cfg(test)]
+mod computer_params_tests {
+    use super::*;
+
+    #[test]
+    fn the_ledger_never_keeps_what_computer_types() {
+        let params = json!({"action": "type", "text": "héllo world", "window": 7});
+        let kept = ledger_params("Computer", &params);
+        assert_eq!(kept["text"], "[11 characters]");
+        assert_eq!(kept["window"], 7);
+        let secret = json!({"action": "type", "secret": "GITHUB", "window": 7});
+        let kept = ledger_params("Computer", &secret);
+        assert_eq!(kept["secret_name"], "GITHUB");
+        assert!(kept.get("secret").is_none());
+        // The name survives redaction.
+        let redacted = redact::Redactor::default().params(&kept);
+        assert_eq!(redacted["secret_name"], "GITHUB");
+        let other = json!({"text": "kept"});
+        assert_eq!(ledger_params("Write", &other), other);
     }
 }

@@ -5,6 +5,7 @@ pub mod bash;
 pub mod browser;
 pub mod changes;
 pub mod channel;
+pub mod computer;
 pub mod fetch;
 pub mod fs;
 pub mod messaging;
@@ -33,6 +34,7 @@ pub use bash::BashTool;
 pub use browser::BrowserTool;
 pub use changes::ChangesTool;
 pub use channel::{AskTool, AttachTool, ChannelReadTool, ChannelSendTool, SuggestTool};
+pub use computer::ComputerTool;
 pub use fetch::{FetchTool, FETCH_TOOL_NAME};
 pub use fs::{EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
 pub use messaging::{

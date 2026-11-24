@@ -355,6 +355,13 @@ impl ToolCatalog {
         stamp: &peko_tools_core::ActingFor,
         reach: Option<&crate::security::access::Reach>,
     ) -> peko_engine::tooling::ToolCatalogSnapshot {
+        // ADR-123 D5: `Computer` is offered nowhere while the runtime
+        // config turns it off.
+        if !crate::computer::listed() {
+            snapshot
+                .definitions
+                .retain(|definition| definition.name != crate::computer::COMPUTER_TOOL_NAME);
+        }
         if stamp.is_owner() {
             return snapshot;
         }

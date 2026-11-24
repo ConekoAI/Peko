@@ -303,7 +303,7 @@ mod tests {
         let layered = WorkspaceSkillRuntime::with_bundled(tmp.path().to_path_buf());
         assert_eq!(
             layered.list_skills(),
-            vec!["coding-agents", "docker", "triage"]
+            vec!["coding-agents", "computer-use", "docker", "triage"]
         );
         let entry = layered.resolve_skill("coding-agents").unwrap();
         assert!(matches!(entry.source, SkillSource::Bundled(_)));
@@ -312,7 +312,10 @@ mod tests {
 
         // A missing workspace still lists the bundled skills.
         let empty = WorkspaceSkillRuntime::with_bundled(PathBuf::from("/no/such/path/here"));
-        assert_eq!(empty.list_skills(), vec!["coding-agents", "triage"]);
+        assert_eq!(
+            empty.list_skills(),
+            vec!["coding-agents", "computer-use", "triage"]
+        );
     }
 
     #[test]
@@ -320,7 +323,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         make_skill(tmp.path(), "coding-agents", "Owner's own version");
         let rt = WorkspaceSkillRuntime::with_bundled(tmp.path().to_path_buf());
-        assert_eq!(rt.list_skills(), vec!["coding-agents", "triage"]);
+        assert_eq!(
+            rt.list_skills(),
+            vec!["coding-agents", "computer-use", "triage"]
+        );
         let entry = rt.resolve_skill("coding-agents").unwrap();
         assert!(matches!(entry.source, SkillSource::File(_)));
         assert!(entry.read().unwrap().contains("Owner's own version"));

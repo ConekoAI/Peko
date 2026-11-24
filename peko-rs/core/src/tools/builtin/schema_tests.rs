@@ -67,6 +67,7 @@ fn parallel_safety_matches_each_tools_side_effects() {
         ("Fetch", true),
         ("Secret", false),
         ("Browser", false),
+        ("Computer", false),
         ("Changes", false),
     ]
     .into_iter()
@@ -91,7 +92,7 @@ fn inventory_matches_implementations_and_schemas_compile() {
         .into_iter()
         .collect();
     assert_eq!(actual, declared);
-    assert_eq!(actual.len(), 30);
+    assert_eq!(actual.len(), 31);
     for retired in [
         "TaskCreate",
         "TaskGet",

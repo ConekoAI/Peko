@@ -291,6 +291,10 @@ impl RequestHandler for PrincipalHandler {
                 | RequestPacket::SecretDecline { .. }
                 | RequestPacket::SecretDelete { .. }
                 | RequestPacket::Browser { .. }
+                | RequestPacket::ComputerState { .. }
+                | RequestPacket::ComputerResume { .. }
+                | RequestPacket::ComputerStop { .. }
+                | RequestPacket::ComputerSetup { .. }
                 | RequestPacket::TurnChanges { .. }
                 | RequestPacket::TurnUndo { .. }
                 | RequestPacket::PrincipalLog { .. }
@@ -520,6 +524,23 @@ impl RequestHandler for PrincipalHandler {
                             message,
                         },
                         |body| ResponsePacket::BrowserResult { request_id, body },
+                    );
+                send_response(sink, response).await?;
+            }
+
+            request @ (RequestPacket::ComputerState { .. }
+            | RequestPacket::ComputerResume { .. }
+            | RequestPacket::ComputerStop { .. }
+            | RequestPacket::ComputerSetup { .. }) => {
+                let request_id = request.request_id();
+                let response = handle_computer_request(host, &request, caller)
+                    .await
+                    .map_or_else(
+                        |message| ResponsePacket::Error {
+                            request_id,
+                            message,
+                        },
+                        |body| ResponsePacket::ComputerResult { request_id, body },
                     );
                 send_response(sink, response).await?;
             }
@@ -2233,6 +2254,62 @@ async fn handle_browser_request(
         if let Some(body) = body.as_object_mut() {
             body.remove("data");
         }
+    }
+    Ok(body)
+}
+
+/// `computer_*` (ADR-123 D5): the owner's hand on the computer a peko
+/// uses — what is happening, **Let it continue**, **Stop**, and the
+/// system's grants.
+async fn handle_computer_request(
+    host: &dyn PrincipalHost,
+    request: &RequestPacket,
+    caller: &CallerContext,
+) -> Result<serde_json::Value, String> {
+    if !caller.is_local() {
+        return Err("[permission_denied] local callers only".into());
+    }
+    let desk = crate::computer::computer_desk()
+        .ok_or_else(|| "[unavailable] Computer is not available in this runtime".to_string())?;
+    let mut body = desk.status();
+    match request {
+        RequestPacket::ComputerResume { .. } => {
+            let resumed = desk.resume().await;
+            body = desk.status();
+            body["resumed"] = serde_json::json!(resumed.is_some());
+        }
+        RequestPacket::ComputerStop { .. } => {
+            let stopped = desk.stop();
+            let mut cancelled = false;
+            if let Some(session) = stopped.as_ref().and_then(|s| s.session_id.clone()) {
+                let cancel = {
+                    let runs_registry = host.streaming_runs();
+                    let runs = runs_registry.lock().unwrap_or_else(|e| e.into_inner());
+                    runs.get(&session).map(|h| h.cancel.clone())
+                };
+                if let Some(cancel) = cancel {
+                    cancel.cancel();
+                    cancelled = true;
+                }
+            }
+            body = desk.status();
+            body["stopped"] = serde_json::json!(stopped.map(|s| serde_json::json!({
+                "peko": s.peko,
+                "principal_id": s.principal_id,
+                "session_id": s.session_id,
+                "run_cancelled": cancelled,
+            })));
+        }
+        RequestPacket::ComputerSetup { .. } => {
+            let platform = std::sync::Arc::clone(desk.platform());
+            let opened = tokio::task::spawn_blocking(move || platform.request_permissions())
+                .await
+                .map_err(|e| format!("[internal] {e}"))?
+                .map_err(|e| format!("[unavailable] {e:#}"))?;
+            body = desk.status();
+            body["opened"] = serde_json::json!(opened);
+        }
+        _ => {}
     }
     Ok(body)
 }

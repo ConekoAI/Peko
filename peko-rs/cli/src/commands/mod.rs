@@ -18,6 +18,7 @@ pub mod credential;
 // 2026-08-25: `peko cron` retired. The cron module was deleted;
 // principals manage schedules through the `tool:Cron*` grants.
 pub mod browser;
+pub mod computer;
 pub mod daemon;
 pub mod device;
 pub mod log;
@@ -206,6 +207,20 @@ pub enum Commands {
     ///   peko browser stop mochi
     #[command(subcommand)]
     Browser(browser::BrowserCommands),
+
+    /// Your pekos using this computer: its screen, mouse and keyboard
+    ///
+    /// A peko can see the screen and click and type in apps for you. On
+    /// macOS it needs Screen Recording and Accessibility; moving the mouse
+    /// or typing pauses it.
+    ///
+    /// Examples:
+    ///   peko computer status
+    ///   peko computer setup
+    ///   peko computer continue
+    ///   peko computer stop
+    #[command(subcommand)]
+    Computer(computer::ComputerCommands),
 
     /// Undo what a peko's turn changed in your files
     ///

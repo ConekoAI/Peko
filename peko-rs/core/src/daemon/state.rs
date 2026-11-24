@@ -891,6 +891,15 @@ impl AppState {
             Arc::downgrade(&principal_manager),
             Arc::clone(&observability),
         );
+        // ADR-123: the owner's computer, shared by every peko here; the
+        // owner's hand pauses it, and **Let it continue** wakes the
+        // session that was paused.
+        crate::computer::install_computer_desk(
+            config_dir.clone(),
+            Arc::clone(&inbox_registry),
+            Arc::downgrade(&principal_manager),
+            Arc::clone(&observability),
+        );
 
         // ADR-034: Initialize auth components
         let auth_config = peko_auth::config::AuthConfig::load(&path_resolver)?;

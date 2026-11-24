@@ -206,6 +206,7 @@ pub(crate) fn builtin_tools(backends: &Backends, fakes: &Fakes) -> Vec<Arc<dyn T
         Arc::new(FetchTool::new()),
         Arc::new(crate::tools::builtin::SecretTool::new()),
         Arc::new(crate::tools::builtin::BrowserTool::new()),
+        Arc::new(crate::tools::builtin::ComputerTool::new()),
         Arc::new(channel::contacts::ContactsTool::new(
             backends.channels.clone(),
             Weak::new(),
@@ -613,6 +614,13 @@ mod tests {
             // Checked before a browser is looked for (its pages are
             // covered in `browser::tests`, against a real browser).
             ("Browser", json!({"action":"open"}), "needs `url`"),
+            // Checked before the screen is touched (the desk's guards are
+            // covered in `computer::tests`, against a fake computer).
+            (
+                "Computer",
+                json!({"action":"click", "frame": 1, "x": 1, "y": 1}),
+                "needs `window`",
+            ),
         ];
 
         let mut covered = BTreeSet::new();
