@@ -12,6 +12,27 @@ This document defines the public API surface for Peko, including the new Unified
 
 ---
 
+## The HTTP door (ADR-121)
+
+- `peko_core::ipc::http`: `DoorConfig::from_config` (the startup
+  refusals of D4) and the listener behind `[network] http`; `HttpSink`, a
+  `ResponseSink` that writes to the HTTP answer. Routes and wire shapes:
+  `docs/reference/DATA_MODEL.md` §13⅞.
+- `peko_core::ipc::uploads`: `Uploads` (`accept`, `sweep`), `resolve`,
+  `remove`, `clear`, `in_attachments`; `upload:<id>` in
+  `RequestPacket::{PrincipalSend, PrincipalSendStream}::attachments`.
+- `peko_core::ipc::stability`: `Stability`, `REQUESTS`, `RESPONSES`,
+  `of_request`, `of_response`.
+- `peko_core::common::types::config::NetworkConfig` is now `{ http,
+  http_hosts }`; the never-read `port`, `tls_*`, `cors_origins`,
+  `request_timeout_seconds`, `max_body_size_mb` are deleted.
+- `peko_auth::types::ApiKeyScope::Owner`;
+  `CallerContext::{is_terminal, is_owner_key, api_key_id}`.
+  `CallerContext::is_local` is now true for an `owner` key too; key
+  management checks `is_terminal`. `AuthConfigFile` and
+  `RateLimitConfigFile` fields default. `ApiKeyStore` re-reads
+  `api_keys.toml` when it changes.
+
 ## Turn changes and undo (ADR-117)
 
 - `peko_tools_core::FileChangeSink` (`before`, `after`) and
