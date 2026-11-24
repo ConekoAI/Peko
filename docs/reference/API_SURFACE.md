@@ -23,6 +23,16 @@ This document defines the public API surface for Peko, including the new Unified
   `RequestPacket::{PrincipalSend, PrincipalSendStream}::attachments`.
 - `peko_core::ipc::stability`: `Stability`, `REQUESTS`, `RESPONSES`,
   `of_request`, `of_response`.
+- `peko_core::ipc::schema`: `SCHEMA_JSON` (the checked-in
+  `docs/reference/ipc-schema.json`, built in; served at `GET /v1/schema`);
+  with `--features schema`, `generate` / `generate_text`. The `schema`
+  feature of `peko` (and of `peko-auth`, `peko-channel`,
+  `peko-observability`, `peko-protocol`, `peko-provider-api`, `peko-quota`,
+  `peko-subject`) derives `schemars::JsonSchema` for the wire types; off by
+  default. `peko_subject::Route`'s schema is hand-written (a string).
+  Regenerate with `PEKO_WRITE_IPC_SCHEMA=1 cargo test -p peko --lib
+  --features schema ipc::schema`; without the variable that test fails on a
+  stale file (CI runs it in `unit-linux`).
 - `peko_core::common::types::config::NetworkConfig` is now `{ http,
   http_hosts }`; the never-read `port`, `tls_*`, `cors_origins`,
   `request_timeout_seconds`, `max_body_size_mb` are deleted.

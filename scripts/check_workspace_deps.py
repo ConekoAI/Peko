@@ -33,6 +33,15 @@ PR descriptions):
     (pure value/type layers).
   - ``peko-quota`` MAY depend only on ``peko-message``.
 
+External-dependency rules (ADR-121 D6):
+
+  - ``peko-protocol``'s ``[dependencies]`` are ``serde``, ``serde_json``
+    and, optionally, ``schemars`` — nothing else.
+  - In every crate (the leaf crates and ``peko-protocol`` included),
+    ``schemars`` is an optional ``[dependencies]`` entry, turned on only
+    by a feature named ``schema``, never by ``default``, and never a dev-
+    or build-dependency. The default build does not pull it in.
+
 ADR-066 P6 removes the 12 rules touching the retired extension-api crate;
 all 69 rules protecting live crates remain.
 
@@ -641,6 +650,51 @@ def discover_workspace_members(repo_root: Path) -> List[Tuple[str, Path]]:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# External-dependency rules (ADR-121 D6)
+# ---------------------------------------------------------------------------
+
+#: What ``peko-protocol`` may depend on: the wire-only contract.
+PROTOCOL_EXTERNAL_DEPS = {"serde", "serde_json", "schemars"}
+
+
+def _feature_lines(text: str) -> List[Tuple[str, str]]:
+    """``[(feature, raw_value)]`` of a Cargo.toml's ``[features]``."""
+    return _extract_section(text, "features")
+
+
+def check_external_deps(members: List[Tuple[str, Path]]) -> List[str]:
+    """Return one message per violated external-dependency rule."""
+    problems: List[str] = []
+    for crate_name, cargo_path in members:
+        text = cargo_path.read_text(encoding="utf-8")
+        deps = dict(_extract_section(text, "dependencies"))
+        if crate_name == "peko-protocol":
+            extra = sorted(set(deps) - PROTOCOL_EXTERNAL_DEPS - {n for n in deps if _is_peko_dep(n)})
+            if extra:
+                problems.append(
+                    f"peko-protocol depends on {', '.join(extra)}: it is serde + serde_json "
+                    "(+ optional schemars) only"
+                )
+        for section in ("dev-dependencies", "build-dependencies"):
+            if any(name == "schemars" for name, _ in _extract_section(text, section)):
+                problems.append(f"{crate_name}: schemars must not be a {section[:-6]}y")
+        features = _feature_lines(text)
+        if "schemars" in deps:
+            if not re.search(r"optional\s*=\s*true", deps["schemars"]):
+                problems.append(f"{crate_name}: schemars must be optional (behind `schema`)")
+            gated = [f for f, value in features if "dep:schemars" in value]
+            if gated != ["schema"]:
+                problems.append(
+                    f"{crate_name}: schemars must be turned on by the `schema` feature only "
+                    f"(found it in: {', '.join(gated) or 'no feature'})"
+                )
+        for feature, value in features:
+            if feature == "default" and re.search(r"\bschema\b|schemars", value):
+                problems.append(f"{crate_name}: the default build must not enable schema")
+    return problems
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     parser.add_argument(
@@ -711,10 +765,20 @@ def main() -> int:
         )
         return 1
 
+    external = check_external_deps(members)
+    if external:
+        print("=" * 60)
+        print(f"FAIL: {len(external)} external-dependency rule(s) broken (ADR-121 D6)")
+        print("=" * 60)
+        for problem in external:
+            print(f"  {problem}")
+        return 1
+
     total_edges = sum(len(d) for d in edges.values())
     print(
         f"OK: {len(members)} workspace members, {total_edges} peko-* edge(s), "
-        f"{len(FORBIDDEN_EDGES)} forbidden-edge rule(s) all clean."
+        f"{len(FORBIDDEN_EDGES)} forbidden-edge rule(s) all clean; "
+        "schemars optional behind `schema` everywhere."
     )
     return 0
 

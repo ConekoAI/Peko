@@ -8,6 +8,8 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/ConekoAI/Peko"
 
 [dependencies]
+# ADR-121 D6: the IPC JSON Schema, only with `--features schema`.
+schemars = { version = "1", optional = true, features = ["chrono04"] }
 peko-subject = { path = "../subject" }
 
 # Crypto / JWT
@@ -38,3 +40,7 @@ tracing = "0.1"
 tempfile = "3.10"
 tokio = { version = "1.35", features = ["macros", "rt-multi-thread"] }
 rsa = "0.9"
+
+[features]
+# ADR-121 D6: derive JSON Schemas for the IPC wire types.
+schema = ["dep:schemars", "peko-subject/schema"]

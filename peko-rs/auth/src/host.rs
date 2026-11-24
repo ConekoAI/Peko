@@ -79,6 +79,7 @@ pub trait RuntimePaths: Send + Sync + 'static {
 /// Registration visibility: local-only, registered private, or registered public.
 /// Hub identity assignment is recorded separately in the runtime actor registry.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Exposure {
     Private,

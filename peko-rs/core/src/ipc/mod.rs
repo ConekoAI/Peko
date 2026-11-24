@@ -33,6 +33,7 @@ pub mod packet;
 pub mod pipe_security;
 pub mod response_sink;
 pub mod run_tokens;
+pub mod schema;
 pub(crate) mod send_response;
 pub mod server;
 pub mod stability;

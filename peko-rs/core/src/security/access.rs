@@ -666,6 +666,7 @@ pub fn grant_always(
 /// lists and the `ask_owner` switch. `own` and `own_max_bytes` are kept
 /// as the file has them.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Shared {
     #[serde(default)]
     pub tools: Vec<String>,

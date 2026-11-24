@@ -39,6 +39,7 @@ use super::config::QuotaCycle;
 
 /// Runtime counters for one principal's current quota window.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct QuotaState {
     /// Window start (inclusive, UTC).
     pub window_start: DateTime<Utc>,

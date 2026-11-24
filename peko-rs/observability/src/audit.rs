@@ -32,6 +32,7 @@ pub struct AuditLogger {
 
 /// Audit event
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AuditEvent {
     /// When the event occurred
     pub timestamp: chrono::DateTime<chrono::Utc>,
@@ -63,6 +64,7 @@ pub struct AuditEvent {
 
 /// Audit severity levels
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum AuditSeverity {
     Debug,

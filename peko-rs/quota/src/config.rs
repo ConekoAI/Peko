@@ -38,6 +38,7 @@ use serde::{Deserialize, Serialize};
 /// means "unlimited for this dimension" — the meter will not check
 /// or trip on it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct QuotaConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_tokens: Option<u64>,
@@ -83,6 +84,7 @@ impl QuotaConfig {
 
 /// Calendar-aligned reset cycle. All boundaries are UTC.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum QuotaCycle {
     /// Reset at the top of every UTC hour.

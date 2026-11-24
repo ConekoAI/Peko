@@ -1103,6 +1103,7 @@ pub struct AccountDm {
 /// A model a peko's host can answer with (ADR-097 D1): its configured id
 /// and name only — no endpoint, wire id, headers, or credential.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct PekoModel {
     pub id: String,

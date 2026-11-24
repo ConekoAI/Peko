@@ -30,6 +30,10 @@
 //! which a send names in `attachments`; `GET /v1/files` gives back the
 //! bytes of a post's attachment. Both need an `owner` key.
 
+//!
+//! `GET /v1/schema` answers the JSON Schema of every request and response
+//! (`docs/reference/ipc-schema.json`, built in), to any valid key.
+
 mod files;
 
 use std::convert::Infallible;
@@ -333,6 +337,12 @@ impl Door {
         match (req.method().clone(), path.as_str()) {
             (Method::POST, "/v1/call") => self.call(req, caller, remote).await,
             (_, "/v1/call") => refuse(StatusCode::METHOD_NOT_ALLOWED, "use POST"),
+            // D6: the schema of every request and response, as built in.
+            // Any valid key reads it, like everything else here.
+            (Method::GET, "/v1/schema") => {
+                json_response(StatusCode::OK, super::schema::SCHEMA_JSON)
+            }
+            (_, "/v1/schema") => refuse(StatusCode::METHOD_NOT_ALLOWED, "use GET"),
             (Method::POST, "/v1/files") => files::upload(self, req, caller).await,
             (Method::GET, "/v1/files") => files::download(self, req, caller).await,
             (_, "/v1/files") => refuse(StatusCode::METHOD_NOT_ALLOWED, "use POST or GET"),

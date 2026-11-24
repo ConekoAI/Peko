@@ -5,6 +5,7 @@ use std::collections::{BTreeSet, HashMap};
 /// A command-bearing manifest, retained verbatim so binds, arguments, and
 /// malformed definitions remain visible without executing or loading them.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ExecutableDefinition {
     pub id: String,
     pub path: String,
@@ -12,6 +13,7 @@ pub struct ExecutableDefinition {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ExecutableInventory {
     pub did: String,
     /// Payload files, excluding the inventory manifest itself.

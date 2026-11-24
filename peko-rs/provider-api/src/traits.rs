@@ -236,6 +236,7 @@ pub enum ThinkingEffort {
 /// | `OpenRouter`      | `reasoning: {effort: "low\|medium\|high"}`         |
 /// | `Together`        | `reasoning: {enabled: bool}` (no effort levels)    |
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ThinkingFormat {
     OpenAi,
     Anthropic,
@@ -255,6 +256,7 @@ pub enum ThinkingFormat {
 /// loop's tool-call accumulator respects this via
 /// `ProviderCompat::deferred_tools_mode`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum DeferredToolsMode {
     /// Fire tool calls as soon as the adapter surfaces them.
     #[default]
@@ -276,6 +278,7 @@ pub enum DeferredToolsMode {
 /// stay unaffected — adapters fall back to their F25 built-in
 /// defaults when compat is unset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProviderCompat {
     pub thinking_format: ThinkingFormat,
     pub deferred_tools_mode: DeferredToolsMode,

@@ -634,6 +634,7 @@ impl ChangeLog {
 
 /// A turn as shown (`Changes` tool, IPC `turn_changes`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TurnSummary {
     pub turn: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -652,6 +653,7 @@ pub struct TurnSummary {
 
 /// One file a turn changed, as shown.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ChangedFile {
     /// Relative to the workspace when inside it.
     pub path: String,

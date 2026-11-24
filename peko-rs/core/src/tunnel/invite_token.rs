@@ -95,6 +95,7 @@ pub enum InviteTokenError {
 /// the security model: a token whose `scope` is missing entirely must
 /// not silently mean "everything".
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct InviteClaims {
     /// The runtime's DID for the principal this token grants access to.
     /// (The recipient's runtime does NOT need to know this — the

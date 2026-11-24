@@ -24,6 +24,7 @@ pub use path_resolver::PathResolverLike;
 
 /// Newtype wrapper for a stable principal identifier.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PrincipalId(pub String);
 
 impl PrincipalId {
@@ -63,6 +64,7 @@ impl fmt::Display for PrincipalId {
 
 /// Thin wrapper around a DID string.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PrincipalDID(pub String);
 
 impl PrincipalDID {
@@ -222,6 +224,22 @@ impl Serialize for Route {
     }
 }
 
+/// ADR-121 D6: a route crosses the wire as its text form, so its schema
+/// is a string (serde is written by hand above, so no derive fits).
+#[cfg(feature = "schema")]
+impl schemars::JsonSchema for Route {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Route".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "description": "An actor's route in text form: `local` or `local:<id>` for this runtime, `hub:<id>` for a PekoHub account or visitor, or a bare id."
+        })
+    }
+}
+
 impl<'de> Deserialize<'de> for Route {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Ok(Self::parse(&String::deserialize(deserializer)?))
@@ -272,6 +290,7 @@ impl From<&PrincipalId> for Route {
 /// Wire format: `{ "kind": "user" | "principal" | "visitor" | "public", "id": "<route>" }`
 /// via `#[serde(tag = "kind", content = "id")]`; the route uses its text form.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "kind", content = "id", rename_all = "lowercase")]
 pub enum ActorRef {
     /// A human: the runtime's local user or a Hub account.

@@ -25,6 +25,7 @@ pub use peko_protocol::ipc::{AuthCredential, AuthHeader};
 /// Old clients send bare `RequestPacket`s, which deserialize with
 /// `auth = AuthCredential::None` when parsed as this type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AuthenticatedRequest {
     #[serde(default)]
     pub auth: AuthHeader,
@@ -35,6 +36,7 @@ pub struct AuthenticatedRequest {
 /// A visitor a local caller sends for (ADR-113 D7): a bridge relaying a
 /// customer's message from a chat service, email, or a web form.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SendAs {
     /// `visitor:<id>` (or `visitor:local:<id>`): who the message is
     /// from, as the bridge knows them.
@@ -46,6 +48,7 @@ pub struct SendAs {
 
 /// Request sent from CLI → Daemon
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type")]
 pub enum RequestPacket {
     /// Execute an agent message and stream the response — retired in
@@ -1610,6 +1613,7 @@ impl RequestPacket {
 /// `peko_message::TokenUsage` and are intentionally lossy at the
 /// `AgenticEvent` boundary; widening that is a separate concern).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct RunUsageSummary {
     /// Prompt tokens consumed across the run.
     #[serde(default)]
@@ -1630,6 +1634,7 @@ pub struct RunUsageSummary {
 /// `success: false` regardless). `error_message` is the
 /// short-truncated error text the tool returned in `result`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ToolErrorEntry {
     #[serde(default)]
     pub tool_id: String,
@@ -1644,6 +1649,7 @@ pub const PRINCIPAL_LOG_SCHEMA_VERSION: u8 = 1;
 
 /// One setup step and how it stands (ADR-106).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SetupResultInfo {
     pub step: String,
     /// `ready` | `failed` | `pending`.
@@ -1658,6 +1664,7 @@ pub struct SetupResultInfo {
 /// it: the tool, its action, and the one argument that says what it is
 /// doing. The arguments are the tool ledger's, so secrets are redacted.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SetupStepInfo {
     pub call_id: String,
     pub tool: String,
@@ -1670,6 +1677,7 @@ pub struct SetupStepInfo {
 /// A secret on its way to the vault (ADR-116): serialized as a plain
 /// string, never shown by `Debug`.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(transparent)]
 pub struct SecretText(pub String);
 
@@ -1681,6 +1689,7 @@ impl std::fmt::Debug for SecretText {
 
 /// A file undo left alone (ADR-117 D3).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct UndoSkipped {
     /// Relative to the peko's workspace when inside it.
     pub path: String,
@@ -1690,6 +1699,7 @@ pub struct UndoSkipped {
 
 /// One secret request waiting for the owner (ADR-116).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SecretRequestInfo {
     /// `sec_…`
     pub id: String,
@@ -1707,6 +1717,7 @@ pub struct SecretRequestInfo {
 
 /// One approval request waiting for the owner (ADR-078 D7).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ApprovalInfo {
     /// `apr_…`
     pub id: String,
@@ -1734,6 +1745,7 @@ pub struct ApprovalInfo {
 /// A conversation's last failed run, as `principal_log` reports it
 /// (ADR-089 D5).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct RunFailureInfo {
     /// RFC 3339.
     pub at: String,
@@ -1748,6 +1760,7 @@ pub struct RunFailureInfo {
 
 /// One person's own section of a peko's `ACCESS.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AccessPerson {
     /// The section's key: an actor address (`visitor:local:+15550100`,
     /// `user:hub:<id>`) or a group channel id.
@@ -1760,6 +1773,7 @@ pub struct AccessPerson {
 
 /// Someone a peko has talked with, who could be given a section.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AccessKnown {
     pub address: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1774,6 +1788,7 @@ pub struct AccessKnown {
 /// Wire shape is unchanged from the retired chat-log row type
 /// (camelCase field names, same defaults/skips).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct PrincipalLogMessage {
     pub schema_version: u8,
@@ -1839,6 +1854,7 @@ impl PrincipalLogMessage {
 /// Response sent from Daemon → CLI
 /// A group this runtime's person joined from another runtime (ADR-092 D2).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PersonGroup {
     pub channel: peko_protocol::channel::ChannelId,
     pub name: String,
@@ -1850,6 +1866,7 @@ pub struct PersonGroup {
 /// One of this runtime's person's DMs with a peko on another runtime
 /// (ADR-090, ADR-095 D5).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PekoDmSummary {
     /// The DM (`dm_<sha256>`) on this runtime.
     pub channel: peko_protocol::channel::ChannelId,
@@ -1866,6 +1883,7 @@ pub struct PekoDmSummary {
 
 /// One of this runtime's person's DMs with another person (ADR-095 D6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PersonDmSummary {
     /// The DM (`dm_<sha256>`) on this runtime.
     pub channel: peko_protocol::channel::ChannelId,
@@ -1881,6 +1899,7 @@ pub struct PersonDmSummary {
 
 /// A device on the account's list, as `device_list` reports it (ADR-111).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DeviceInfo {
     /// Its key as a `did:key` (a computer's runtime id).
     pub id: String,
@@ -1905,6 +1924,7 @@ pub struct DeviceInfo {
 
 /// Something about the account that waits for the owner (ADR-111 D6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SecurityInfo {
     pub id: String,
     /// `owner_change`, `key_change`, or `devices_reset`.
@@ -1927,6 +1947,7 @@ pub struct SecurityInfo {
 
 /// What `device_list` answers (ADR-111).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DevicesView {
     /// `user:hub:<id>`, absent when this computer is not registered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1945,6 +1966,7 @@ pub struct DevicesView {
 
 /// The person's read state in one conversation (ADR-108 D5).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ChannelReadInfo {
     pub channel: peko_protocol::channel::ChannelId,
     /// `dm` or `group`.
@@ -1961,6 +1983,7 @@ pub struct ChannelReadInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type")]
 pub enum ResponsePacket {
     /// Streaming text chunk
@@ -3192,6 +3215,7 @@ pub enum ResponsePacket {
 /// translates to/from the catalog's `ApiFormat`
 /// (`openai_completions` / `anthropic_messages`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ModelSummary {
     pub id: String,
     pub display_name: String,
@@ -3269,6 +3293,7 @@ pub struct ModelSummary {
 /// go through the catalog file (`peko model edit` / `peko model add`)
 /// rather than the IPC.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ModelSpec {
     #[serde(default)]
     pub image_input: bool,
@@ -3314,6 +3339,7 @@ impl Default for ModelSpec {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ModelToolSupport {
     None,
@@ -3328,6 +3354,7 @@ impl Default for ModelToolSupport {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ModelThinkingMode {
     Disabled,
@@ -3343,6 +3370,7 @@ impl Default for ModelThinkingMode {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ModelPricingHint {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_per_million: Option<f64>,
@@ -3358,6 +3386,7 @@ pub struct ModelPricingHint {
 
 /// Legacy preset wire row, retained for decoding older IPC responses.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ModelTemplateInfo {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3370,6 +3399,7 @@ pub struct ModelTemplateInfo {
 
 /// Legacy preset wire shape. ModelTemplates now returns an empty list.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ModelPresetInfo {
     pub id: String,
     pub display_name: String,
@@ -3387,6 +3417,7 @@ pub struct ModelPresetInfo {
 /// Arguments for `RequestPacket::ModelDiscover`: the endpoint, as for
 /// `ModelAdd`, and the key to list with.
 #[derive(Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ModelDiscoverArgs {
     pub base_url: String,
     /// `openai_completions`, `openai_responses`, or `anthropic_messages`.
@@ -3409,6 +3440,7 @@ impl std::fmt::Debug for ModelDiscoverArgs {
 /// A group's home and PekoHub registration in a `ChannelInfoResult`
 /// (ADR-092 D1/D5).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ChannelGroupSummary {
     /// This runtime is the group's home: its settings, roster, PekoHub
     /// registration and invite links are managed here.
@@ -3428,6 +3460,7 @@ pub struct ChannelGroupSummary {
 
 /// One member of a channel in a `ChannelInfoResult`, as people read it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ChannelPerson {
     /// Their canonical address (`principal:hub:<id>`, `user:hub:<id>`,
     /// `principal:local:<id>`, `user:local:local`).
@@ -3452,6 +3485,7 @@ pub struct ChannelPerson {
 
 /// One peko hosted on this runtime in a `ChannelInfoResult`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ChannelPekoWake {
     pub name: String,
     pub local_id: String,
@@ -3460,6 +3494,7 @@ pub struct ChannelPekoWake {
 
 /// Where a ChatGPT sign-in stands (ADR-115).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum PlanSignInState {
     /// Waiting for the browser (or a pasted address).
@@ -3482,6 +3517,7 @@ pub enum PlanSignInState {
 
 /// A model a ChatGPT plan offers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PlanModelWire {
     /// The wire model id.
     pub slug: String,
@@ -3491,6 +3527,7 @@ pub struct PlanModelWire {
 /// Explicit model endpoint settings, matching `peko model add`.
 /// Credentials are stored in the vault; optional metadata is user authored.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ModelAddArgs {
     /// Retired preset selector; present requests receive migration guidance.
     #[serde(default)]
@@ -3547,6 +3584,7 @@ pub struct ModelAddArgs {
 /// existing catalog entry untouched; supplied fields replace the
 /// current value. The daemon rewrites `models.toml` atomically.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ModelUpdateArgs {
     /// Catalog id of the entry to edit.
     pub id: String,
@@ -3592,6 +3630,7 @@ pub struct ModelUpdateArgs {
 /// `providers::validator::CredentialTestOutcome` in an owned,
 /// serializable shape suitable for the `ModelTested` response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ModelTestResult {
     pub ok: bool,
     pub message: String,
@@ -3630,6 +3669,7 @@ pub struct ModelTestResult {
 /// references deserialize as `false` / `[]`, and old clients ignore
 /// the fields on a new daemon.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CredentialRow {
     pub id: String,
     pub namespace: String,
@@ -3652,6 +3692,7 @@ pub struct CredentialRow {
 /// metadata but NOT the secret material — use
 /// [`ResponsePacket::CredentialMaterial`] for that.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Credential {
     pub id: String,
     pub namespace: String,
@@ -3672,6 +3713,7 @@ pub struct Credential {
 /// Rotation binding wire shape. Carries the slot key (the map key
 /// itself), strategy name, and ordered list of credential ids.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct RotationBindingWire {
     pub key: String,
     pub strategy: String,
@@ -3681,6 +3723,7 @@ pub struct RotationBindingWire {
 /// A single doctor check result
 /// Runtime metadata response for IPC (ADR-032)
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct RuntimeMetadataResponse {
     pub runtime_id: String,
     pub display_name: String,
@@ -3693,6 +3736,7 @@ pub struct RuntimeMetadataResponse {
 
 /// Host information response for IPC (ADR-032)
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct HostInfoResponse {
     pub os: String,
     pub arch: String,
@@ -3700,6 +3744,7 @@ pub struct HostInfoResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DoctorCheck {
     pub name: String,
     pub status: String,
@@ -3709,6 +3754,7 @@ pub struct DoctorCheck {
 
 /// API key summary for IPC responses (ADR-034)
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ApiKeySummary {
     pub id: String,
     pub name: String,

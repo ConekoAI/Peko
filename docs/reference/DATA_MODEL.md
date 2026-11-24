@@ -3796,6 +3796,7 @@ socket answers.
 | `POST /v1/files?name=<file name>` | `application/octet-stream`, at most 20 MB; `owner` key | `{"file": "upload:<32 hex>", "name": "<safe name>", "size": <bytes>}` |
 | `GET /v1/files?path=<absolute path>` | `owner` key; the path, links followed, inside a peko's `attachments/` or `contacts/<conversation>/attachments/` | The bytes, with `Content-Type`, `Content-Length`, `Content-Disposition: attachment` |
 | `GET /v1/files?channel=<id>&sha256=<digest>` | `owner` key | The bytes of the channel's stored copy (ADR-094) |
+| `GET /v1/schema` | any valid key | `docs/reference/ipc-schema.json`: the JSON Schema (draft 2020-12) of `RequestPacket`, `ResponsePacket` and `AuthenticatedRequest`, each variant marked `x-stability` |
 
 Every request carries `Authorization: Bearer <key>`. Refused before any
 handler runs: a `Host` that is not the bound address (or
@@ -3813,7 +3814,9 @@ the engine starts. Each call, upload and download is an audit event
 (`http.call`, `http.upload`, `http.download`) with the key's id.
 
 Every request and response type is marked `stable` or `internal` in
-`peko-rs/core/src/ipc/stability.rs` (ADR-121 D6).
+`peko-rs/core/src/ipc/stability.rs` (ADR-121 D6), and its schema is in
+`docs/reference/ipc-schema.json` (generated; `request_id` is required there
+because the socket requires it, while the HTTP door fills one in).
 
 ---
 
