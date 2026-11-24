@@ -396,7 +396,7 @@
       "description": "Authentication credential sent with every request (ADR-034).\n\nWire shape is a tagged enum:\n\n```json\n{ \"type\": \"none\" }\n{ \"type\": \"jwt\", \"token\": \"...\" }\n{ \"type\": \"api_key\", \"token\": \"...\" }\n```",
       "oneOf": [
         {
-          "description": "Local trust — no token provided.\nAllowed only for Unix-socket or localhost-UDP connections.",
+          "description": "Local trust — no token provided.\nAllowed only on the Unix socket and the Windows named pipe.",
           "properties": {
             "type": {
               "const": "none",

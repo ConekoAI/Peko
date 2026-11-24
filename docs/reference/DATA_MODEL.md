@@ -3649,8 +3649,10 @@ The `parameters` schema is JSON Schema draft-07.
 
 The daemon's IPC protocol is one JSON datagram per message over a unix socket
 (`$PEKO_HOME/run/daemon.sock` or `~/.peko/run/daemon.sock`, override
-`PEKO_DAEMON_SOCK`), Windows named pipe, or loopback-UDP fallback; packets are
-capped at `MAX_PACKET_SIZE = 60 000` bytes. `ExecuteTool` is the synchronous
+`PEKO_DAEMON_SOCK`) or a Windows named pipe; packets there are
+capped at `MAX_PACKET_SIZE = 60 000` bytes (the HTTP door of ADR-121 carries
+the same packets up to 16 MiB, so an answer clipped for the socket arrives
+whole there). `ExecuteTool` is the synchronous
 tool-execution variant — the callback surface for agent-authored workflow
 processes (`sdks/python/peko_workflow`), with server-side attribution
 (the retired `async_spawn`/`async_cancel`/`async_receipt` variants were

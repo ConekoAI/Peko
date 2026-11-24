@@ -189,6 +189,18 @@ impl DoorHost for FakeHost {
                 )
                 .await
             }
+            // Stands in for an answer too large for a datagram.
+            RequestPacket::RuntimeId { .. } => {
+                send_response(
+                    &sink,
+                    ResponsePacket::Text {
+                        request_id,
+                        chunk: "x".repeat(200_000),
+                        seq: 0,
+                    },
+                )
+                .await
+            }
             _ => anyhow::bail!("not in this test"),
         }
     }
@@ -460,6 +472,32 @@ async fn one_packet_answers_as_json_and_the_call_is_recorded() {
     assert_eq!(records[0].2["key_id"], "pkr_ownerkey");
 }
 
+/// The door is not a datagram: an answer over the socket's 60,000 bytes
+/// arrives whole, where the socket's own serializer refuses it.
+#[tokio::test]
+async fn an_answer_larger_than_a_datagram_arrives_whole() {
+    let host = Arc::new(FakeHost::new());
+    let (base, _stop) = serve_fake(Arc::clone(&host)).await;
+    let response = call(
+        &base,
+        OWNER_KEY,
+        serde_json::json!({"type": "runtime_id"}),
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), 200);
+    let packet: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(packet["chunk"].as_str().map(str::len), Some(200_000));
+
+    let same = ResponsePacket::Text {
+        request_id: 1,
+        chunk: "x".repeat(200_000),
+        seq: 0,
+    };
+    assert!(same.to_bytes().is_err(), "the socket still refuses it");
+    assert!(same.to_bytes_within(HTTP_MAX_PACKET).is_ok());
+}
+
 #[tokio::test]
 async fn a_request_that_streams_answers_as_an_event_stream() {
     let (base, _stop) = serve_fake(Arc::new(FakeHost::new())).await;
@@ -531,7 +569,7 @@ async fn the_body_must_be_one_json_request_within_the_packet_budget() {
         .unwrap();
     assert_eq!(charset.status(), 200);
 
-    let big = serde_json::json!({"type": "ping", "pad": "x".repeat(MAX_PACKET_SIZE)});
+    let big = serde_json::json!({"type": "ping", "pad": "x".repeat(HTTP_MAX_PACKET)});
     assert_eq!(post().json(&big).send().await.unwrap().status(), 413);
 
     let not_json = post()

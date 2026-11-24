@@ -3,7 +3,7 @@
 //! Today, every handler in `IpcServer::handle_request` calls
 //! `Self::send_packet(&socket, response, peer).await?` to write a response
 //! back to the client. The `peer: &PeerAddr` argument exists because the
-//! Unix datagram and UDP transports are connectionless — every response
+//! Unix datagram transport is connectionless — every response
 //! must be `send_to`-ed to the peer address returned by the matching
 //! `recv_from`.
 //!
@@ -14,7 +14,7 @@
 //!
 //! `ResponseSink` factors that out. Handlers receive a `&dyn ResponseSink`
 //! and call `sink.send_bytes(&bytes).await?`; the per-transport details
-//! live in the `impl`s. The Unix/UDP call sites construct a per-request
+//! live in the `impl`s. The Unix call sites construct a per-request
 //! `DatagramSink { socket, peer }` that captures the peer once and
 //! forwards `send_bytes` to the existing `send_response`; the Windows
 //! call site constructs a `PipeSink { server }` over a `&mut
@@ -28,7 +28,6 @@ use std::io;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tokio::net::UdpSocket;
 
 use super::server::PeerAddr;
 
@@ -42,6 +41,13 @@ pub trait ResponseSink: Send + Sync {
     /// Write the full byte buffer to the client. The implementation must
     /// flush before returning — `write_all` semantics, not `write`.
     async fn send_bytes(&self, bytes: &[u8]) -> io::Result<()>;
+
+    /// The largest packet this client takes, in bytes. A datagram or a
+    /// pipe message holds [`MAX_PACKET_SIZE`]; the HTTP door carries
+    /// more. A handler that trims an answer to fit trims to this.
+    fn max_packet(&self) -> usize {
+        peko_protocol::ipc::MAX_PACKET_SIZE
+    }
 }
 
 /// Per-request sink for the Unix datagram transport. Captures the peer
@@ -62,20 +68,6 @@ impl ResponseSink for UnixDatagramSink {
         // `send_to` returns the number of bytes sent; the trait
         // contract is just "write succeeded," so we drop the count.
         self.socket.send_to(bytes, &self.peer).await.map(|_| ())
-    }
-}
-
-/// Per-request sink for the UDP transport. Captures the peer
-/// `SocketAddr` returned by `recv_from`.
-pub struct UdpSink {
-    pub socket: Arc<UdpSocket>,
-    pub peer: std::net::SocketAddr,
-}
-
-#[async_trait]
-impl ResponseSink for UdpSink {
-    async fn send_bytes(&self, bytes: &[u8]) -> io::Result<()> {
-        self.socket.send_to(bytes, self.peer).await.map(|_| ())
     }
 }
 
@@ -111,34 +103,24 @@ impl ResponseSink for PipeSink<'_> {
     }
 }
 
-/// Convenience constructor that turns the existing `send_response`
-/// inputs into the matching sink. The match is exhaustive over the
-/// peer/socket combination, so a mismatch surfaces as an `io::Error`
-/// at the call site instead of a panic deep in the handler.
-pub fn sink_for_unix_or_udp(
+/// The sink for a request that came over the Unix datagram socket: it
+/// answers to the path the request came from. A peer that is not a Unix
+/// path is an `io::Error` at the call site, not a panic in the handler.
+#[cfg(unix)]
+pub fn sink_for_unix(
     socket: &super::server::ServerSocket,
     peer: &super::server::PeerAddr,
 ) -> io::Result<Box<dyn ResponseSink>> {
     match (socket, peer) {
-        #[cfg(unix)]
         (super::server::ServerSocket::Unix { socket, .. }, PeerAddr::Unix(path)) => {
             Ok(Box::new(UnixDatagramSink {
                 socket: Arc::clone(socket),
                 peer: path.clone(),
             }))
         }
-        (super::server::ServerSocket::Udp { socket }, PeerAddr::Ip(addr)) => {
-            Ok(Box::new(UdpSink {
-                socket: Arc::clone(socket),
-                peer: *addr,
-            }))
-        }
-        // Mismatched peer/socket — the original `send_response` raised
-        // an explicit error in this case (server.rs:106-112); we
-        // preserve that.
         _ => Err(io::Error::new(
             io::ErrorKind::Other,
-            "peer/socket transport mismatch (Unix peer on UDP socket or vice versa)",
+            "a request on the Unix socket must come from a Unix socket path",
         )),
     }
 }
@@ -156,7 +138,7 @@ mod tests {
 
     /// A trivial in-memory sink used to verify the trait wiring. The
     /// production code paths do not use this — production impls are on
-    /// `UnixDatagramSink` / `UdpSink` / `PipeSink`.
+    /// `UnixDatagramSink` / `PipeSink`.
     struct VecSink(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
 
     #[async_trait]
@@ -176,26 +158,17 @@ mod tests {
         assert_eq!(*buf.lock().unwrap(), b"hello world".to_vec());
     }
 
-    /// `sink_for_unix_or_udp` returns an error on a peer/socket mismatch
-    /// (Unix peer on UDP socket, or vice versa). The original
-    /// `send_response` had the same behaviour at server.rs:106-112.
-    ///
-    /// Unix-only: the test relies on the `PeerAddr::Unix` variant, which
-    /// does not exist on Windows builds.
+    /// `sink_for_unix` refuses a peer that is not a Unix socket path.
     #[cfg(unix)]
     #[tokio::test]
-    async fn sink_for_mismatch_returns_error() {
-        // We need a real `ServerSocket::Udp` to test the match exhaustiveness.
-        // Bind to an ephemeral port on loopback.
-        let udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let udp_arc = Arc::new(udp);
-        let socket = super::super::server::ServerSocket::Udp {
-            socket: Arc::clone(&udp_arc),
+    async fn sink_for_unix_refuses_a_network_peer() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.sock");
+        let socket = super::super::server::ServerSocket::Unix {
+            socket: Arc::new(tokio::net::UnixDatagram::bind(&path).unwrap()),
+            path: Arc::new(path),
         };
-        // Construct a fake Unix peer; the Unix arm expects a Unix peer
-        // but the socket is UDP, so this is a mismatch.
-        let unix_peer = PeerAddr::Unix(std::path::PathBuf::from("/tmp/fake.sock"));
-        let result = sink_for_unix_or_udp(&socket, &unix_peer);
-        assert!(result.is_err(), "expected mismatch error, got Ok");
+        let peer = PeerAddr::Ip("127.0.0.1:9".parse().unwrap());
+        assert!(sink_for_unix(&socket, &peer).is_err());
     }
 }

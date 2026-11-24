@@ -119,9 +119,6 @@ over a local socket only your user can open.
   so is chat that a visitor types into PekoHub's website.
 - **The reviewer is a model.** It can be wrong. The limits in "What a visitor
   can reach" do not depend on it; the judgment calls in `POLICY.md` do.
-- **The UDP fallback trusts local processes.** If the local socket cannot be
-  created, the engine falls back to `127.0.0.1:11435` and says so in its log.
-  Any process on the machine can reach it there.
 
 The User's Guide lists these with more detail under
 [Known limitations](user-guide/USERS_GUIDE.md#known-limitations).

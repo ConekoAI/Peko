@@ -11,7 +11,8 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Maximum packet size in bytes (conservative UDP limit).
+/// Maximum packet size in bytes on the socket and the pipe (one
+/// datagram or pipe message).
 ///
 /// Mirrored from `src/ipc/packet.rs` as part of Phase 11a — the
 /// root crate keeps the constant as a compat shim.
@@ -41,7 +42,7 @@ pub const CLI_TIMEOUT_SECS: u64 = 60;
 #[derive(Default)]
 pub enum AuthCredential {
     /// Local trust — no token provided.
-    /// Allowed only for Unix-socket or localhost-UDP connections.
+    /// Allowed only on the Unix socket and the Windows named pipe.
     #[serde(rename = "none")]
     #[default]
     None,

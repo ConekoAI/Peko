@@ -2,7 +2,7 @@
 //! an API key.
 //!
 //! A fourth transport beside the Unix datagram socket, the Windows named
-//! pipe and loopback UDP — not new handlers. `POST /v1/call` carries one
+//! pipe — not new handlers. `POST /v1/call` carries one
 //! `RequestPacket` as JSON; the door runs it through the same
 //! [`crate::ipc::handlers::RequestDispatcher`] as the socket, with an
 //! [`HttpSink`] in place of the datagram sink, and answers with the one
@@ -60,7 +60,11 @@ use super::uploads::Uploads;
 use crate::common::types::config::NetworkConfig;
 use peko_auth::caller::CallerContext;
 use peko_auth::config::AuthConfig;
-use peko_protocol::ipc::MAX_PACKET_SIZE;
+
+/// The largest request or response packet the door carries. HTTP has no
+/// datagram to fit, so this is not the socket's 60,000 bytes; it bounds
+/// what one request can make the engine hold in memory.
+pub(crate) const HTTP_MAX_PACKET: usize = 16 * 1024 * 1024;
 
 /// The response body every route answers with.
 pub(crate) type DoorBody = BoxBody<Bytes, Infallible>;
@@ -171,6 +175,10 @@ impl ResponseSink for HttpSink {
             .send(Bytes::copy_from_slice(bytes))
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "the HTTP client went away"))
+    }
+
+    fn max_packet(&self) -> usize {
+        HTTP_MAX_PACKET
     }
 }
 
@@ -369,7 +377,7 @@ impl Door {
             .iter()
             .filter_map(|v| v.to_str().ok())
             .any(|v| v.to_ascii_lowercase().contains("text/event-stream"));
-        let body = match http_body_util::Limited::new(req.into_body(), MAX_PACKET_SIZE)
+        let body = match http_body_util::Limited::new(req.into_body(), HTTP_MAX_PACKET)
             .collect()
             .await
         {
@@ -377,7 +385,7 @@ impl Door {
             Err(_) => {
                 return refuse(
                     StatusCode::PAYLOAD_TOO_LARGE,
-                    &format!("a request is at most {MAX_PACKET_SIZE} bytes"),
+                    &format!("a request is at most {HTTP_MAX_PACKET} bytes"),
                 )
             }
         };

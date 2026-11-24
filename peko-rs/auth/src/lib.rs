@@ -1,7 +1,7 @@
 //! Authentication and Authorization Module (ADR-034)
 //!
 //! Layered authentication for the peko daemon:
-//! - Local Trust: Unix socket / localhost UDP (OS trust boundary)
+//! - Local Trust: Unix socket / Windows named pipe (OS trust boundary)
 //! - Pekohub JWT: Remote access via pekohub-issued tokens
 //! - API Key: Programmatic access with scoped permissions
 //!

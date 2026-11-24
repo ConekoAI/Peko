@@ -14,7 +14,7 @@ pub(crate) async fn send_response(
     sink: &dyn ResponseSink,
     packet: ResponsePacket,
 ) -> anyhow::Result<()> {
-    let bytes = packet.to_bytes()?;
+    let bytes = packet.to_bytes_within(sink.max_packet())?;
     trace!("Sending response: {:?} ({} bytes)", packet, bytes.len());
     sink.send_bytes(&bytes).await?;
     Ok(())
