@@ -18,10 +18,24 @@ use crate::host::RuntimePaths;
 const API_KEY_PREFIX: &str = "pkr_";
 
 /// In-memory API key store with async file persistence
+///
+/// The engine and `peko auth api-key` (which writes the file directly)
+/// share `api_keys.toml`, so the store re-reads the file when its
+/// modification time changes: a key made or revoked from the command
+/// line takes effect without a restart (ADR-121 D3).
 #[derive(Clone)]
 pub struct ApiKeyStore {
     inner: Arc<RwLock<ApiKeysFile>>,
     path: PathBuf,
+    /// Modification time of the file as last read or written.
+    loaded_mtime: Arc<std::sync::Mutex<Option<std::time::SystemTime>>>,
+    /// SHA-256 of keys that verified, to their key id. Argon2 runs once
+    /// per key, not once per request; cleared whenever the keys change.
+    verified: Arc<std::sync::Mutex<std::collections::HashMap<[u8; 32], String>>>,
+}
+
+fn file_mtime(path: &std::path::Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
 impl ApiKeyStore {
@@ -42,8 +56,52 @@ impl ApiKeyStore {
 
         Ok(Self {
             inner: Arc::new(RwLock::new(file)),
+            loaded_mtime: Arc::new(std::sync::Mutex::new(file_mtime(&path))),
+            verified: Arc::default(),
             path,
         })
+    }
+
+    /// Re-read the file if something else changed it since we last
+    /// read or wrote it.
+    async fn refresh(&self) {
+        let now = file_mtime(&self.path);
+        {
+            let loaded = self
+                .loaded_mtime
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if *loaded == now {
+                return;
+            }
+        }
+        let file = match tokio::fs::read_to_string(&self.path).await {
+            Ok(content) => match toml::from_str::<ApiKeysFile>(&content) {
+                Ok(file) => file,
+                Err(e) => {
+                    tracing::warn!("api_keys.toml did not parse ({e}); keeping the keys loaded");
+                    return;
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => ApiKeysFile::default(),
+            Err(e) => {
+                tracing::warn!("api_keys.toml could not be read ({e}); keeping the keys loaded");
+                return;
+            }
+        };
+        *self.inner.write().await = file;
+        self.forget_verified();
+        *self
+            .loaded_mtime
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = now;
+    }
+
+    fn forget_verified(&self) {
+        self.verified
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
     }
 
     /// Create an empty store at the given path (for testing)
@@ -51,6 +109,8 @@ impl ApiKeyStore {
     pub fn with_path(path: PathBuf) -> Self {
         Self {
             inner: Arc::new(RwLock::new(ApiKeysFile::default())),
+            loaded_mtime: Arc::new(std::sync::Mutex::new(None)),
+            verified: Arc::default(),
             path,
         }
     }
@@ -97,6 +157,7 @@ impl ApiKeyStore {
             enabled: true,
         };
 
+        self.refresh().await;
         {
             let mut file = self.inner.write().await;
             file.keys.push(entry);
@@ -108,12 +169,15 @@ impl ApiKeyStore {
 
     /// List all API keys (without hashes)
     pub async fn list_keys(&self) -> Vec<ApiKeyEntry> {
+        self.refresh().await;
         let file = self.inner.read().await;
         file.keys.clone()
     }
 
     /// Revoke (disable) an API key by ID
     pub async fn revoke_key(&self, key_id: &str) -> anyhow::Result<bool> {
+        self.refresh().await;
+        self.forget_verified();
         let mut file = self.inner.write().await;
         if let Some(entry) = file.keys.iter_mut().find(|k| k.id == key_id) {
             entry.enabled = false;
@@ -127,6 +191,8 @@ impl ApiKeyStore {
 
     /// Delete an API key by ID
     pub async fn delete_key(&self, key_id: &str) -> anyhow::Result<bool> {
+        self.refresh().await;
+        self.forget_verified();
         let mut file = self.inner.write().await;
         let before = file.keys.len();
         file.keys.retain(|k| k.id != key_id);
@@ -145,8 +211,22 @@ impl ApiKeyStore {
         if !key.starts_with(API_KEY_PREFIX) {
             return None;
         }
+        self.refresh().await;
+        let digest: [u8; 32] = {
+            use sha2::Digest;
+            sha2::Sha256::digest(key.as_bytes()).into()
+        };
+        let known = self
+            .verified
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&digest)
+            .cloned();
 
         let file = self.inner.read().await;
+        if let Some(id) = known {
+            return file.keys.iter().find(|e| e.id == id && e.enabled).cloned();
+        }
 
         // Iterate every enabled key and let argon2's PHC parser recover
         // the stored params from `e.hash`. verify_password is
@@ -154,7 +234,8 @@ impl ApiKeyStore {
         // per candidate. With a small key inventory this is fine; if
         // the runtime ever ships with thousands of keys, gate this
         // with a prefix-lookup index on `e.id`.
-        file.keys
+        let found = file
+            .keys
             .iter()
             .find(|e| {
                 if !e.enabled {
@@ -168,7 +249,15 @@ impl ApiKeyStore {
                     .verify_password(key.as_bytes(), &parsed)
                     .is_ok()
             })
-            .cloned()
+            .cloned();
+        drop(file);
+        if let Some(entry) = &found {
+            self.verified
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(digest, entry.id.clone());
+        }
+        found
     }
 
     /// Get a key entry by ID (for updating last_used_at)
@@ -187,6 +276,10 @@ impl ApiKeyStore {
             tokio::fs::create_dir_all(parent).await?;
         }
         tokio::fs::write(&self.path, toml).await?;
+        *self
+            .loaded_mtime
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = file_mtime(&self.path);
         Ok(())
     }
 
@@ -286,6 +379,52 @@ mod tests {
 
         let keys = store.list_keys().await;
         assert_eq!(keys.len(), 2);
+    }
+
+    /// ADR-121 D3: a key the command line makes or revokes in the
+    /// shared file reaches the engine's store without a restart, also
+    /// after the engine has cached it as verified.
+    #[tokio::test]
+    async fn keys_changed_in_the_file_reach_a_loaded_store() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("api_keys.toml");
+        let engine = ApiKeyStore::with_path(path.clone());
+        engine.save().await.unwrap();
+
+        // Another process (the CLI) loads the same file and adds a key.
+        let cli = ApiKeyStore::with_path(path.clone());
+        let (key, id) = cli
+            .create_key("svc".into(), vec![ApiKeyScope::Owner])
+            .await
+            .unwrap();
+        // Make sure the change shows in the mtime on coarse clocks.
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(2);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        let entry = engine
+            .verify_key(&key)
+            .await
+            .expect("CLI key reaches engine");
+        assert_eq!(entry.id, id);
+        assert_eq!(entry.scopes, vec![ApiKeyScope::Owner]);
+
+        let cli = ApiKeyStore::with_path(path.clone());
+        assert!(cli.revoke_key(&id).await.unwrap());
+        let later = later + std::time::Duration::from_secs(2);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        assert!(
+            engine.verify_key(&key).await.is_none(),
+            "revoked in the file"
+        );
     }
 
     #[test]

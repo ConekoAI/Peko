@@ -1,8 +1,9 @@
 //! IPC Module — Datagram/Stream Communication Between CLI and Daemon
 //!
-//! This module replaces the HTTP API (Axum + reqwest) with a lightweight
-//! request/response protocol. The daemon binds a transport; CLI commands
-//! send packets to it.
+//! A lightweight request/response protocol: the engine binds a
+//! transport; the CLI and Peko Desktop send packets to it. A service may
+//! send the same packets over HTTP with an API key (ADR-121, [`http`]);
+//! that door is off unless `[network] http` is set.
 //!
 //! ## Transport
 //!
@@ -27,6 +28,7 @@ pub mod client;
 pub mod connection;
 pub mod errors;
 pub(crate) mod handlers;
+pub mod http;
 pub mod packet;
 pub mod pipe_security;
 pub mod response_sink;

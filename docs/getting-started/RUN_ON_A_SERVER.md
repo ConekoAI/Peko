@@ -49,7 +49,8 @@ docker run -d --name peko \
   Use the same one every time. To keep it out of the command line, mount a
   secret and set `PEKO_MASTER_PASSPHRASE_FILE=/run/secrets/<name>` instead.
 - Nothing listens on the network. You talk to the runtime with
-  `docker exec`.
+  `docker exec`, and your service talks to it over HTTP once you turn
+  that on (step 5).
 - Run one container per `/data` volume. A second runtime on the same
   volume would take the first one's place.
 
@@ -97,65 +98,150 @@ docker exec peko peko send desk "What can visitors ask you about?"
 
 ## 5. Let other people reach it
 
-The runtime has no built-in connection to any chat service. A script of
-yours relays each message in with `--as`, naming the sender by whatever you
-know them by (a phone number, an email address, a ticket number):
+The runtime has no built-in connection to any chat service. A service of
+yours (a help desk, a web app, a script reading email) relays each message
+in, naming the sender by whatever you know them by: a phone number, an
+email address, a ticket number. The peko answers that person as a visitor,
+in their own conversation, with only what `ACCESS.toml` gives visitors. It
+keeps what it learns about them in that conversation's own folder.
+
+The service reaches the runtime over HTTP with a key. The command line
+still works too (see [the end of this step](#or-use-the-command-line)).
+
+### Turn on HTTP
+
+The runtime answers over HTTP only when you say so, and only to a caller
+with an API key. Turn on keys and give the address to listen on:
+
+```bash
+docker exec peko peko config set enable_api_key true --file /data/runtime/auth_config.toml
+docker exec peko peko config set network.http 0.0.0.0:11436 --file /data/runtime.toml
+docker exec peko peko config set network.http_hosts '["peko:11436"]' --file /data/runtime.toml
+docker restart peko
+```
+
+- **`http`** is the address and port. `0.0.0.0` lets other containers
+  reach it; `127.0.0.1` keeps it to programs in the same container.
+- **`http_hosts`** are the names your service calls the runtime by
+  (`http://peko:11436` here). For any address but `127.0.0.1` the runtime
+  will not start without it, and it refuses requests sent to any other
+  name.
+- The runtime will not start with `http` set and API keys off.
+
+Make a key for your service:
+
+```bash
+docker exec peko peko auth api-key create --name helpdesk --scopes owner
+```
+
+It prints the key once. An `owner` key acts as the peko's owner: whoever
+holds it can send as any visitor, approve requests, read every
+conversation and change every setting. Keep it like a root password: in
+your service's secret store, never in an image or a repository. List keys
+with `peko auth api-key list` and revoke one with
+`peko auth api-key revoke <key id>`; a revoked key stops working at once.
+Keys are made and revoked only from the command line, never over HTTP.
+
+Put the two containers on one Docker network, and do not publish the port
+(no `-p 11436:11436`). The connection is not encrypted; it is meant for
+the private network between your service and the runtime, not the
+internet.
+
+```bash
+docker network create peko-net
+docker network connect peko-net peko
+docker run -d --name helpdesk --network peko-net -e PEKO_KEY=... your-service
+```
+
+### Send a visitor's message
+
+Every request is one JSON object, `POST`ed to `/v1/call`, with the key in
+the `Authorization` header (never in the URL):
+
+```bash
+curl -s http://peko:11436/v1/call \
+  -H "Authorization: Bearer $PEKO_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"type": "principal_send", "name": "desk",
+       "message": "When are you open?",
+       "send_as": {"actor": "visitor:+15550100", "name": "Ada"}}'
+```
+
+The answer is the runtime's own reply packet (here `principal_sent`, with
+the peko's answer). A request that answers with several packets (a
+streamed reply, a watch) comes back as `text/event-stream`, one
+`data: <packet>` line per packet; send `Accept: text/event-stream` to
+always get that, which you should for anything that runs a long time.
+`principal_send_stream` streams the reply as it is written.
+
+The requests are the ones Peko Desktop and the command line send: the
+`RequestPacket` types in
+[`packet.rs`](../../peko-rs/core/src/ipc/packet.rs). A packet is at most
+60,000 bytes. The runtime's own errors come back as an `error` packet with
+status 200; status 4xx means the request did not get in (no key or a bad
+one, too large, not JSON, too many requests: 100 a minute per key by
+default, set in `auth_config.toml` under `[rate_limit]`).
+
+Everything a key does is recorded in the audit log under the key's id
+(`peko audit`).
+
+### Messages the peko sends later
+
+Sometimes the peko writes again after its reply: after you approve a
+request, or when a check-in comes due. Nothing is waiting for those. A
+service follows them with one long request:
+
+```bash
+curl -sN http://peko:11436/v1/call \
+  -H "Authorization: Bearer $PEKO_KEY" \
+  -H 'Content-Type: application/json' -H 'Accept: text/event-stream' \
+  -d '{"type": "principal_sent_watch", "name": "desk", "since": "2026-11-24T09:00:00Z"}'
+```
+
+It sends one `principal_sent_appended` packet for each post the peko makes,
+in any one-to-one conversation, with `heartbeat` packets between:
+
+```json
+{"type":"principal_sent_appended","to":"visitor:local:+15550100","channel":"dm_…","message":{"id":"msg_…","text":"…", …}}
+```
+
+`to` is whom to deliver it to: `visitor:local:<id>` for the id you sent
+with `visitor:<id>`, and `user:local` for your own conversation. The
+replies `principal_send` returns show up here too, so a service that
+follows this can deliver everything from it; `message.id` stays the same
+for the same post. After a restart, `since` first repeats the posts newer
+than it.
+
+### Or use the command line
+
+Without HTTP, a script relays a message with `peko send --as`:
 
 ```bash
 docker exec peko peko send desk --as 'visitor:+15550100' --name 'Ada' \
   "When are you open?"
 ```
 
-The reply is printed.
+The reply is printed. `docker exec peko peko log desk --sent --json`
+prints one line for each post the peko makes, as the watch above does.
+`docker exec` needs access to the Docker socket, which is root on the host.
 
-The peko answers that person as a visitor, in their own conversation, with
-only what `ACCESS.toml` gives visitors. It keeps what it learns about them
-in that conversation's own folder.
-
-### Messages the peko sends later
-
-Sometimes the peko writes again after its reply: after you approve a
-request, or when a check-in comes due. Nothing is waiting for those. A
-bridge follows them with:
-
-```bash
-docker exec peko peko log desk --sent --json
-```
-
-It prints one line for each post the peko makes, in any one-to-one conversation:
-
-```json
-{"to":"visitor:local:+15550100","channel":"dm_…","message":{"id":"msg_…","text":"…", …}}
-```
-
-`to` is whom to deliver it to: `visitor:local:<id>` for the id you sent
-with `--as visitor:<id>`, and `user:local` for your own conversation. The replies
-`peko send` prints show up here too, so a bridge that follows `--sent`
-can deliver everything from it and skip the replies `peko send` prints;
-`message.id` stays the same for the same post. After a restart, `--since 10m`
-first repeats the posts of the last ten minutes. Only the peko's owner can
-follow everything it posts.
-
-### Run the bridge in its own container
-
-The bridge can run in a container of its own, sharing the runtime's
-volume. It needs nothing else: no passphrase, and no network between
-the two.
+The script can also run in a container of its own that shares the
+runtime's volume, with no passphrase and no network between the two:
 
 ```bash
 docker run --rm --volumes-from peko --entrypoint peko \
   ghcr.io/conekoai/peko:0.3 send desk --as 'visitor:+15550100' "Hello"
 ```
 
-Build your bridge on this image (or copy `/opt/peko/bin/peko` into yours)
-and mount the same `/data`, running as the same user (uid 10001). The
-command reaches the runtime through the socket in `/data/run`, and gets its
-answer back there. Run only `peko send`, `peko log` and other commands from it; the engine itself
-runs in one container per volume.
+Build it on this image (or copy `/opt/peko/bin/peko` into yours), mount
+the same `/data` and run as the same user (uid 10001). The command
+reaches the runtime through the socket in `/data/run`. That container sees
+everything in `/data`: the vault, every conversation, the keys. HTTP with
+a key gives a service the same reach without the volume.
 
-Only the peko's owner can send as a visitor, which here means anyone who
-can run `docker exec` on the container. The runtime records that you
-vouched for the sender; it does not check who they are.
+Only the peko's owner can send as a visitor: anyone holding an `owner`
+key, or who can run `docker exec` on the container. The runtime records
+that you vouched for the sender; it does not check who they are.
 
 ## 6. Requests that need you
 

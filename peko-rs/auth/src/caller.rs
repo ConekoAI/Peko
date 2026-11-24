@@ -124,10 +124,40 @@ impl CallerContext {
                 && self.api_key_scopes.contains(&ApiKeyScope::Admin))
     }
 
-    /// Check if this caller has local trust (owner equivalent)
+    /// Check if this caller has local trust (owner equivalent): the
+    /// socket, the named pipe, loopback UDP — or an API key with the
+    /// `owner` scope (ADR-121 D3), which a service uses over the HTTP
+    /// door. Such a caller stays attributable to its key id
+    /// (`identity`, `rate_limit_bucket`); use [`Self::is_terminal`]
+    /// where only the engine's own computer may act.
     #[must_use]
     pub fn is_local(&self) -> bool {
+        self.is_terminal() || self.is_owner_key()
+    }
+
+    /// The caller reached the engine through its own computer's
+    /// transport (socket, pipe, loopback UDP), not with a key. Making
+    /// and revoking API keys needs this (ADR-121 D3): an `owner` key
+    /// cannot make another key.
+    #[must_use]
+    pub fn is_terminal(&self) -> bool {
         matches!(self.identity, Identity::Local)
+    }
+
+    /// An API key carrying the `owner` scope (ADR-121 D3).
+    #[must_use]
+    pub fn is_owner_key(&self) -> bool {
+        matches!(self.identity, Identity::ApiKey(_))
+            && self.api_key_scopes.contains(&ApiKeyScope::Owner)
+    }
+
+    /// The API key id, for an API-key caller.
+    #[must_use]
+    pub fn api_key_id(&self) -> Option<&str> {
+        match &self.identity {
+            Identity::ApiKey(id) => Some(id),
+            _ => None,
+        }
     }
 
     /// The local actor ID. Credential diagnostics use rate_limit_bucket separately.
@@ -195,7 +225,10 @@ impl CallerContext {
     pub fn has_scope(&self, scope: &ApiKeyScope) -> bool {
         match self.identity {
             Identity::Local | Identity::User(_) | Identity::Visitor(_) => true,
-            Identity::ApiKey(_) => self.api_key_scopes.contains(scope),
+            Identity::ApiKey(_) => {
+                self.api_key_scopes.contains(scope)
+                    || self.api_key_scopes.contains(&ApiKeyScope::Owner)
+            }
         }
     }
 }
@@ -261,6 +294,39 @@ mod tests {
         assert_eq!(visitor.subject(), ActorRef::Visitor("hub:same".into()));
         assert!(!visitor.is_operator());
     }
+    /// ADR-121 D3: an `owner` key passes local checks, stays its key,
+    /// and is not the terminal (key management stays with the socket).
+    #[test]
+    fn owner_key_counts_as_local_but_not_terminal() {
+        let owner = CallerContext::from_api_key("pkr_own".into(), vec![ApiKeyScope::Owner]);
+        assert!(owner.is_local());
+        assert!(owner.is_operator());
+        assert!(!owner.is_terminal());
+        assert!(owner.has_scope(&ApiKeyScope::Admin));
+        assert_eq!(owner.api_key_id(), Some("pkr_own"));
+        assert_eq!(owner.rate_limit_bucket, "apikey:pkr_own");
+        assert_eq!(owner.subject(), ActorRef::User("local".into()));
+
+        for scopes in [
+            vec![ApiKeyScope::Read],
+            vec![ApiKeyScope::Write],
+            vec![ApiKeyScope::Admin],
+            vec![ApiKeyScope::Read, ApiKeyScope::Write, ApiKeyScope::Admin],
+        ] {
+            let key = CallerContext::from_api_key("pkr_k".into(), scopes);
+            assert!(!key.is_local());
+            assert!(!key.is_terminal());
+        }
+        assert!(CallerContext::local().is_terminal());
+        assert!(!CallerContext::from_jwt("a".into()).is_local());
+    }
+
+    #[test]
+    fn owner_scope_parses_and_prints() {
+        assert_eq!("owner".parse::<ApiKeyScope>(), Ok(ApiKeyScope::Owner));
+        assert_eq!(ApiKeyScope::Owner.to_string(), "owner");
+    }
+
     #[test]
     fn local_permission_projection_does_not_change_the_message_actor() {
         let caller = CallerContext::local();

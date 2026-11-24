@@ -30,6 +30,10 @@ pub enum ApiKeyScope {
     Read,
     Write,
     Admin,
+    /// ADR-121 D3: the caller counts as the peko's local owner — every
+    /// check that passes for the socket passes for it — except that it
+    /// may not make, list or revoke keys. Implies every other scope.
+    Owner,
 }
 
 impl std::fmt::Display for ApiKeyScope {
@@ -38,6 +42,7 @@ impl std::fmt::Display for ApiKeyScope {
             Self::Read => write!(f, "read"),
             Self::Write => write!(f, "write"),
             Self::Admin => write!(f, "admin"),
+            Self::Owner => write!(f, "owner"),
         }
     }
 }
@@ -50,6 +55,7 @@ impl std::str::FromStr for ApiKeyScope {
             "read" => Ok(Self::Read),
             "write" => Ok(Self::Write),
             "admin" => Ok(Self::Admin),
+            "owner" => Ok(Self::Owner),
             _ => Err(format!("Unknown scope: {s}")),
         }
     }
@@ -111,8 +117,10 @@ pub struct PekohubEndpoints {
     pub token_endpoint: String,
 }
 
-/// On-disk format for auth_config.toml
+/// On-disk format for auth_config.toml. Every field has a default, so a
+/// file that sets only `enable_api_key = true` parses (ADR-121).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AuthConfigFile {
     pub version: String,
     /// Enable local trust (Unix socket / localhost UDP)
@@ -142,6 +150,7 @@ impl Default for AuthConfigFile {
 
 /// Rate limit configuration on disk
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RateLimitConfigFile {
     pub jwt_requests_per_minute: u32,
     pub api_key_requests_per_minute: u32,
@@ -157,5 +166,19 @@ impl Default for RateLimitConfigFile {
             burst_jwt: 10,
             burst_api_key: 20,
         }
+    }
+}
+
+#[cfg(test)]
+mod auth_config_file_tests {
+    use super::*;
+
+    /// ADR-121: one line turns API keys on; the rest keeps its defaults.
+    #[test]
+    fn a_file_with_one_setting_parses() {
+        let file: AuthConfigFile = toml::from_str("enable_api_key = true\n").unwrap();
+        assert!(file.enable_api_key);
+        assert!(file.enable_local_trust);
+        assert_eq!(file.rate_limit.api_key_requests_per_minute, 100);
     }
 }

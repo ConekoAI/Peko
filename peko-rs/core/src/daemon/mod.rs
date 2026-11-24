@@ -194,6 +194,13 @@ impl Daemon {
         .await
         .map_err(|e| anyhow::anyhow!("Failed to create AppState: {e}"))?;
 
+        // ADR-121 D4: the HTTP door's refusals stop the engine before
+        // anything listens.
+        let http_door = crate::ipc::http::DoorConfig::from_config(
+            app_state.network_config(),
+            &app_state.auth_config(),
+        )?;
+
         // ADR-046: principal-config drift detection. Hashes every
         // `peko.toml` and compares against the baseline written
         // on the previous boot. Drifted principals emit a
@@ -328,6 +335,8 @@ impl Daemon {
                 error!("IPC server error: {}", e);
             }
         });
+        // ADR-121: the HTTP door, when `[network] http` turns it on.
+        let _http_door = crate::ipc::http::start_for(&app_state, http_door).await?;
 
         // Write our own PID file so stop commands can find us even if
         // the parent is gone.
