@@ -77,40 +77,25 @@ impl Default for StorageConfig {
 }
 
 /// Network configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// ADR-121 D2/D4: the HTTP door. Off unless `http` is set. The fields
+/// left from the HTTP API retired by ADR-021 (`port`, `tls_*`,
+/// `cors_origins`, `request_timeout_seconds`, `max_body_size_mb`) were
+/// never read and are gone; an old file that still carries them parses
+/// (unknown keys are ignored).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct NetworkConfig {
-    // ADR-058 D6: the `bind_address` field was deleted — it was never
-    // read (the daemon's HTTP/IPC bind is a loopback constant), so the
-    // knob silently did nothing. Reintroduce only with mandatory
-    // credential auth when remote daemon access is a designed feature.
-    /// Port for HTTP API
-    pub port: u16,
-    /// Enable TLS
-    pub tls_enabled: bool,
-    /// TLS certificate path
-    pub tls_cert_path: Option<PathBuf>,
-    /// TLS key path
-    pub tls_key_path: Option<PathBuf>,
-    /// Allowed CORS origins
-    pub cors_origins: Vec<String>,
-    /// Request timeout (seconds)
-    pub request_timeout_seconds: u64,
-    /// Maximum request body size (MB)
-    pub max_body_size_mb: usize,
-}
-
-impl Default for NetworkConfig {
-    fn default() -> Self {
-        Self {
-            port: 8080,
-            tls_enabled: false,
-            tls_cert_path: None,
-            tls_key_path: None,
-            cors_origins: vec!["*".to_string()],
-            request_timeout_seconds: 30,
-            max_body_size_mb: 10,
-        }
-    }
+    /// Address the HTTP door listens on, e.g. `"127.0.0.1:11436"`.
+    /// `None` (the default) keeps the door shut.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http: Option<String>,
+    /// Names a service calls the engine by (`Host` header values, e.g.
+    /// `"peko:11436"`). Required for an address other than this
+    /// computer's own; requests whose `Host` is neither the bound
+    /// address nor one of these are refused.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub http_hosts: Vec<String>,
 }
 
 // ADR-058 post-review cleanup: `DirectNetworkConfig` and the
@@ -241,7 +226,7 @@ mod tests {
     fn test_default_config() {
         let config = PekoConfig::default();
         assert_eq!(config.app_name, "peko");
-        assert_eq!(config.network.port, 8080);
+        assert_eq!(config.network.http, None);
         assert_eq!(config.logging.level, "info");
     }
 
@@ -263,7 +248,16 @@ mod tests {
             port = 11437
         "#;
         let config: NetworkConfig = toml::from_str(toml).expect("retired [direct] must be ignored");
-        assert_eq!(config.port, 8080);
+        assert_eq!(config, NetworkConfig::default());
+    }
+
+    /// ADR-121 D2: `[network] http` / `http_hosts` turn the door on.
+    #[test]
+    fn test_network_config_reads_the_http_door() {
+        let config: NetworkConfig =
+            toml::from_str("http = \"0.0.0.0:11436\"\nhttp_hosts = [\"peko:11436\"]\n").unwrap();
+        assert_eq!(config.http.as_deref(), Some("0.0.0.0:11436"));
+        assert_eq!(config.http_hosts, vec!["peko:11436".to_string()]);
     }
 
     #[test]
@@ -441,7 +435,7 @@ mod tests {
             .expect("minimal runtime.toml must parse");
         assert_eq!(cfg.provider.retry.max_retries, 7);
         assert_eq!(cfg.app_name, "peko");
-        assert_eq!(cfg.network.port, 8080);
+        assert_eq!(cfg.network.http, None);
     }
 
     #[test]

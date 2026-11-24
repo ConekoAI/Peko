@@ -2753,6 +2753,14 @@ async fn run_principal_send(
         )
         .await;
     }
+    // ADR-121 D5: `upload:<id>` names a file a service sent in over the
+    // HTTP door; it is removed once the send has copied it.
+    let uploads_dir = crate::ipc::uploads::default_dir();
+    let (attachment_paths, used_uploads) =
+        match crate::ipc::uploads::resolve(&uploads_dir, &attachment_paths) {
+            Ok(resolved) => resolved,
+            Err(reason) => return refuse_send(sink, request_id, reason).await,
+        };
 
     // ADR-113 D7: a caller with the owner's authority may send for a
     // visitor it vouches for; the run is then that visitor's.
@@ -2858,7 +2866,10 @@ async fn run_principal_send(
         )
         .await
         {
-            Ok(attachments) => attachments,
+            Ok(attachments) => {
+                crate::ipc::uploads::remove(&uploads_dir, &used_uploads);
+                attachments
+            }
             Err(reason) => return refuse_send(sink, request_id, reason).await,
         }
     };

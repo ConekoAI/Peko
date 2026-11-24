@@ -846,6 +846,16 @@ pid_file    = ".peko/run/daemon.pid"  # Optional. Default: as shown
 
 # Remote registry settings are retired (ADR-066).
 
+# ── HTTP door (ADR-121) ────────────────────────────────────────────────────
+
+[network]
+http       = "127.0.0.1:11436"   # Optional. Unset (default): no HTTP listener.
+http_hosts = ["peko:11436"]      # Required when `http` is not a loopback
+                                 # address: the Host names requests may carry.
+# The old `port`, `tls_*`, `cors_origins`, `request_timeout_seconds` and
+# `max_body_size_mb` keys were never read and are gone; files that still
+# carry them parse.
+
 # ── Provider credentials ───────────────────────────────────────────────────
 # There is no [providers] table. Models live in the catalog
 # (~/.peko/models.toml, written by `peko model add`) and API keys live in
@@ -3755,6 +3765,55 @@ redacted the same way.
 
 peko-desktop parses these packets; their exact shapes are pinned by
 `peko-rs/core/src/ipc/fixtures/desktop_stream_responses.json`.
+
+---
+
+## 13⅞. The HTTP door (ADR-121)
+
+Off unless `runtime.toml` sets `[network] http`. Needs
+`enable_api_key = true` in `{config_dir}/runtime/auth_config.toml` (every
+field there has a default) and a key in `{config_dir}/runtime/api_keys.toml`:
+
+```toml
+version = "1"
+
+[[key]]
+id = "pkr_AbCdEfGh"              # pkr_ + the key's first 8 characters
+hash = "$argon2id$v=19$m=19456,t=2,p=1$…"
+name = "helpdesk"
+created_at = "2026-11-24T10:00:00Z"
+scopes = ["Owner"]               # Read | Write | Admin | Owner
+enabled = true                   # false once revoked
+```
+
+The engine re-reads the file when it changes. `Owner` makes the caller
+count as the local owner, except for `auth_api_key_*`, which only the
+socket answers.
+
+| Route | Request | Answer |
+|---|---|---|
+| `POST /v1/call` | `application/json`: one `RequestPacket`, `request_id` optional, at most 60 000 bytes | `application/json`: the one packet; or `text/event-stream`, one `data: <packet>` event per packet, when the request writes more than one or the client sends `Accept: text/event-stream`. Heartbeats are dropped from a JSON answer |
+| `POST /v1/files?name=<file name>` | `application/octet-stream`, at most 20 MB; `owner` key | `{"file": "upload:<32 hex>", "name": "<safe name>", "size": <bytes>}` |
+| `GET /v1/files?path=<absolute path>` | `owner` key; the path, links followed, inside a peko's `attachments/` or `contacts/<conversation>/attachments/` | The bytes, with `Content-Type`, `Content-Length`, `Content-Disposition: attachment` |
+| `GET /v1/files?channel=<id>&sha256=<digest>` | `owner` key | The bytes of the channel's stored copy (ADR-094) |
+
+Every request carries `Authorization: Bearer <key>`. Refused before any
+handler runs: a `Host` that is not the bound address (or
+`localhost:<port>` on loopback) or one of `http_hosts` (403), an `Origin`
+header (403), `OPTIONS` (405), a wrong content type (415), a missing or
+unknown key (401), a key past its rate limit (429), too large (413),
+uploads waiting past 256 MB together (507). A refusal is
+`{"error": "<reason>"}`; the engine's own errors are `error` packets with
+status 200. No CORS header is sent.
+
+Uploads wait in `{config_dir}/run/uploads/<id>/<name>` (mode 0700): a
+send naming `upload:<id>` in `attachments` copies the file into the
+peko's workspace and removes it; others are deleted after an hour and when
+the engine starts. Each call, upload and download is an audit event
+(`http.call`, `http.upload`, `http.download`) with the key's id.
+
+Every request and response type is marked `stable` or `internal` in
+`peko-rs/core/src/ipc/stability.rs` (ADR-121 D6).
 
 ---
 

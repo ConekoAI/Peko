@@ -4,6 +4,30 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Added
+
+- **A service can reach the engine over HTTP with a key (ADR-121).** A
+  business that runs a peko on a server could only drive it with the
+  command line: `docker exec`, or a second container sharing the whole
+  `/data` volume, one process per message. Now the engine can answer the
+  same requests Peko Desktop sends, over HTTP: set `[network] http` in
+  `runtime.toml`, turn on API keys, make a key with
+  `peko auth api-key create --scopes owner`, and `POST /v1/call` one
+  request as JSON with `Authorization: Bearer <key>`. One answer comes back
+  as JSON; streamed answers as `text/event-stream`. Files go beside it:
+  `POST /v1/files` answers `upload:<id>` for a send's `attachments`, and
+  `GET /v1/files` gives back a post's file. It is off by default, refuses
+  to listen beyond the computer without `[network] http_hosts`, refuses
+  requests from web pages and to other host names, and records what each
+  key does under its id. See `docs/getting-started/RUN_ON_A_SERVER.md`.
+- **API keys have an `owner` scope.** It acts as the peko's owner, as the
+  terminal does, except that it cannot make, list or revoke keys. A key
+  made or revoked with `peko auth api-key` now takes effect without
+  restarting the engine.
+- **Every request and response type is marked `stable` or `internal`**
+  (`peko-rs/core/src/ipc/stability.rs`). A `stable` type breaks only in a
+  minor version.
+
 ### Changed
 
 - **Peko is now dual-licensed under MIT or Apache 2.0, at your option.**

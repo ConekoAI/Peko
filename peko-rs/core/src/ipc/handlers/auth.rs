@@ -13,9 +13,10 @@
 //!   it (same pattern as `TunnelHost` in F5 and `SystemHost` in F6 step 1).
 //! - F6: this module must not import any other `ipc::handlers::*` module.
 //!
-//! Auth access is restricted to local-trust callers for v0.1.0 (see
-//! ADR-034); the handler enforces this via `caller.is_local()` exactly
-//! like the legacy monolithic match.
+//! Key management is restricted to the engine's own computer (ADR-034,
+//! ADR-121 D3): the handler checks `caller.is_terminal()`, so an `owner`
+//! API key — which passes every other local check — cannot make, list
+//! or revoke keys.
 
 use std::sync::Arc;
 
@@ -86,7 +87,7 @@ impl RequestHandler for AuthHandler {
                 name,
                 scopes,
             } => {
-                if !caller.is_local() {
+                if !caller.is_terminal() {
                     let response = ResponsePacket::Error {
                         request_id,
                         message: "API key management requires local access".to_string(),
@@ -122,7 +123,7 @@ impl RequestHandler for AuthHandler {
             }
 
             RequestPacket::AuthApiKeyList { request_id } => {
-                if !caller.is_local() {
+                if !caller.is_terminal() {
                     let response = ResponsePacket::Error {
                         request_id,
                         message: "API key management requires local access".to_string(),
@@ -156,7 +157,7 @@ impl RequestHandler for AuthHandler {
             }
 
             RequestPacket::AuthApiKeyRevoke { request_id, key_id } => {
-                if !caller.is_local() {
+                if !caller.is_terminal() {
                     let response = ResponsePacket::Error {
                         request_id,
                         message: "API key management requires local access".to_string(),

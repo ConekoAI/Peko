@@ -198,6 +198,9 @@ pub(crate) struct AppState {
     /// Rate limiter (ADR-034)
     rate_limiter: Option<peko_auth::rate_limit::RateLimiter>,
 
+    /// `[network]` of `runtime.toml`: the HTTP door (ADR-121 D2).
+    network_config: crate::common::types::config::NetworkConfig,
+
     /// Tunnel cancellation token — set when tunnel is active
     tunnel_cancel: Arc<RwLock<Option<tokio_util::sync::CancellationToken>>>,
 
@@ -1011,6 +1014,7 @@ impl AppState {
             api_key_verifier,
             jwt_validator,
             rate_limiter,
+            network_config: peko_config.network.clone(),
             tunnel_cancel: Arc::new(RwLock::new(None)),
             tunnel_connected: Arc::new(RwLock::new(false)),
             tunnel_dispatcher: Arc::new(RwLock::new(None)),
@@ -1267,6 +1271,12 @@ impl AppState {
     #[must_use]
     pub fn rate_limiter(&self) -> Option<peko_auth::rate_limit::RateLimiter> {
         self.rate_limiter.clone()
+    }
+
+    /// `[network]` of `runtime.toml` (ADR-121 D2: the HTTP door).
+    #[must_use]
+    pub fn network_config(&self) -> &crate::common::types::config::NetworkConfig {
+        &self.network_config
     }
 
     /// Get the runtime identity (ADR-032)

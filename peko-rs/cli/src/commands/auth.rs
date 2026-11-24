@@ -39,7 +39,9 @@ pub enum ApiKeyCommands {
         /// Name for the key
         #[arg(short, long)]
         name: String,
-        /// Scopes (comma-separated: read,write,admin)
+        /// Scopes (comma-separated: read,write,admin,owner). `owner` acts as
+        /// the peko's owner over the HTTP door (ADR-121); keep it like a
+        /// root password.
         #[arg(short, long, value_delimiter = ',')]
         scopes: Vec<String>,
     },

@@ -21,8 +21,8 @@
 # ($PEKO_HOME/runtime.toml when PEKO_HOME is set)
 # ════════════════════════════════════════════════════════════════════
 #
-# The only block the engine consumes today is [provider.retry] — overrides
-# for the LLM transport retry defaults. Values shown are the defaults.
+# Two blocks: [provider.retry] — overrides for the LLM transport retry
+# defaults (values shown are the defaults) — and [network], the HTTP door.
 
 # [provider.retry]
 # max_retries = 5              # transport-level retries for transient errors
@@ -37,6 +37,16 @@
 #   retry_delay_ms > 0
 #   retry_max_delay_ms >= retry_delay_ms
 #   0.0 <= retry_jitter < 1.0
+
+# [network]
+# The HTTP door (ADR-121): a service sends the engine's requests over
+# HTTP with an API key. Off unless `http` is set. Needs
+# `enable_api_key = true` in runtime/auth_config.toml and a key from
+# `peko auth api-key create --scopes owner`. An address other than
+# 127.0.0.1 also needs `http_hosts`, the names services call it by.
+# Not encrypted: keep it on a private network, never the internet.
+# http = "127.0.0.1:11436"
+# http_hosts = ["peko:11436"]
 
 # ════════════════════════════════════════════════════════════════════
 # ~/.peko/config.toml — session compaction tuning
@@ -68,7 +78,8 @@ keep_awake = true
 # ════════════════════════════════════════════════════════════════════
 #
 # - The engine listens only on this computer (a local socket, with
-#   127.0.0.1:11435 as a fallback); there is no setting to expose it.
+#   127.0.0.1:11435 as a fallback), plus the HTTP door when [network] http
+#   turns it on.
 # - Logging verbosity is controlled by the RUST_LOG environment variable,
 #   not a config key.
 # - There are no [agent], [memory], [tools], [channels], [security], or
