@@ -89,10 +89,13 @@ impl DeviceHost for FakeDeviceHost {
 
 pub(super) struct FakeHost {
     pub admit: bool,
+    /// A peko's workspace and a channel's file store, in `_dir`.
+    pub workspace: std::path::PathBuf,
+    pub files_dir: std::path::PathBuf,
     pub records: Mutex<Vec<(Option<String>, String, serde_json::Value)>>,
     auth: AuthHandler,
     device: DeviceHandler,
-    _dir: tempfile::TempDir,
+    pub _dir: tempfile::TempDir,
 }
 
 impl FakeHost {
@@ -100,8 +103,15 @@ impl FakeHost {
         let (dir, config) = auth_config(true);
         let store =
             peko_auth::api_key::ApiKeyStore::load(&Paths(dir.path().to_path_buf())).unwrap();
+        let workspace = dir.path().join("pekos/desk");
+        let files_dir = dir.path().join("channels/dm_1/files");
+        std::fs::create_dir_all(workspace.join("attachments/2026-11-24")).unwrap();
+        std::fs::create_dir_all(workspace.join("kb")).unwrap();
+        std::fs::create_dir_all(&files_dir).unwrap();
         Self {
             admit: true,
+            workspace,
+            files_dir,
             records: Mutex::default(),
             auth: AuthHandler::new(Arc::new(FakeAuthHost { config, store })),
             device: DeviceHandler::new(Arc::new(FakeDeviceHost)),
@@ -183,6 +193,14 @@ impl DoorHost for FakeHost {
         }
     }
 
+    async fn workspaces(&self) -> Vec<std::path::PathBuf> {
+        vec![self.workspace.clone()]
+    }
+
+    async fn channel_files_dir(&self, channel: &str) -> Option<std::path::PathBuf> {
+        (channel == "dm_1").then(|| self.files_dir.clone())
+    }
+
     async fn record(&self, caller: &CallerContext, event: &str, details: serde_json::Value) {
         self.records.lock().unwrap().push((
             caller.api_key_id().map(str::to_string),
@@ -201,6 +219,7 @@ fn door(host: Arc<FakeHost>, hosts: &[&str]) -> Door {
         host,
         allowed_hosts: config.allowed_hosts("127.0.0.1:11436".parse().unwrap()),
         next_request_id: AtomicU64::new(1),
+        uploads: Uploads::new(std::env::temp_dir().join("peko-door-unused")),
     }
 }
 
@@ -371,12 +390,20 @@ async fn the_rate_limit_applies_per_key() {
 pub(super) async fn serve_fake(
     host: Arc<FakeHost>,
 ) -> (String, tokio::sync::broadcast::Sender<()>) {
+    let uploads = Uploads::new(host._dir.path().join("run/uploads"));
+    serve_with(host, uploads).await
+}
+
+pub(super) async fn serve_with(
+    host: Arc<FakeHost>,
+    uploads: Arc<Uploads>,
+) -> (String, tokio::sync::broadcast::Sender<()>) {
     let (tx, rx) = tokio::sync::broadcast::channel(1);
     let config = DoorConfig {
         addr: "127.0.0.1:0".parse().unwrap(),
         hosts: vec![],
     };
-    let (bound, _) = start(host, config, rx).await.unwrap();
+    let (bound, _) = start(host, config, uploads, rx).await.unwrap();
     (format!("http://{bound}"), tx)
 }
 
@@ -600,4 +627,196 @@ async fn key_management_is_refused_to_an_owner_key() {
             "{packet}"
         );
     }
+}
+
+// --- D5: files ----------------------------------------------------------------
+
+fn upload_req(base: &str, key: &str, name: &str, body: &'static [u8]) -> reqwest::RequestBuilder {
+    client()
+        .post(format!("{base}/v1/files"))
+        .query(&[("name", name)])
+        .bearer_auth(key)
+        .header("content-type", "application/octet-stream")
+        .body(body)
+}
+
+#[tokio::test]
+async fn an_upload_answers_its_name_for_a_send() {
+    let host = Arc::new(FakeHost::new());
+    let uploads_dir = host._dir.path().join("run/uploads");
+    let (base, _stop) = serve_fake(Arc::clone(&host)).await;
+    let response = upload_req(&base, OWNER_KEY, "photo one.png", b"PNGDATA")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let answer: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(
+        answer["name"], "photo_one.png",
+        "made safe as any attachment name"
+    );
+    assert_eq!(answer["size"], 7);
+    let file = answer["file"].as_str().unwrap();
+    let (paths, used) = crate::ipc::uploads::resolve(&uploads_dir, &[file.to_string()]).unwrap();
+    assert_eq!(std::fs::read(&paths[0]).unwrap(), b"PNGDATA");
+    assert_eq!(used.len(), 1);
+    assert!(host
+        .records
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|r| r.1 == "http.upload" && r.2["file"] == file));
+}
+
+#[tokio::test]
+async fn uploads_are_refused_without_an_owner_key_a_name_or_the_right_type() {
+    let (base, _stop) = serve_fake(Arc::new(FakeHost::new())).await;
+    let write = upload_req(&base, WRITE_KEY, "a.txt", b"x")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(write.status(), 403);
+    let admin = upload_req(&base, ADMIN_KEY, "a.txt", b"x")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(admin.status(), 403);
+    let json = client()
+        .post(format!("{base}/v1/files?name=a.txt"))
+        .bearer_auth(OWNER_KEY)
+        .header("content-type", "application/json")
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(json.status(), 415);
+    let unnamed = client()
+        .post(format!("{base}/v1/files"))
+        .bearer_auth(OWNER_KEY)
+        .header("content-type", "application/octet-stream")
+        .body("x")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unnamed.status(), 400);
+}
+
+#[tokio::test]
+async fn uploads_over_the_limits_are_refused() {
+    let host = Arc::new(FakeHost::new());
+    let uploads = Arc::new(Uploads::with_limits(
+        host._dir.path().join("run/uploads"),
+        8,
+        12,
+        crate::ipc::uploads::TTL,
+    ));
+    let (base, _stop) = serve_with(host, uploads).await;
+    let big = upload_req(&base, OWNER_KEY, "big", b"0123456789")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(big.status(), 413);
+    let ok = upload_req(&base, OWNER_KEY, "a", b"01234567")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ok.status(), 200);
+    let full = upload_req(&base, OWNER_KEY, "b", b"012345")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(full.status(), 507);
+}
+
+async fn get_file(base: &str, key: &str, query: &[(&str, &str)]) -> reqwest::Response {
+    client()
+        .get(format!("{base}/v1/files"))
+        .query(query)
+        .bearer_auth(key)
+        .send()
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_posts_file_comes_back_by_path_only_from_attachments() {
+    let host = Arc::new(FakeHost::new());
+    let ws = host.workspace.clone();
+    let inside = ws.join("attachments/2026-11-24/ab12cd34-report.pdf");
+    std::fs::write(&inside, b"%PDF-1.4 report").unwrap();
+    let secret = ws.join("kb/secret.md");
+    std::fs::write(&secret, b"secret").unwrap();
+    let outside = host._dir.path().join("runtime-vault.json");
+    std::fs::write(&outside, b"vault").unwrap();
+    let (base, _stop) = serve_fake(Arc::clone(&host)).await;
+
+    let ok = get_file(&base, OWNER_KEY, &[("path", inside.to_str().unwrap())]).await;
+    assert_eq!(ok.status(), 200);
+    assert!(ok.headers()["content-disposition"]
+        .to_str()
+        .unwrap()
+        .contains("report.pdf"));
+    assert_eq!(ok.headers()["x-content-type-options"], "nosniff");
+    assert_eq!(&ok.bytes().await.unwrap()[..], b"%PDF-1.4 report");
+
+    for path in [
+        secret.clone(),
+        outside.clone(),
+        ws.join("attachments/2026-11-24/../../kb/secret.md"),
+        ws.join("attachments/missing.png"),
+        ws.join("attachments"),
+    ] {
+        let refused = get_file(&base, OWNER_KEY, &[("path", path.to_str().unwrap())]).await;
+        assert_eq!(refused.status(), 404, "{}", path.display());
+    }
+
+    // A link inside attachments/ to a file outside is followed, then refused.
+    #[cfg(unix)]
+    {
+        let link = ws.join("attachments/2026-11-24/link.json");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        let refused = get_file(&base, OWNER_KEY, &[("path", link.to_str().unwrap())]).await;
+        assert_eq!(refused.status(), 404);
+    }
+
+    let write = get_file(&base, WRITE_KEY, &[("path", inside.to_str().unwrap())]).await;
+    assert_eq!(write.status(), 403);
+}
+
+#[tokio::test]
+async fn a_channels_file_comes_back_by_digest() {
+    let host = Arc::new(FakeHost::new());
+    let digest = "a".repeat(64);
+    std::fs::create_dir_all(host.files_dir.join(&digest)).unwrap();
+    std::fs::write(host.files_dir.join(&digest).join("note.txt"), b"hello").unwrap();
+    let (base, _stop) = serve_fake(Arc::clone(&host)).await;
+
+    let ok = get_file(
+        &base,
+        OWNER_KEY,
+        &[("channel", "dm_1"), ("sha256", &digest)],
+    )
+    .await;
+    assert_eq!(ok.status(), 200);
+    assert_eq!(&ok.bytes().await.unwrap()[..], b"hello");
+
+    let other = "b".repeat(64);
+    let missing = get_file(&base, OWNER_KEY, &[("channel", "dm_1"), ("sha256", &other)]).await;
+    assert_eq!(missing.status(), 404);
+    let no_channel = get_file(
+        &base,
+        OWNER_KEY,
+        &[("channel", "dm_2"), ("sha256", &digest)],
+    )
+    .await;
+    assert_eq!(no_channel.status(), 404);
+    let not_digest = get_file(
+        &base,
+        OWNER_KEY,
+        &[("channel", "dm_1"), ("sha256", "../../x")],
+    )
+    .await;
+    assert_eq!(not_digest.status(), 400);
+    let neither = get_file(&base, OWNER_KEY, &[]).await;
+    assert_eq!(neither.status(), 400);
 }

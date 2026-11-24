@@ -24,6 +24,13 @@
 //!   never read from a URL.
 //!
 //! Every call is recorded in the audit log under the key's id (D3).
+//!
+//! Files cross beside the packets (D5, [`files`]): `POST /v1/files`
+//! takes one as `application/octet-stream` and answers `upload:<id>`,
+//! which a send names in `attachments`; `GET /v1/files` gives back the
+//! bytes of a post's attachment. Both need an `owner` key.
+
+mod files;
 
 use std::convert::Infallible;
 use std::io;
@@ -45,6 +52,7 @@ use tracing::{debug, error, info, warn};
 use super::packet::RequestPacket;
 use super::response_sink::ResponseSink;
 use super::server::PeerAddr;
+use super::uploads::Uploads;
 use crate::common::types::config::NetworkConfig;
 use peko_auth::caller::CallerContext;
 use peko_auth::config::AuthConfig;
@@ -55,6 +63,9 @@ pub(crate) type DoorBody = BoxBody<Bytes, Infallible>;
 
 /// How long a client has to send its request headers.
 const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How often uploads past their hour are deleted.
+const UPLOAD_SWEEP: Duration = Duration::from_mins(5);
 
 /// Packets buffered between a handler and a slow client before the
 /// handler waits, as it waits on a full socket buffer.
@@ -133,6 +144,13 @@ pub(crate) trait DoorHost: Send + Sync + 'static {
 
     /// Record what the caller did, under its key id.
     async fn record(&self, caller: &CallerContext, event: &str, details: serde_json::Value);
+
+    /// Every peko's workspace: `GET /v1/files?path=` serves only files
+    /// in their attachments.
+    async fn workspaces(&self) -> Vec<std::path::PathBuf>;
+
+    /// A channel's file store (ADR-094), if the channel is here.
+    async fn channel_files_dir(&self, channel: &str) -> Option<std::path::PathBuf>;
 }
 
 /// A [`ResponseSink`] that hands each packet to the HTTP response. When
@@ -157,6 +175,7 @@ impl ResponseSink for HttpSink {
 pub(crate) async fn start(
     host: Arc<dyn DoorHost>,
     config: DoorConfig,
+    uploads: Arc<Uploads>,
     shutdown: tokio::sync::broadcast::Receiver<()>,
 ) -> anyhow::Result<(SocketAddr, tokio::task::JoinHandle<()>)> {
     let listener = TcpListener::bind(config.addr)
@@ -167,6 +186,7 @@ pub(crate) async fn start(
         host,
         allowed_hosts: config.allowed_hosts(bound),
         next_request_id: AtomicU64::new(1),
+        uploads,
     });
     info!("HTTP door listening on {bound} (ADR-121)");
     let handle = tokio::spawn(serve(listener, door, shutdown));
@@ -178,6 +198,8 @@ pub(crate) struct Door {
     allowed_hosts: Vec<String>,
     /// For requests that arrive without a `request_id`.
     next_request_id: AtomicU64,
+    /// Files sent in, waiting for a send (D5).
+    uploads: Arc<Uploads>,
 }
 
 async fn serve(
@@ -185,8 +207,10 @@ async fn serve(
     door: Arc<Door>,
     mut shutdown: tokio::sync::broadcast::Receiver<()>,
 ) {
+    let mut sweep = tokio::time::interval(UPLOAD_SWEEP);
     loop {
         tokio::select! {
+            _ = sweep.tick() => door.uploads.sweep(),
             accepted = listener.accept() => match accepted {
                 Ok((stream, remote)) => {
                     let door = Arc::clone(&door);
@@ -309,6 +333,9 @@ impl Door {
         match (req.method().clone(), path.as_str()) {
             (Method::POST, "/v1/call") => self.call(req, caller, remote).await,
             (_, "/v1/call") => refuse(StatusCode::METHOD_NOT_ALLOWED, "use POST"),
+            (Method::POST, "/v1/files") => files::upload(self, req, caller).await,
+            (Method::GET, "/v1/files") => files::download(self, req, caller).await,
+            (_, "/v1/files") => refuse(StatusCode::METHOD_NOT_ALLOWED, "use POST or GET"),
             _ => refuse(StatusCode::NOT_FOUND, "no such route"),
         }
     }
@@ -520,6 +547,20 @@ impl DoorHost for crate::daemon::state::AppState {
             warn!("could not record {event} in the audit log: {e:#}");
         }
     }
+
+    async fn workspaces(&self) -> Vec<std::path::PathBuf> {
+        self.principal_manager()
+            .list_all()
+            .await
+            .iter()
+            .map(|p| p.workspace_path.clone())
+            .collect()
+    }
+
+    async fn channel_files_dir(&self, channel: &str) -> Option<std::path::PathBuf> {
+        let channel = peko_channel::ChannelId::parse(channel)?;
+        self.channel_port().files_dir(&channel).await.ok()
+    }
 }
 
 /// Start the door from the engine's `[network]` config, if it is on.
@@ -531,10 +572,10 @@ pub(crate) async fn start_for(
         return Ok(None);
     };
     let host: Arc<dyn DoorHost> = Arc::new(state.clone());
-    let (_, handle) = start(host, config, state.subscribe_shutdown()).await?;
+    let uploads = Uploads::new(super::uploads::default_dir());
+    let (_, handle) = start(host, config, uploads, state.subscribe_shutdown()).await?;
     Ok(Some(handle))
 }
 
 #[cfg(test)]
-#[path = "http_tests.rs"]
 mod tests;

@@ -259,7 +259,7 @@ secrecy = { version = "0.10", features = ["serde"] }
 
 # WebSocket tunnel (ADR-035)
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
-tokio-util = { version = "0.7", features = ["rt"] }
+tokio-util = { version = "0.7", features = ["rt", "io"] }
 # One TLS stack: rustls 0.23 with the `ring` crypto provider, named
 # explicitly by `tunnel::tls` (reqwest 0.12 uses ring too; rmcp's reqwest
 # 0.13 brings aws-lc-rs, so rustls cannot pick a default on its own).

@@ -200,6 +200,8 @@ impl Daemon {
             app_state.network_config(),
             &app_state.auth_config(),
         )?;
+        // ADR-121 D5: uploads no send used do not outlive the engine.
+        crate::ipc::uploads::clear(&crate::ipc::uploads::default_dir());
 
         // ADR-046: principal-config drift detection. Hashes every
         // `peko.toml` and compares against the baseline written

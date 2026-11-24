@@ -568,8 +568,10 @@ pub enum RequestPacket {
         /// Per-message configured model override (e.g. `peko send --model ...`).
         #[serde(default)]
         override_model: Option<String>,
-        /// ADR-088: absolute paths of files to attach. The engine reads
-        /// them itself, so only the local operator may attach.
+        /// ADR-088: absolute paths of files to attach, or `upload:<id>`
+        /// for a file sent in over HTTP (ADR-121 D5). The engine reads
+        /// them itself, so only the local operator (or an `owner` key)
+        /// may attach.
         #[serde(default)]
         attachments: Vec<String>,
         /// ADR-113 D7: the visitor this message is from, vouched for by
@@ -599,8 +601,10 @@ pub enum RequestPacket {
         /// Per-message configured model override (e.g. `peko send --model ...`).
         #[serde(default)]
         override_model: Option<String>,
-        /// ADR-088: absolute paths of files to attach. The engine reads
-        /// them itself, so only the local operator may attach.
+        /// ADR-088: absolute paths of files to attach, or `upload:<id>`
+        /// for a file sent in over HTTP (ADR-121 D5). The engine reads
+        /// them itself, so only the local operator (or an `owner` key)
+        /// may attach.
         #[serde(default)]
         attachments: Vec<String>,
         /// ADR-113 D7: the visitor this message is from, vouched for by

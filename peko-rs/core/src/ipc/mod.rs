@@ -36,6 +36,7 @@ pub mod run_tokens;
 pub(crate) mod send_response;
 pub mod server;
 pub mod stream;
+pub mod uploads;
 
 pub use client::DaemonClient;
 pub use connection::{ConnectionHandle, ConnectionManager};

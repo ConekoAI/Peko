@@ -185,6 +185,41 @@ default, set in `auth_config.toml` under `[rate_limit]`).
 Everything a key does is recorded in the audit log under the key's id
 (`peko audit`).
 
+### Files
+
+Files go beside the requests, as bytes. Send one in, then name it in a
+message:
+
+```bash
+curl -s "http://peko:11436/v1/files?name=receipt.pdf" \
+  -H "Authorization: Bearer $PEKO_KEY" \
+  -H 'Content-Type: application/octet-stream' --data-binary @receipt.pdf
+# {"file":"upload:3f9c…","name":"receipt.pdf","size":48213}
+
+curl -s http://peko:11436/v1/call \
+  -H "Authorization: Bearer $PEKO_KEY" -H 'Content-Type: application/json' \
+  -d '{"type": "principal_send", "name": "desk", "message": "My receipt",
+       "attachments": ["upload:3f9c…"],
+       "send_as": {"actor": "visitor:+15550100"}}'
+```
+
+A file is at most 20 MB, and a message carries at most 8. The message
+copies the file into the peko's workspace and the upload is gone; one no
+message used is deleted after an hour, and when the runtime restarts.
+
+A post the peko makes with a file names it in `attachments`, with a
+`path`. Fetch it with that path:
+
+```bash
+curl -s -G http://peko:11436/v1/files -H "Authorization: Bearer $PEKO_KEY" \
+  --data-urlencode "path=/data/pekos/…/attachments/2026-11-24/ab12cd34-chart.png" -o chart.png
+```
+
+Only files in a peko's `attachments` folders come back this way. A file
+that came from someone on another computer has a `sha256` instead; fetch
+it with `?channel=<the conversation's id>&sha256=<digest>`. Both need an
+`owner` key.
+
 ### Messages the peko sends later
 
 Sometimes the peko writes again after its reply: after you approve a
