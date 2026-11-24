@@ -487,9 +487,10 @@ mod tests {
             .await
             .expect("bundled skills listed");
         let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines.len(), 2, "got: {text}");
+        assert_eq!(lines.len(), 3, "got: {text}");
         assert!(lines[0].starts_with("- coding-agents: "), "got: {text}");
-        assert!(lines[1].starts_with("- triage: "), "got: {text}");
+        assert!(lines[1].starts_with("- computer-use: "), "got: {text}");
+        assert!(lines[2].starts_with("- triage: "), "got: {text}");
         assert!(
             lines
                 .iter()
@@ -519,17 +520,18 @@ mod tests {
             .await
             .unwrap();
         let lines: Vec<&str> = text.lines().collect();
+        // One list, by name: the workspace's two among the bundled ones.
         assert_eq!(
-            lines[..2],
-            [
-                "- coding-agents: Owner's way (skills/coding-agents/SKILL.md)",
-                "- docker: Docker ops (skills/docker/SKILL.md)"
-            ]
+            lines[0],
+            "- coding-agents: Owner's way (skills/coding-agents/SKILL.md)"
         );
-        // The other bundled skills follow; none repeats the workspace's.
-        assert!(lines[2..]
+        assert!(lines.contains(&"- docker: Docker ops (skills/docker/SKILL.md)"));
+        let bundled: Vec<&&str> = lines
             .iter()
-            .all(|l| l.ends_with(" (ships with the runtime)")));
-        assert!(!lines[2..].iter().any(|l| l.starts_with("- coding-agents:")));
+            .filter(|l| l.ends_with(" (ships with the runtime)"))
+            .collect();
+        assert_eq!(bundled.len(), lines.len() - 2);
+        // None of the bundled ones repeats the workspace's.
+        assert!(!bundled.iter().any(|l| l.starts_with("- coding-agents:")));
     }
 }

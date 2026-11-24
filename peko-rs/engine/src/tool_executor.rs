@@ -30,6 +30,9 @@ use peko_message::ContentBlock;
 use peko_message::LlmMessage;
 use tracing::{info, warn};
 
+/// Built-in tools whose results may carry a media file for the model.
+pub const MEDIA_TOOLS: &[&str] = &["Read", "Browser", "Computer"];
+
 /// Result of executing a single tool call.
 #[derive(Debug, Clone)]
 pub struct ToolExecutionResult {
@@ -303,10 +306,12 @@ impl ToolExecutor {
             .add_tool_result(id, name, &tool_result_str, is_error)
             .await?;
 
-        // Only the built-in `Read` may point the engine at a file: its
-        // path already passed the run's file-access checks (ADR-078),
-        // which another tool's output (an MCP server's) has not.
-        let media = (success && name == "Read")
+        // Only built-ins may point the engine at a file: `Read`, whose
+        // path already passed the run's file-access checks (ADR-078), and
+        // `Browser` and `Computer`, whose pictures the runtime itself wrote
+        // into the peko's local folder (ADR-119, ADR-123). Another tool's
+        // output (an MCP server's) has passed no such check.
+        let media = (success && MEDIA_TOOLS.contains(&name.as_str()))
             .then(|| crate::media::ToolMedia::from_output(&tool_result_json))
             .flatten();
 

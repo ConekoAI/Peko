@@ -305,6 +305,17 @@ impl ResponderInner {
     async fn deliver(&self, event_id: String, text: String, author: Option<ActorRef>) {
         if let Some(author) = author.as_ref() {
             if let Some(session_id) = self.session().await {
+                // ADR-123 D2: the owner writing where a run was paused
+                // by their hand on the computer lets it continue.
+                if crate::computer::paused_session().as_deref() == Some(session_id.as_str())
+                    && self
+                        .driver
+                        .stamp_for(&session_id, author)
+                        .await
+                        .is_some_and(|s| s.is_owner())
+                {
+                    crate::computer::owner_spoke(&session_id);
+                }
                 if self
                     .steer_into_running(&session_id, &event_id, &text, author)
                     .await

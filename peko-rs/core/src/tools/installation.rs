@@ -55,7 +55,8 @@ macro_rules! builtin_manifest {
 builtin_manifest! {
     RUNTIME_TOOL_NAMES: Runtime, Runtime, false => [
         "Bash", "Read", "Write", "Edit", "Glob", "Grep",
-        "Cron", "ChannelRead", "Attach", "Suggest", "Ask", "Fetch", "Secret", "Browser"
+        "Cron", "ChannelRead", "Attach", "Suggest", "Ask", "Fetch", "Secret", "Browser",
+        "Computer"
     ];
     DAEMON_TOOL_NAMES: Runtime, Daemon, false => ["ModelCall", "Workflow"];
     DAEMON_CALLER_TOOL_NAMES: Runtime, Daemon, true => ["Session", "Agent"];
@@ -154,6 +155,8 @@ pub async fn install_runtime(
         Arc::new(SecretTool::new()),
         // ADR-119 — the peko's own browser, which its owner can step into.
         Arc::new(crate::tools::builtin::BrowserTool::new()),
+        // ADR-123 — the owner's own computer: its screen, pointer and keys.
+        Arc::new(crate::tools::builtin::ComputerTool::new()),
     ];
 
     install_defaults(

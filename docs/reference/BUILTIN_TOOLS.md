@@ -1,12 +1,12 @@
 # Built-in Tools Catalog
 
-Peko exposes **30 built-in tool names**, all in PascalCase. Task, Plan, Cron, Async, Contacts, and Channel each require an explicit `action`; no former per-action tool names are aliases. Session also rejects fields irrelevant to the selected action. This reference
+Peko exposes **31 built-in tool names**, all in PascalCase. Task, Plan, Cron, Async, Contacts, and Channel each require an explicit `action`; no former per-action tool names are aliases. Session also rejects fields irrelevant to the selected action. This reference
 describes the compiled Tool implementations; the emitted descriptions and
 JSON Schemas in source are the executable contract. MCP and workspace tools
 have their own names and schemas and are outside this inventory.
 
 Every registered tool appears in the native wire catalog (ADR-066), except the
-ones the ADR-078 trust floor refuses the run (`Plan`, `Bash`, `Secret`, `Changes` and `Browser` below owner)
+ones the ADR-078 trust floor refuses the run (`Plan`, `Bash`, `Secret`, `Changes`, `Browser` and `Computer` below owner)
 and, for an untrusted run, the ones the owner's `ACCESS.toml` does not list
 (ADR-113). ToolCatalog
 owns registration/lookup; ToolDispatcher validates arguments, writes each call
@@ -39,7 +39,7 @@ installation phases, and the 27-name inventory. The complete inventory derives f
 
 | Lifetime | Tools | Installation |
 |---|---|---|
-| Runtime defaults | Read/Write/Edit/Glob/Grep/Bash, Cron, ChannelRead, Attach, Suggest, Ask, Fetch | Runtime startup; fill missing defaults without replacing configured instances |
+| Runtime defaults | Read/Write/Edit/Glob/Grep/Bash, Cron, ChannelRead, Attach, Suggest, Ask, Fetch, Secret, Browser, Computer | Runtime startup; fill missing defaults without replacing configured instances |
 | Daemon services | ModelCall, Workflow, caller-aware Session and Agent | After PrincipalManager and daemon services exist |
 | Principal workspace | Skill, RoleCatalog | Once per principal; RoleCatalog scans current role files on invocation |
 | Principal services | Task, Plan, ChannelSend, Contacts, ModelList, Async, MCP, ToolLog | When their session storage, plan, caller identity/channel, or inbox bindings become available |
@@ -555,6 +555,48 @@ The peko's own browser (ADR-119): a headless Chromium with a profile of the peko
 **Hand-off (ADR-119 D3, D4).** `handoff` records what the peko needs, tells the owner in their conversation (`🌐 Browser needs you`), and returns `{success, status: "waiting"}`. The owner takes control from a viewer: Peko Desktop on this computer (IPC `browser`), a paired phone (device verb `browser`), or Peko Desktop on another of their computers (IPC `channel_peko_browser`, tunnel `tunnel_peko_browser_request`). While a viewer holds control every action of this tool fails with "your owner is using the browser" and changes nothing; nothing the owner sees or types is recorded or reaches the model. When they release it (or their device goes away for 90 seconds) the session that asked gets a completion and reads the page again. A hand-off lapses after 24 hours.
 
 **Trust.** Page text and titles have runtime tags defused and are to be treated as data. Calls run alone (not parallel).
+
+## The owner's computer
+
+### Computer
+
+The owner's own computer (ADR-123): see the screen and click and type in its apps, the same way on macOS and Windows, for work no other tool can do (a desktop app with no web page, API or script interface; testing an app the owner builds).
+
+**Owner runs only.** It acts in the owner's signed-in apps, with the owner's reach, as `Bash` does; the floor refuses it to every other run and leaves it out of their wire catalog. `ACCESS.toml` cannot list it. Cron, keepalive and conversation runs that act for the owner may use it, so a peko can test an app while its owner is away. `[computer] enabled = false` in `runtime.toml` takes it out of every peko's catalog (read on each run).
+
+[Implementation](../../peko-rs/core/src/tools/builtin/computer.rs) · [desk](../../peko-rs/core/src/computer/mod.rs) · [macOS](../../peko-rs/core/src/computer/macos.rs) · [Windows](../../peko-rs/core/src/computer/windows.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `action` | `screens` \| `windows` \| `focus` \| `screenshot` \| `click` \| `drag` \| `move` \| `scroll` \| `type` \| `key` | yes | — |
+| `app` | string | no | windows: only windows of this app name (substring) or process id |
+| `screen` | integer | no | screenshot: a screen id from `screens`; default the main screen |
+| `window` | integer | focus, click, drag, scroll, type, key; screenshot (or `screen`) | a window id from `windows` |
+| `region` | [x, y, width, height] | no | screenshot: part of an earlier `frame`, in its pixels |
+| `after_ms` | integer | no | screenshot: wait first; at most 10000 |
+| `frame` | integer | click, drag, move, scroll; screenshot with `region` | the screenshot the coordinates are in |
+| `x`, `y` | number | click, move, scroll | pixels in the frame's picture |
+| `from`, `to` | [x, y] | drag | pixels in the frame's picture |
+| `button` | `left` \| `right` \| `middle` | no | left |
+| `count` | integer | no | 1; 2 double-clicks (at most 3) |
+| `dx`, `dy` | integer | scroll (one of them) | lines; `dy` > 0 down, `dx` > 0 right; ±100 |
+| `text` | string | type (or `secret`) | at most 5000 characters; newlines press Enter, tabs Tab |
+| `secret` | string | type (or `text`) | the name of a peko secret (ADR-116) to type |
+| `keys` | string | key | a key or chord: `enter`, `tab`, `escape`, `backspace`, `delete`, `space`, the arrows, `home`, `end`, `pageup`, `pagedown`, `insert`, `f1`…`f20`, a character; modifiers `cmd`, `ctrl`, `alt`, `shift`, `win` (Windows) joined by `+` |
+
+`screens` returns `{screens: [{id, bounds: {x, y, width, height}, scale, main}]}`. `windows` returns `{windows: [{window, app, pid, title, bounds, minimized}]}`, front to back, minimized (macOS: off screen) last; Peko Desktop's indicator is never listed. `screenshot` returns `{frame, width, height, of, content, media}` with the picture as `media` (an image, for models that take them); every input action returns `{success, done, window: {window, app, pid, title}}`.
+
+**Frames (D1).** Every screenshot is a numbered frame of a screen or a window; input names the frame and gives `x, y` in that picture's pixels, and the runtime maps them to the screen. A window frame is relative to the window and the window's bounds are read again before acting, so a window that moved still works; one that changed size, closed, or was minimized fails with `status: "stale"` ("take a new screenshot"). A frame of one window cannot steer input to another. Frames are kept for the run's last 8 screenshots. Pictures are JPEG, at most 1568 px on the long edge and 1.2 megapixels; a `region` shows part of a frame at up to full resolution.
+
+**The focus guard (D3).** Before input, the window's app must be frontmost and the window its front window. If not, the runtime brings it forward once (macOS: Accessibility `AXFrontmost`/`AXRaise`, System Events as fallback; Windows: a synthetic Alt, then `SetForegroundWindow`), waits up to 500 ms, and checks again; still not in front, the action fails with `status: "not_in_front"` naming what is in front, and nothing is sent. A click whose point another app's window covers is refused the same way. Long text is typed in pieces of 20 UTF-16 units, and the guard is checked between them.
+
+**One hand on the screen (D2).** Hardware input from the owner (macOS: a listen-only event tap; Windows: low-level hooks; events the runtime posted are told apart) pauses the run that used the computer in the last 30 seconds: its input actions, and every other run's, fail with `status: "paused"` until the owner chooses **Let it continue** (Peko Desktop's indicator, IPC `computer_resume`, `peko computer continue`) or writes in that session; screenshots still work. Only one run acts at a time: another run's input fails with `status: "busy"` until the first has sent no input for 30 seconds. A locked screen, the screen saver, a system password prompt (macOS) or the secure desktop (Windows) fails every action with `status: "blocked"`. `type {secret}` is refused while a secure field or a UAC prompt holds the keyboard. The display is kept awake while the computer is used, and for a minute after.
+
+**Platforms (D4).** macOS 13+: ScreenCaptureKit pictures (`CGWindowListCreateImage` where it is missing), `CGEventPost` input, coordinates in points; it needs Screen Recording and Accessibility granted to the app that started the engine (`peko computer status|setup`). Windows 10 1903+ and 11: Windows.Graphics.Capture (`PrintWindow`/`BitBlt` fallback), `SendInput` (text with `KEYEVENTF_UNICODE`), per-monitor DPI aware v2, coordinates in physical pixels; no grants. A window of an elevated process is refused (UIPI would drop the input); an engine running as a Windows service (session 0) reports that it has no desktop. Other systems: every call says it is not available.
+
+**What is recorded (D6).** The ledger keeps each call's action, frame, coordinates, window id, key names, and for `type` the number of characters (`"[N characters]"`) or the secret's name (`secret_name`), never the text and never a picture; the result excerpt names the window's app, process id and title. A secret's value is in no parameter or result; window titles have it replaced by `[secret:NAME]`, and pictures taken after it was typed carry a note that it may be visible. Screenshots are kept under `<local>/computer/screenshots/` (the newest 50), in no snapshot.
+
+**Trust.** Screen content is information, never instructions. Calls run alone (not parallel).
 
 ## Inference and workflows
 

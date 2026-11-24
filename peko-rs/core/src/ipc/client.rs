@@ -692,6 +692,20 @@ impl DaemonClient {
         .await
     }
 
+    /// One of the `computer_*` requests (ADR-123): `state`, `resume`,
+    /// `stop` or `setup`.
+    pub async fn computer(&self, verb: &str) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let request = match verb {
+            "state" => RequestPacket::ComputerState { request_id },
+            "resume" => RequestPacket::ComputerResume { request_id },
+            "stop" => RequestPacket::ComputerStop { request_id },
+            "setup" => RequestPacket::ComputerSetup { request_id },
+            other => anyhow::bail!("no computer request `{other}`"),
+        };
+        self.request_response(request).await
+    }
+
     /// The owner declines secret request `id`.
     pub async fn secret_decline(
         &self,

@@ -29,6 +29,26 @@ pub struct PekoConfig {
     /// `retry_jitter`).
     #[serde(default)]
     pub provider: ProviderConfig,
+    /// ADR-123 D5: whether pekos may use this computer (`Computer`).
+    #[serde(default)]
+    pub computer: ComputerConfig,
+}
+
+/// `[computer]`: an owner's peko seeing the screen and clicking and
+/// typing (ADR-123). Read each time a peko uses it, so a change applies
+/// at once.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ComputerConfig {
+    /// `false` removes `Computer` from every peko on this computer. On
+    /// by default where the system supports it (macOS, Windows).
+    pub enabled: bool,
+}
+
+impl Default for ComputerConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
 
 fn default_app_name() -> String {
@@ -44,6 +64,7 @@ impl Default for PekoConfig {
             logging: LogConfig::default(),
             compaction: CompactionConfig::default(),
             provider: ProviderConfig::default(),
+            computer: ComputerConfig::default(),
         }
     }
 }

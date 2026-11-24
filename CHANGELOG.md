@@ -6,6 +6,26 @@ All notable changes to Peko.
 
 ### Added
 
+- **A peko can use your computer (ADR-123).** Much of what you want done
+  lives in desktop apps with no web page or API. A peko working for you
+  now has `Computer`: it lists the screens and windows, takes a picture of
+  a screen or a window, and clicks, drags, scrolls, types and presses keys,
+  the same way on macOS and Windows. Its input names the window it is for
+  and reaches that window or nothing: when another app is in front and
+  cannot be moved aside, nothing is typed and the peko is told what is in
+  front. Touch the mouse or keyboard and the peko is paused until you let
+  it continue (Peko Desktop's indicator, `peko computer continue`, or a
+  message in its conversation); only one peko acts on the screen at a
+  time, and a locked screen or a password prompt stops it. Only work done
+  for you gets it, as with `Bash`. The ledger keeps what it did, never
+  what it typed or saw. On macOS it needs Screen Recording and
+  Accessibility for the app that started Peko: `peko computer status`
+  says which, and `peko computer setup` asks for them. Turn it off with
+  `[computer] enabled = false` in `runtime.toml`. A bundled skill,
+  `computer-use`, says when to use it and how to test an app you build.
+- **Four IPC requests for Peko Desktop's indicator** (all `internal`):
+  `computer_state`, `computer_resume`, `computer_stop` and
+  `computer_setup`, each answered with `computer_result`.
 - **A service can reach the engine over HTTP with a key (ADR-121).** A
   business that runs a peko on a server could only drive it with the
   command line: `docker exec`, or a second container sharing the whole
@@ -106,6 +126,14 @@ All notable changes to Peko.
   The seeded `conversation` role says how to hand work to another peko
   and not to wait for the answer; an unedited copy is updated on the next
   start.
+
+### Fixed
+
+- **`Browser` screenshots reach the model.** The engine attached a tool
+  result's picture only for `Read`, so a peko asking its browser for a
+  screenshot was told only that one existed. `Browser` and `Computer`
+  pictures, which the runtime writes itself, are now attached for models
+  that take images.
 
 ## [0.5.0] - 2026-11-23
 

@@ -736,6 +736,32 @@ pub enum RequestPacket {
         args: serde_json::Value,
     },
 
+    /// Whether a peko is using this computer's screen, doing what, and
+    /// whether the owner's hand paused it (ADR-123 D5), with the
+    /// system's grants. Peko Desktop asks while it runs, to show its
+    /// indicator. Local callers only. Answered with `ComputerResult`.
+    #[serde(rename = "computer_state")]
+    ComputerState { request_id: u64 },
+
+    /// **Let it continue** (ADR-123 D2): lift the pause the owner's input
+    /// put on the run using the screen, and wake its session. Local
+    /// callers only. Answered with `ComputerResult`.
+    #[serde(rename = "computer_resume")]
+    ComputerResume { request_id: u64 },
+
+    /// **Stop** (ADR-123 D5): end the run using the screen, wherever it
+    /// runs (a conversation, cron, the keepalive). Local callers only.
+    /// Answered with `ComputerResult`.
+    #[serde(rename = "computer_stop")]
+    ComputerStop { request_id: u64 },
+
+    /// Ask the system for the grants `Computer` needs (ADR-123 D5): on
+    /// macOS, opens the Screen Recording and Accessibility prompts for the
+    /// app that started the engine. Local callers only. Answered with
+    /// `ComputerResult`.
+    #[serde(rename = "computer_setup")]
+    ComputerSetup { request_id: u64 },
+
     /// Recent turns of a peko that changed files, newest first (ADR-117):
     /// those in `channel` when given, or with `dm`, in the DM of `peer`
     /// (the caller when absent) as `principal_log` resolves it. Owner
@@ -1503,6 +1529,10 @@ impl RequestPacket {
             | Self::SecretDecline { request_id, .. }
             | Self::SecretDelete { request_id, .. }
             | Self::Browser { request_id, .. }
+            | Self::ComputerState { request_id }
+            | Self::ComputerResume { request_id }
+            | Self::ComputerStop { request_id }
+            | Self::ComputerSetup { request_id }
             | Self::TurnChanges { request_id, .. }
             | Self::TurnUndo { request_id, .. }
             | Self::QuotaGet { request_id, .. }
@@ -3042,6 +3072,17 @@ pub enum ResponsePacket {
         body: serde_json::Value,
     },
 
+    /// The answer to `computer_state`, `computer_resume`, `computer_stop`
+    /// and `computer_setup` (ADR-123): `using` (the peko, its session and
+    /// its latest action, while it used the screen in the last 30
+    /// seconds), `paused`, `available`, `permissions`, and for a stop or
+    /// setup what it did.
+    #[serde(rename = "computer_result")]
+    ComputerResult {
+        request_id: u64,
+        body: serde_json::Value,
+    },
+
     /// What `secret_provide` / `secret_decline` / `secret_delete` did.
     #[serde(rename = "secret_done")]
     SecretDone { request_id: u64, message: String },
@@ -3874,6 +3915,7 @@ impl ResponsePacket {
             | Self::SecretList { request_id, .. }
             | Self::SecretDone { request_id, .. }
             | Self::BrowserResult { request_id, .. }
+            | Self::ComputerResult { request_id, .. }
             | Self::TurnChanges { request_id, .. }
             | Self::TurnUndone { request_id, .. }
             | Self::PrincipalExported { request_id, .. }
@@ -3992,6 +4034,7 @@ impl ResponsePacket {
             Self::SecretList { .. } => "SecretList",
             Self::SecretDone { .. } => "SecretDone",
             Self::BrowserResult { .. } => "BrowserResult",
+            Self::ComputerResult { .. } => "ComputerResult",
             Self::TurnChanges { .. } => "TurnChanges",
             Self::TurnUndone { .. } => "TurnUndone",
             Self::PrincipalExported { .. } => "PrincipalExported",

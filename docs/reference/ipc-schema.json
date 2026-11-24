@@ -2123,6 +2123,82 @@
           "type": "object"
         },
         {
+          "description": "Whether a peko is using this computer's screen, doing what, and\nwhether the owner's hand paused it (ADR-123 D5), with the\nsystem's grants. Peko Desktop asks while it runs, to show its\nindicator. Local callers only. Answered with `ComputerResult`.",
+          "properties": {
+            "request_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "computer_state",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "**Let it continue** (ADR-123 D2): lift the pause the owner's input\nput on the run using the screen, and wake its session. Local\ncallers only. Answered with `ComputerResult`.",
+          "properties": {
+            "request_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "computer_resume",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "**Stop** (ADR-123 D5): end the run using the screen, wherever it\nruns (a conversation, cron, the keepalive). Local callers only.\nAnswered with `ComputerResult`.",
+          "properties": {
+            "request_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "computer_stop",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Ask the system for the grants `Computer` needs (ADR-123 D5): on\nmacOS, opens the Screen Recording and Accessibility prompts for the\napp that started the engine. Local callers only. Answered with\n`ComputerResult`.",
+          "properties": {
+            "request_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "computer_setup",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Recent turns of a peko that changed files, newest first (ADR-117):\nthose in `channel` when given, or with `dm`, in the DM of `peer`\n(the caller when absent) as `principal_log` resolves it. Owner\nonly, local callers only. Answered with `TurnChanges`.",
           "properties": {
             "channel": {
@@ -7814,6 +7890,86 @@
           "x-stability": "stable"
         },
         {
+          "description": "Whether a peko is using this computer's screen, doing what, and\nwhether the owner's hand paused it (ADR-123 D5), with the\nsystem's grants. Peko Desktop asks while it runs, to show its\nindicator. Local callers only. Answered with `ComputerResult`.",
+          "properties": {
+            "request_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "computer_state",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id"
+          ],
+          "type": "object",
+          "x-stability": "internal"
+        },
+        {
+          "description": "**Let it continue** (ADR-123 D2): lift the pause the owner's input\nput on the run using the screen, and wake its session. Local\ncallers only. Answered with `ComputerResult`.",
+          "properties": {
+            "request_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "computer_resume",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id"
+          ],
+          "type": "object",
+          "x-stability": "internal"
+        },
+        {
+          "description": "**Stop** (ADR-123 D5): end the run using the screen, wherever it\nruns (a conversation, cron, the keepalive). Local callers only.\nAnswered with `ComputerResult`.",
+          "properties": {
+            "request_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "computer_stop",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id"
+          ],
+          "type": "object",
+          "x-stability": "internal"
+        },
+        {
+          "description": "Ask the system for the grants `Computer` needs (ADR-123 D5): on\nmacOS, opens the Screen Recording and Accessibility prompts for the\napp that started the engine. Local callers only. Answered with\n`ComputerResult`.",
+          "properties": {
+            "request_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "computer_setup",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id"
+          ],
+          "type": "object",
+          "x-stability": "internal"
+        },
+        {
           "description": "Recent turns of a peko that changed files, newest first (ADR-117):\nthose in `channel` when given, or with `dm`, in the DM of `peer`\n(the caller when absent) as `principal_log` resolves it. Owner\nonly, local callers only. Answered with `TurnChanges`.",
           "properties": {
             "channel": {
@@ -12673,6 +12829,28 @@
           ],
           "type": "object",
           "x-stability": "stable"
+        },
+        {
+          "description": "The answer to `computer_state`, `computer_resume`, `computer_stop`\nand `computer_setup` (ADR-123): `using` (the peko, its session and\nits latest action, while it used the screen in the last 30\nseconds), `paused`, `available`, `permissions`, and for a stop or\nsetup what it did.",
+          "properties": {
+            "body": true,
+            "request_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "computer_result",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "body"
+          ],
+          "type": "object",
+          "x-stability": "internal"
         },
         {
           "description": "What `secret_provide` / `secret_decline` / `secret_delete` did.",

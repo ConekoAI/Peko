@@ -231,6 +231,8 @@ pub mod principal;
 // [kept] ADR-119: each peko's own browser (a Chromium the runtime
 // drives), and its owner's hand on it.
 pub mod browser;
+// ADR-123: a peko uses its owner's computer (`Computer`).
+pub mod computer;
 
 // ADR-078: acting-for stamps and the trust floor. Kept free of
 // `principal/` so `agents/` can enforce it.

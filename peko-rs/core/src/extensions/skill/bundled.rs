@@ -27,6 +27,12 @@ pub const BUNDLED_SKILLS: &[BundledSkill] = &[
         text: include_str!("../../resources/skills/coding-agents/SKILL.md"),
         owner_only: true,
     },
+    // ADR-123: using the owner's computer (`Computer`, owner runs only).
+    BundledSkill {
+        name: "computer-use",
+        text: include_str!("../../resources/skills/computer-use/SKILL.md"),
+        owner_only: true,
+    },
     BundledSkill {
         name: "triage",
         text: include_str!("../../resources/skills/triage/SKILL.md"),

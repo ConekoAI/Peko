@@ -42,6 +42,7 @@ Commands:
   device         Your account's computers and phones
   secret         Secrets your pekos asked you for
   browser        The browser your pekos use
+  computer       Your pekos using this computer: its screen, mouse and keyboard
   undo           Undo what a peko's turn changed in your files
   code           An identity's code, to read to its owner
   quota          How many tokens and requests a peko may use
@@ -1439,6 +1440,62 @@ Usage: peko browser stop [OPTIONS] <PEKO>
 
 Arguments:
   <PEKO>  The peko
+
+```
+
+## `peko computer`
+
+```text
+Your pekos using this computer: its screen, mouse and keyboard
+
+A peko can see the screen and click and type in apps for you. On macOS it needs Screen Recording and Accessibility; moving the mouse or typing pauses it.
+
+Examples: peko computer status peko computer setup peko computer continue peko computer stop
+
+Usage: peko computer [OPTIONS] <COMMAND>
+
+Commands:
+  status    Whether pekos can use this computer, the permissions it needs, and which peko is using it now
+  setup     Ask for the permissions pekos need to see the screen and use it (macOS: Screen Recording and Accessibility)
+  continue  Let a peko your mouse or keyboard paused go on
+  stop      Stop the peko using the screen
+  help      Print this message or the help of the given subcommand(s)
+
+```
+
+### `peko computer status`
+
+```text
+Whether pekos can use this computer, the permissions it needs, and which peko is using it now
+
+Usage: peko computer status [OPTIONS]
+
+```
+
+### `peko computer setup`
+
+```text
+Ask for the permissions pekos need to see the screen and use it (macOS: Screen Recording and Accessibility)
+
+Usage: peko computer setup [OPTIONS]
+
+```
+
+### `peko computer continue`
+
+```text
+Let a peko your mouse or keyboard paused go on
+
+Usage: peko computer continue [OPTIONS]
+
+```
+
+### `peko computer stop`
+
+```text
+Stop the peko using the screen
+
+Usage: peko computer stop [OPTIONS]
 
 ```
 
