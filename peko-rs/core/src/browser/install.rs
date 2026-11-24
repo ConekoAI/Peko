@@ -280,7 +280,10 @@ fn unzip(archive: &Path, target: &Path) -> Result<()> {
     for index in 0..zip.len() {
         let mut entry = zip.by_index(index)?;
         let Some(relative) = entry.enclosed_name() else {
-            bail!("the archive names a path outside itself: {}", entry.name());
+            bail!(
+                "the archive names a path outside itself: {}",
+                entry.name_raw().escape_ascii()
+            );
         };
         let path = target.join(relative);
         if entry.is_dir() {
