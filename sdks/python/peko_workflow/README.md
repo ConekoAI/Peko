@@ -96,4 +96,4 @@ transport (`\\.\pipe\peko-<user>`, ADR-038) is a TODO.
 
 ## License
 
-MIT
+MIT OR Apache-2.0, at your option.

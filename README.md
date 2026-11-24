@@ -21,7 +21,7 @@
 <p align="center">
   <a href="https://github.com/ConekoAI/Peko/releases/latest"><img src="https://img.shields.io/github/v/release/ConekoAI/Peko?label=release" alt="Latest release"></a>
   <a href="https://github.com/ConekoAI/Peko/actions/workflows/integration.yml"><img src="https://github.com/ConekoAI/Peko/actions/workflows/integration.yml/badge.svg?branch=master" alt="CI"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
+  <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue" alt="MIT or Apache 2.0 license"></a>
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="macOS, Windows, Linux">
 </p>
 
@@ -213,4 +213,9 @@ has the build and test steps. Please report security problems privately, as
 
 ## License
 
-[MIT](LICENSE)
+Licensed under either of
+
+- [Apache License, Version 2.0](LICENSE-APACHE)
+- [MIT license](LICENSE-MIT)
+
+at your option.

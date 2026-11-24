@@ -4,7 +4,7 @@ version = "0.5.0"
 edition = "2021"
 authors = ["Peko <peko@coneko.ai>"]
 description = "Lightweight multi-agent runtime with optional Coneko network"
-license = "MIT"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/ConekoAI/Peko"
 
 # Phase 0.Z-A: lib name diverged from `package.name` so the workspace
