@@ -783,6 +783,7 @@ pub trait ChannelPort: Send + Sync + 'static {
 /// visibility this runtime does not track. Serializes as `local_only`,
 /// `private`, `public`, `registered`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Registration {
     #[default]
@@ -836,6 +837,7 @@ impl PartialEq<&str> for Registration {
 
 /// Public, addressable identity in contact lists and channel rosters.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ActorInfo {
     pub address: String,
     /// Present only for identities hosted by this runtime.
@@ -984,6 +986,7 @@ pub fn short_name_unambiguous(roster: &[ActorInfo], name: &str, address: &str) -
 /// What starts a turn for a bound principal (ADR-082 D3). Whatever the
 /// policy, a principal-authored post or a reply never does (ADR-072).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum WakePolicy {
     /// Every human (user or visitor) root post. A DM's fixed policy.

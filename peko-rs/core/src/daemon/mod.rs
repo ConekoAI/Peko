@@ -35,6 +35,7 @@ use tracing::{debug, error, info, warn};
 /// `pub` (not `pub(crate)`) because `ResponsePacket::Status::mode`
 /// is part of the public IPC wire envelope (`ipc::packet` is `pub`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum LaunchMode {
     #[default]

@@ -437,6 +437,7 @@ pub struct InviteLink {
 /// A group's invitation waiting for the person's answer (ADR-092 D2),
 /// kept on each of their runtimes until they accept or decline.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GroupInvitation {
     pub channel: ChannelId,
     pub name: String,
@@ -472,6 +473,7 @@ pub struct PekoJoinRequest {
 /// answer (ADR-095 D6). It names only who asks; nothing goes back to the
 /// asker until it is accepted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DmRequest {
     /// The pair id the DM will have.
     pub channel: ChannelId,

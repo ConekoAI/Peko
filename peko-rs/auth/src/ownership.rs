@@ -16,6 +16,7 @@ use crate::host::{Exposure, PrincipalResourceView};
 
 /// Actions that can be performed on principals
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Permission {
     /// Send messages / chat
@@ -50,6 +51,7 @@ impl Permission {
 /// After ADR-039, the subject is a full `ActorRef`. The IPC wire carries
 /// the same `ActorRef` directly.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PermissionGrant {
     /// The subject this grant applies to.
     pub subject: ActorRef,

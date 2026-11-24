@@ -51,6 +51,7 @@ use serde::{Deserialize, Serialize};
 /// (no `#[serde(transparent)]` — the project doesn't use it, matching
 /// `peko_subject::PrincipalId`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ChannelId(pub String);
 
 /// Dispatch kind for a [`ChannelId`]. The runtime branches on this to
@@ -89,6 +90,7 @@ impl ChannelKind {
 /// group with a mutable roster. Set at creation, never changed, and
 /// carried on the signed cross-runtime invite.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ConversationKind {
     /// A pair DM: id `dm_<SHA-256>` of its two members' keys; the
@@ -273,6 +275,7 @@ impl std::fmt::Display for ChannelId {
 /// its file store under that digest; the receiving runtime pulls them
 /// from the runtime that sent the post.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Attachment {
     /// The file's original name.
     pub name: String,
@@ -293,6 +296,7 @@ pub struct Attachment {
 /// open until someone answers it or the peko posts again. Carries no
 /// authority — an answer is an ordinary post by whoever sends it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Ask {
     /// The member the card is for (an actor address on the roster), in
     /// a group; `None` is anyone in the conversation. Clients show the
@@ -305,6 +309,7 @@ pub struct Ask {
 
 /// One question on an [`Ask`] card.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Question {
     /// The question, at most 300 characters.
     pub text: String,
@@ -320,6 +325,7 @@ pub struct Question {
 /// `text` is a readable rendering of them, so every reader that ignores
 /// this field still reads the whole answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Answers {
     /// The `msg_id` of the post whose questions these answer.
     pub to: String,
@@ -329,6 +335,7 @@ pub struct Answers {
 
 /// The answer to one [`Question`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Pick {
     /// Options of the question that were chosen; at most one unless the
     /// question is `multi`.
@@ -342,6 +349,7 @@ pub struct Pick {
 /// What a board item is doing (ADR-101 D1). An item a `release` reopens
 /// has no claimant; `open` is never set by an `update`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum BoardState {
     Open,
@@ -368,6 +376,7 @@ impl BoardState {
 /// Authority comes from the post's author, never from the op: who may
 /// make which op is decided where the board is folded.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum BoardOp {
     /// A new item, `open`. `for_member` names the member it is asked
@@ -439,6 +448,7 @@ impl BoardOp {
 /// message being replied to; `null` for root posts (the adapter enforces
 /// at-most-one parent — see `peko_channel::plan_channel`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ChannelEvent {
     /// Channel creation. Fires once at the top of the event log.
@@ -622,6 +632,7 @@ pub struct ChannelMembership {
 /// that don't read `member_provenance` see no change to the wire
 /// shape — the field uses `#[serde(default)]` and skips when empty.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub struct MemberProvenance {
     pub principal: String,
@@ -657,6 +668,7 @@ pub struct MemberProvenance {
 /// ~22 bytes per local member. Verified by
 /// [`initial_member_skips_none_runtime_id`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct InitialMember {
     pub principal_did: String,

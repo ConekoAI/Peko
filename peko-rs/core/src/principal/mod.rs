@@ -280,6 +280,7 @@ impl Principal {
 /// wire-form shape for the post-migration `PrincipalList` /
 /// `PrincipalGet` IPC variants — see audit finding C1.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PrincipalSummary {
     pub local_id: String,
     pub hub_id: Option<String>,

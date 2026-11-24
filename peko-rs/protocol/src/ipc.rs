@@ -36,6 +36,7 @@ pub const CLI_TIMEOUT_SECS: u64 = 60;
 /// { "type": "api_key", "token": "..." }
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", content = "token")]
 #[derive(Default)]
 pub enum AuthCredential {
@@ -54,6 +55,7 @@ pub enum AuthCredential {
 
 /// Authentication header appended to every request.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AuthHeader {
     pub credential: AuthCredential,
 }

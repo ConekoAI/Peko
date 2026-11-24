@@ -820,3 +820,30 @@ async fn a_channels_file_comes_back_by_digest() {
     let neither = get_file(&base, OWNER_KEY, &[]).await;
     assert_eq!(neither.status(), 400);
 }
+
+// --- D6: the schema -------------------------------------------------------------
+
+#[tokio::test]
+async fn the_schema_is_served_to_any_valid_key() {
+    let (base, _stop) = serve_fake(Arc::new(FakeHost::new())).await;
+    for key in [OWNER_KEY, WRITE_KEY] {
+        let response = client()
+            .get(format!("{base}/v1/schema"))
+            .bearer_auth(key)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.headers()["content-type"], "application/json");
+        assert_eq!(
+            response.text().await.unwrap(),
+            crate::ipc::schema::SCHEMA_JSON
+        );
+    }
+    let anonymous = client()
+        .get(format!("{base}/v1/schema"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(anonymous.status(), 401);
+}

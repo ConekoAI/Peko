@@ -14,6 +14,7 @@ use peko_subject::{PrincipalDID, PrincipalId};
 /// the tunnel edge. `None` at the `PrincipalConfig` level means the daemon's
 /// runtime state is the source of truth.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
     Online,
@@ -38,6 +39,7 @@ pub enum Status {
 ///   owns its cadence and boot no longer seeds its cron schedule.
 ///   This records execution completion, not verified self-organization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum BootState {
     Provisioned,

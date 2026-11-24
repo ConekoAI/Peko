@@ -27,6 +27,11 @@ All notable changes to Peko.
 - **Every request and response type is marked `stable` or `internal`**
   (`peko-rs/core/src/ipc/stability.rs`). A `stable` type breaks only in a
   minor version.
+- **The requests and responses have a JSON Schema**
+  (`docs/reference/ipc-schema.json`, ADR-121 D6), generated from the Rust
+  types and served at `GET /v1/schema` to any valid key. Each type carries
+  its mark as `x-stability`. A service can generate its client from it
+  instead of reading `packet.rs`.
 
 ### Changed
 

@@ -174,9 +174,11 @@ streamed reply, a watch) comes back as `text/event-stream`, one
 always get that, which you should for anything that runs a long time.
 `principal_send_stream` streams the reply as it is written.
 
-The requests are the ones Peko Desktop and the command line send: the
-`RequestPacket` types in
-[`packet.rs`](../../peko-rs/core/src/ipc/packet.rs). A packet is at most
+The requests are the ones Peko Desktop and the command line send. Their
+JSON Schema, with every response, is at `GET /v1/schema` (the same file as
+[`docs/reference/ipc-schema.json`](../reference/ipc-schema.json)); each
+type is marked `stable` (breaks only in a minor version) or `internal`
+(may change in any release). A packet is at most
 60,000 bytes. The runtime's own errors come back as an `error` packet with
 status 200; status 4xx means the request did not get in (no key or a bad
 one, too large, not JSON, too many requests: 100 a minute per key by

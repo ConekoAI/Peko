@@ -30,6 +30,8 @@ name = "peko_core"
 path = "src/lib.rs"
 
 [dependencies]
+# ADR-121 D6: the IPC JSON Schema, only with `--features schema`.
+schemars = { version = "1", optional = true, features = ["chrono04", "uuid1"] }
 # Workspace member providing the agentic engine. Phase 9a extracted
 # the pure-dependency files (chunker, event_processor, state,
 # stream_buffer, stream_orchestrator, tool_stream, parallel_gate,
@@ -318,6 +320,10 @@ default = []
 # `framework::core::test_sync` (the only such gating); the feature is
 # kept for future opt-in test seams.
 test-utils = []
+# ADR-121 D6: derive the JSON Schema of every IPC wire type
+# (`docs/reference/ipc-schema.json`). Off by default; the default build
+# serves the checked-in file.
+schema = ["dep:schemars", "peko-auth/schema", "peko-channel/schema", "peko-observability/schema", "peko-protocol/schema", "peko-provider-api/schema", "peko-quota/schema", "peko-subject/schema"]
 
 [dev-dependencies]
 # Cron tool tests drive a file-backed `CronRuntime` (tools::builtin::test_harness).
