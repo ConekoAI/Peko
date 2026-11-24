@@ -1,4 +1,4 @@
-//! IPC Server — Daemon-Side Listener (Unix Datagram, UDP, Windows Named Pipe)
+//! IPC Server — Daemon-Side Listener (Unix Datagram, Windows Named Pipe)
 //!
 //! The daemon binds a transport and listens for incoming request packets.
 //! Each request is dispatched to the appropriate service, and responses
@@ -14,11 +14,15 @@
 //!   - **Windows**: Named pipe at `\\.\pipe\peko-{username}` (ADR-038) with
 //!     a DACL that grants the current user Generic All — kernel-enforced
 //!     peer identity analogous to Unix 0600.
-//!   - **All platforms**: UDP on `127.0.0.1:11435` is the explicit-remote
-//!     transport and the universal last-resort safety net.
+//!
+//! There is no network transport here. Loopback UDP, once the fallback
+//! when the socket or the pipe could not be bound, trusted any process
+//! on the computer and is retired: the engine now refuses to start
+//! instead. A service on another host or in another container uses the
+//! HTTP door with an API key (`http`, ADR-121).
 //!
 //! Response writes are abstracted over the [`ResponseSink`](super::response_sink::ResponseSink)
-//! trait so the giant `handle_request` match is platform-agnostic: Unix/UDP
+//! trait so the giant `handle_request` match is platform-agnostic: Unix
 //! call sites construct a per-request sink that captures the peer address
 //! returned by `recv_from`; the Windows call site constructs a per-connection
 //! sink over a `&mut NamedPipeServer`. See `response_sink.rs` for the
@@ -29,24 +33,23 @@ use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::net::UdpSocket;
 #[cfg(unix)]
 use tokio::net::UnixDatagram;
 use tracing::{debug, error, info, trace, warn};
 
+#[cfg(unix)]
+use super::ensure_run_dir;
 use super::packet::{AuthenticatedRequest, RequestPacket, ResponsePacket};
-use super::response_sink::{sink_for_unix_or_udp, ResponseSink};
+#[cfg(unix)]
+use super::response_sink::sink_for_unix;
+use super::response_sink::ResponseSink;
 #[cfg(windows)]
 use super::{default_pipe_name, response_sink::sink_for_pipe, DAEMON_PIPE_ENV};
-use super::{ensure_run_dir, DEFAULT_HOST, DEFAULT_PORT};
 use crate::daemon::state::AppState;
 use peko_auth::caller::CallerContext;
-#[cfg(not(windows))]
-use peko_auth::config::enforce_auth_for_public_bind;
 use peko_auth::permissions::AuthError;
 
-/// `SO_SNDBUF` applied to both the Unix datagram and UDP server sockets
-/// at bind time.
+/// `SO_SNDBUF` applied to the Unix datagram server socket at bind time.
 ///
 /// Why this exists: macOS's default `SO_SNDBUF` for `AF_UNIX/SOCK_DGRAM`
 /// is **2048 bytes**, which is *smaller* than the serialised
@@ -54,10 +57,7 @@ use peko_auth::permissions::AuthError;
 /// handful of providers (each `ProviderInfo` entry is ~150 B). The
 /// runtime's `send_to` then returns `EMSGSIZE` ("Message too long",
 /// os error 40), the handler logs the error, and the client silently
-/// hangs waiting for a reply that never arrives. The UDP default
-/// (~8 KiB on Linux, ~9 KiB on macOS) is also too small for the
-/// combined `runtime_info` + `extension_list` payloads a single
-/// `system_status` request can produce.
+/// hangs waiting for a reply that never arrives.
 ///
 /// 256 KiB is generous enough that every response the runtime ships
 /// today — and the larger composite ones future handlers will produce
@@ -72,9 +72,6 @@ pub enum ServerSocket {
     Unix {
         socket: Arc<UnixDatagram>,
         path: Arc<std::path::PathBuf>,
-    },
-    Udp {
-        socket: Arc<UdpSocket>,
     },
     #[cfg(windows)]
     NamedPipe {
@@ -91,8 +88,8 @@ pub enum ServerSocket {
 
 /// ActorRef address returned by `ServerSocket::recv_from` and threaded through
 /// the request handlers so they can `send_to` the response back. Unix domain
-/// datagram sockets return the sender's filesystem path; UDP returns a
-/// `std::net::SocketAddr`. Windows named pipes (ADR-038) are
+/// datagram sockets return the sender's filesystem path; the HTTP door
+/// (ADR-121) passes its client's `std::net::SocketAddr`. Windows named pipes (ADR-038) are
 /// connection-oriented and have no per-message peer address — the
 /// `Local` variant represents a connection that is local by construction.
 #[derive(Debug, Clone)]
@@ -107,15 +104,14 @@ pub enum PeerAddr {
 impl PeerAddr {
     /// True for local connections: Unix domain sockets (always local),
     /// named-pipe connections (always local — kernel checks the SID at
-    /// `CreateFileW` time), and UDP peers on a loopback address. `None`
-    /// (no peer info) is treated as local — the same convention the
-    /// previous `Option<SocketAddr>` path used via
-    /// `addr.map_or(true, |a| a.ip().is_loopback())`.
+    /// `CreateFileW` time). A network address is never local, loopback
+    /// included: the operating system does not say who is behind it, so
+    /// such a caller needs a credential (the HTTP door's API key).
     fn is_local(&self) -> bool {
         match self {
             #[cfg(unix)]
             Self::Unix(_) => true,
-            Self::Ip(addr) => addr.ip().is_loopback(),
+            Self::Ip(_) => false,
             #[cfg(windows)]
             Self::Local => true,
         }
@@ -289,14 +285,14 @@ impl ServerSocket {
     /// Receive a packet from the socket
     ///
     /// On Unix, `recv_from` returns the sender's path as a `tokio::net::unix::SocketAddr`
-    /// (which we normalise to a `PathBuf`); on UDP, the peer's `SocketAddr`.
-    /// Either way the result is wrapped in [`PeerAddr`] so callers can
+    /// (which we normalise to a `PathBuf`).
+    /// The result is wrapped in [`PeerAddr`] so callers can
     /// hand it back to the per-request sink without losing type info.
     ///
-    /// Windows named pipes (ADR-038) are connection-oriented — this
-    /// method returns an error on the pipe variant, because the accept
-    /// loop drives reads from the per-connection `NamedPipeServer`,
-    /// not from a shared listener.
+    /// Unix only: Windows named pipes (ADR-038) are connection-oriented,
+    /// and the accept loop reads from each connection's
+    /// `NamedPipeServer`, not from a shared listener.
+    #[cfg(unix)]
     async fn recv_from(&self, buf: &mut [u8]) -> std::io::Result<(usize, PeerAddr)> {
         match self {
             #[cfg(unix)]
@@ -324,25 +320,30 @@ impl ServerSocket {
                     Ok((len, PeerAddr::Unix(path)))
                 }
             }
-            Self::Udp { socket } => {
-                let (len, addr) = socket.recv_from(buf).await?;
-                Ok((len, PeerAddr::Ip(addr)))
-            }
-            #[cfg(windows)]
-            Self::NamedPipe { .. } => Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "recv_from is not used on the named-pipe transport (the per-connection \
-                 task calls read directly on the NamedPipeServer)",
-            )),
         }
     }
+}
+
+/// What to tell the owner when the engine's socket cannot be bound.
+/// There is no other local transport, so the engine does not start.
+#[cfg(unix)]
+fn unix_bind_failure(sock_path: &std::path::Path, reason: &str) -> String {
+    // `sun_path` holds 104 bytes on macOS and 108 on Linux, NUL included.
+    let too_long = sock_path.as_os_str().len() > 100;
+    let hint = if too_long {
+        " The path is too long for a Unix socket (about 100 characters): \
+         use a shorter PEKO_HOME."
+    } else {
+        ""
+    };
+    format!("The engine could not open its socket: {reason}.{hint}")
 }
 
 /// Outcome of trying to bind the Unix socket.
 ///
 /// `OwnedElsewhere` is split out from `Failed` because the two need
-/// opposite handling: a genuine transport failure should fall back to
-/// UDP, but "another daemon owns this run dir" must be fatal. Falling
+/// opposite messages: a transport failure names what could not be bound,
+/// and "another daemon owns this run dir" names the incumbent. Both are fatal. Falling
 /// back there would let a second daemon come up on a weaker transport
 /// while the incumbent is still running — the exact invariant we are
 /// enforcing, just harder to see.
@@ -378,7 +379,8 @@ impl Drop for IpcServer {
     /// is exactly what the liveness probe in `bind_unix_socket` covers.
     fn drop(&mut self) {
         #[cfg(unix)]
-        if let ServerSocket::Unix { path, .. } = &self.socket {
+        {
+            let ServerSocket::Unix { path, .. } = &self.socket;
             let _ = std::fs::remove_file(path.as_path());
         }
     }
@@ -387,15 +389,12 @@ impl Drop for IpcServer {
 impl IpcServer {
     /// Create and bind the IPC server
     ///
-    /// Tries the platform-preferred transport first (Unix socket on Unix,
-    /// named pipe on Windows per ADR-038), then falls back to UDP as the
-    /// universal last-resort. Enforces auth requirements for *public*
-    /// binds — UDP only (ADR-034); the Unix socket relies on filesystem
-    /// mode bits and the named pipe relies on its DACL for trust.
+    /// Binds the platform's local transport: the Unix socket on Unix,
+    /// the named pipe on Windows (ADR-038). There is no fallback.
     ///
     /// # Errors
-    /// Returns error if all transports fail to bind, or if a UDP bind to
-    /// a non-loopback address is attempted without remote auth configured.
+    /// Returns error if the transport cannot be bound, or another engine
+    /// already serves it.
     pub(crate) async fn new(app_state: AppState) -> anyhow::Result<Self> {
         // 1. Try Unix socket on Unix platforms
         #[cfg(unix)]
@@ -471,12 +470,11 @@ impl IpcServer {
                     });
                 }
                 UnixBind::OwnedElsewhere(msg) => {
-                    // Not a transport problem, so no UDP fallback: that
-                    // would start a second daemon rather than stop one.
                     return Err(anyhow::anyhow!(msg));
                 }
                 UnixBind::Failed(msg) => {
-                    warn!("Failed to bind Unix socket ({}), falling back to UDP", msg);
+                    // No fallback: the socket is the only local way in.
+                    return Err(anyhow::anyhow!(unix_bind_failure(&sock_path, &msg)));
                 }
             }
         }
@@ -499,74 +497,28 @@ impl IpcServer {
                 // FILE_FLAG_FIRST_PIPE_INSTANCE: the name is taken —
                 // another daemon serves it (ERROR_ACCESS_DENIED, or
                 // ERROR_PIPE_BUSY while all its instances are in use).
-                // As on Unix, no UDP fallback: that would start a second
-                // daemon rather than stop one.
                 Err(e) if matches!(pipe_bind_os_error(&e), Some(5 | 231)) => {
                     return Err(anyhow::anyhow!(
                         "Another daemon already serves the named pipe {pipe_name} ({e:#})"
                     ));
                 }
+                // No fallback: the pipe is the only local way in.
                 Err(e) => {
-                    warn!(
-                        "Failed to bind Windows named pipe ({:#}), falling back to UDP",
-                        e
-                    );
+                    return Err(anyhow::anyhow!(
+                        "The engine could not open its named pipe {pipe_name} ({e:#}). \
+                         Set {DAEMON_PIPE_ENV} to another pipe name for the engine and \
+                         for the commands that talk to it."
+                    ));
                 }
             }
         }
 
-        // 3. Fall back to UDP — the universal last-resort safety net.
-        //
-        // ADR-058 D6 (documented residual): this transport is
-        // UNAUTHENTICATABLE same-host trust. UDP datagrams carry no
-        // peer credentials, so any process able to send to the loopback
-        // address can reach the daemon over this transport; the
-        // `Identity::Local` it produces means only "a process on this
-        // host claiming nothing," which is why the Unix socket (0700
-        // dir / 0600 file / Linux SCM_CREDENTIALS check) and the
-        // Windows named pipe (DACL) are the preferred transports. The
-        // bind address is a loopback constant — the retired
-        // `daemon.bind_address` knob was never read (ADR-058 D6).
-        let addr_str = format!("{}:{}", DEFAULT_HOST, DEFAULT_PORT);
-        let socket = UdpSocket::bind(&addr_str)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to bind UDP socket to {}: {}", addr_str, e))?;
-
-        // Same rationale as the Unix datagram branch above: bump the
-        // send buffer so handler responses that exceed the platform
-        // default (8 KiB on Linux for UDP, 9 KiB on macOS) still fit
-        // atomically. `provider_list` is the worst offender today.
-        #[cfg(unix)]
-        if let Err(e) = bump_send_buffer(&socket) {
-            warn!(
-                "Failed to set UDP SO_SNDBUF to {} bytes ({}); responses larger \
-                 than the platform default may fail with EMSGSIZE",
-                IPC_SEND_BUFFER_BYTES, e
-            );
-        }
-
-        let bound_addr = socket.local_addr()?;
-
-        // ADR-034: Enforce auth for public binds. Only fires for the
-        // UDP transport — Unix sockets and named pipes have their own
-        // transport-layer trust boundaries. ADR-058 D6: with the inert
-        // `daemon.bind_address` knob deleted, the bind is a loopback
-        // constant, so this check can never trip today; it stays as a
-        // guard in case a future change makes the bind configurable
-        // again (then it MUST come back with mandatory auth).
-        #[cfg(not(windows))]
+        // Neither a Unix socket nor a named pipe exists on this platform.
+        #[allow(unreachable_code)]
         {
-            let auth_config = app_state.auth_config();
-            enforce_auth_for_public_bind(&bound_addr, &auth_config)?;
+            let _ = app_state;
+            anyhow::bail!("the engine has no local transport on this platform")
         }
-
-        info!("IPC server bound to UDP: {}", addr_str);
-        Ok(Self {
-            socket: ServerSocket::Udp {
-                socket: Arc::new(socket),
-            },
-            app_state,
-        })
     }
 
     /// Bind the daemon's Unix datagram socket, refusing to displace a
@@ -777,7 +729,7 @@ impl IpcServer {
 
     /// Run the IPC server loop
     ///
-    /// Dispatches to the per-transport loop. Unix datagram and UDP share
+    /// Dispatches to the per-transport loop. The Unix datagram socket uses
     /// `run_datagram` (one bound socket, many peers, `recv_from` per
     /// request); Windows named pipes use `run_pipes` (one accept loop,
     /// one `NamedPipeServer` per connection, `write_all` per response).
@@ -788,7 +740,6 @@ impl IpcServer {
         match &self.socket {
             #[cfg(unix)]
             ServerSocket::Unix { .. } => self.run_datagram(shutdown_rx).await,
-            ServerSocket::Udp { .. } => self.run_datagram(shutdown_rx).await,
             #[cfg(windows)]
             ServerSocket::NamedPipe {
                 listener,
@@ -807,9 +758,9 @@ impl IpcServer {
         }
     }
 
-    /// Existing Unix/UDP loop: one bound socket, many peers, `recv_from`
-    /// per request, `send_to` per response. Unchanged behaviour from
-    /// pre-ADR-038.
+    /// The Unix datagram loop: one bound socket, many peers, `recv_from`
+    /// per request, `send_to` per response.
+    #[cfg(unix)]
     async fn run_datagram(
         &self,
         mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
@@ -842,7 +793,7 @@ impl IpcServer {
                                                 message: format!("Authentication failed: {}", auth_err),
                                             };
                                             if let Ok(bytes) = response.to_bytes() {
-                                                let sink = sink_for_unix_or_udp(&self.socket, &addr);
+                                                let sink = sink_for_unix(&self.socket, &addr);
                                                 if let Ok(sink) = sink {
                                                     let _ = sink.send_bytes(&bytes).await;
                                                 }
@@ -863,7 +814,7 @@ impl IpcServer {
                                                 message: "Rate limit exceeded. Try again later.".to_string(),
                                             };
                                             if let Ok(bytes) = response.to_bytes() {
-                                                let sink = sink_for_unix_or_udp(&self.socket, &addr);
+                                                let sink = sink_for_unix(&self.socket, &addr);
                                                 if let Ok(sink) = sink {
                                                     let _ = sink.send_bytes(&bytes).await;
                                                 }
@@ -877,7 +828,7 @@ impl IpcServer {
                                     let socket = self.socket.clone();
                                     let peer = addr.clone();
                                     tokio::spawn(async move {
-                                        let sink = match sink_for_unix_or_udp(&socket, &peer) {
+                                        let sink = match sink_for_unix(&socket, &peer) {
                                             Ok(s) => s,
                                             Err(e) => {
                                                 error!("Failed to build response sink: {e}");
@@ -1157,7 +1108,7 @@ impl IpcServer {
     /// [`crate::ipc::handlers::RequestHandler`], and dispatch is the
     /// single-purpose [`crate::ipc::handlers::RequestDispatcher::dispatch`]
     /// call below. The sink abstraction (ADR-038) stays —
-    /// `UnixDatagramSink` / `UdpSink` / `PipeSink` per platform.
+    /// `UnixDatagramSink` / `PipeSink` per platform.
     #[allow(clippy::large_futures)]
     async fn handle_request(
         request: RequestPacket,
@@ -1485,6 +1436,42 @@ mod bind_tests {
     }
 }
 
+/// Loopback UDP is retired: nothing stands in for the socket, and a
+/// network address is never the local user.
+#[cfg(all(test, unix))]
+mod no_fallback_tests {
+    use super::{unix_bind_failure, IpcServer, PeerAddr, UnixBind};
+
+    /// A path too long for a Unix socket is a failed bind with a reason
+    /// the owner can act on, where it used to mean "listen on UDP".
+    #[tokio::test]
+    async fn a_socket_path_that_is_too_long_fails_and_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let long = dir.path().join("x".repeat(120)).join("daemon.sock");
+        std::fs::create_dir_all(long.parent().unwrap()).unwrap();
+        let UnixBind::Failed(reason) = IpcServer::bind_unix_socket(&long).await else {
+            panic!("a {}-byte socket path bound", long.as_os_str().len());
+        };
+        let message = unix_bind_failure(&long, &reason);
+        assert!(message.contains("could not open its socket"), "{message}");
+        assert!(message.contains("shorter PEKO_HOME"), "{message}");
+
+        let short = std::path::Path::new("/nonexistent-dir/daemon.sock");
+        let message = unix_bind_failure(short, "failed to bind");
+        assert!(!message.contains("PEKO_HOME"), "{message}");
+    }
+
+    /// The operating system vouches for a socket peer, not for an
+    /// address: a loopback one needs a credential like any other.
+    #[test]
+    fn a_network_address_is_not_local_even_on_loopback() {
+        assert!(!PeerAddr::Ip("127.0.0.1:4000".parse().unwrap()).is_local());
+        assert!(!PeerAddr::Ip("[::1]:4000".parse().unwrap()).is_local());
+        assert!(!PeerAddr::Ip("10.0.0.5:4000".parse().unwrap()).is_local());
+        assert!(PeerAddr::Unix("/tmp/cli.sock".into()).is_local());
+    }
+}
+
 #[cfg(all(test, windows))]
 mod pipe_bind_tests {
     use super::IpcServer;
@@ -1494,7 +1481,8 @@ mod pipe_bind_tests {
     /// The daemon binds its named pipe as whichever user runs it, elevated
     /// or not, and this user can open it. While the descriptor named an
     /// owner the bind failed for every non-elevated user (ERROR_INVALID_OWNER)
-    /// and the daemon silently fell back to UDP.
+    /// and the daemon silently fell back to UDP (since retired: it would now
+    /// refuse to start).
     #[tokio::test]
     async fn binds_a_pipe_this_user_can_open() {
         let name = format!(r"\\.\pipe\peko-bind-test-{}", uuid::Uuid::new_v4());
@@ -1511,8 +1499,7 @@ mod pipe_bind_tests {
     }
 
     /// A second daemon may not bind the same pipe name, and the error says
-    /// the name is taken, so `IpcServer::new` refuses instead of falling
-    /// back to UDP as a second daemon.
+    /// the name is taken, so `IpcServer::new` says another daemon serves it.
     #[tokio::test]
     async fn refuses_a_second_first_instance() {
         let name = format!(r"\\.\pipe\peko-bind-test-{}", uuid::Uuid::new_v4());

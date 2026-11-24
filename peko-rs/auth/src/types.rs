@@ -123,7 +123,7 @@ pub struct PekohubEndpoints {
 #[serde(default)]
 pub struct AuthConfigFile {
     pub version: String,
-    /// Enable local trust (Unix socket / localhost UDP)
+    /// Enable local trust (Unix socket / Windows named pipe)
     pub enable_local_trust: bool,
     /// Enable pekohub JWT authentication
     pub enable_pekohub_jwt: bool,

@@ -12,9 +12,9 @@
 //!   file mode 0600 — kernel-enforced peer identity).
 //! - **Windows**: Named pipe at `\\.\pipe\peko-{username}` (ADR-038)
 //!   with a DACL that grants the current user Generic All — kernel-enforced
-//!   peer identity analogous to Unix 0600. Falls back to UDP on bind failure.
-//! - **All platforms**: UDP on `127.0.0.1:11435` is the explicit-remote
-//!   transport and the universal last-resort safety net.
+//!   peer identity analogous to Unix 0600.
+//! - **Other hosts and containers**: the HTTP door with an API key
+//!   (`http`, ADR-121). Loopback UDP is retired.
 //!
 //! ## Protocol
 //!
@@ -47,17 +47,8 @@ pub use packet::{AuthCredential, AuthHeader, AuthenticatedRequest, RequestPacket
 pub use server::IpcServer;
 pub use stream::PacketStream;
 
-/// Default UDP port for daemon IPC
-pub const DEFAULT_PORT: u16 = 11435;
-
-/// Default host for UDP daemon IPC
-pub const DEFAULT_HOST: &str = "127.0.0.1";
-
 /// Environment variable to override Unix socket path
 pub const DAEMON_SOCK_ENV: &str = "PEKO_DAEMON_SOCK";
-
-/// Environment variable to override UDP address
-pub const DAEMON_ADDR_ENV: &str = "PEKO_DAEMON_ADDR";
 
 /// Environment variable to override the Windows named-pipe name (ADR-038).
 ///
@@ -173,10 +164,7 @@ mod tests {
 
     #[test]
     fn test_default_constants() {
-        assert_eq!(DEFAULT_PORT, 11435);
-        assert_eq!(DEFAULT_HOST, "127.0.0.1");
         assert_eq!(DAEMON_SOCK_ENV, "PEKO_DAEMON_SOCK");
-        assert_eq!(DAEMON_ADDR_ENV, "PEKO_DAEMON_ADDR");
         assert_eq!(DAEMON_PIPE_ENV, "PEKO_DAEMON_PIPE");
         assert_eq!(DAEMON_MODE_ENV, "PEKO_DAEMON");
     }

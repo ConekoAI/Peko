@@ -35,6 +35,20 @@ All notable changes to Peko.
 
 ### Changed
 
+- **Answers over HTTP are not clipped to 60,000 bytes.** The HTTP door
+  carried the socket's packet limit, so a long tool result reached a
+  service cut short and marked `truncated`, and a larger answer did not
+  arrive at all. Requests and answers on the door may now be up to 16 MiB.
+  The socket and the named pipe keep their limit.
+- **Breaking: the loopback UDP fallback is gone.** When the engine could
+  not open its socket (or its named pipe on Windows) it listened on
+  `127.0.0.1:11435` instead, where any process on the computer could reach
+  it as the owner, and a command with no engine of its own could reach
+  another user's. Now the engine does not start and says why; the usual
+  cause is a `PEKO_HOME` too long for a Unix socket path. The command line
+  no longer tries UDP, and `PEKO_DAEMON_ADDR` is no longer read. A service
+  on another host or in another container uses the HTTP door with an API
+  key.
 - **Peko is now dual-licensed under MIT or Apache 2.0, at your option.**
   Apache 2.0 adds an explicit patent grant from every contributor; MIT
   stays available, so nothing that depended on the MIT terms changes. The

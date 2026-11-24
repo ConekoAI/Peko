@@ -19,35 +19,37 @@
 //!
 //! Discovery ladder (ADR-021 + ADR-038):
 //!   1. `PEKO_DAEMON_SOCK` env var → Unix socket (Unix only)
-//!   2. `PEKO_DAEMON_ADDR` env var → UDP address
-//!   3. `PEKO_DAEMON_PIPE` env var → Windows named pipe (Windows only)
-//!   4. Default Unix socket / default named pipe (per platform)
-//!   5. Default UDP — the universal last-resort safety net
+//!   2. `PEKO_DAEMON_PIPE` env var → Windows named pipe (Windows only)
+//!   3. Default Unix socket / default named pipe (per platform)
+//!
+//! There is no network step: loopback UDP is retired (it trusted any
+//! process on the computer, and a CLI with no engine of its own could
+//! reach another user's).
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 #[cfg(windows)]
 use tokio::net::windows::named_pipe::NamedPipeClient;
-use tokio::net::UdpSocket;
 #[cfg(unix)]
 use tokio::net::UnixDatagram;
 use tracing::debug;
 
 #[cfg(test)]
 use super::default_pid_path;
+#[cfg(unix)]
+use super::default_socket_path;
+use super::DAEMON_SOCK_ENV;
 #[cfg(windows)]
 use super::{default_pipe_name, DAEMON_PIPE_ENV};
-use super::{default_socket_path, DAEMON_ADDR_ENV, DAEMON_SOCK_ENV, DEFAULT_HOST, DEFAULT_PORT};
 
 /// Platform-specific socket handle
 ///
 /// On Unix, this wraps a `UnixDatagram` (reliable, file-permission auth).
 /// On Windows, this wraps a `NamedPipeClient` (reliable, kernel-enforced
-/// DACL auth per ADR-038) or a `UdpSocket` (unreliable, no auth — the
-/// universal last-resort fallback).
+/// DACL auth per ADR-038).
 ///
-/// Unix/UDP sockets are wrapped in `Arc` so that cloning the handle
+/// Unix sockets are wrapped in `Arc` so that cloning the handle
 /// shares the same underlying socket — this ensures responses from the
 /// daemon reach the receiver task (which uses the cloned handle).
 /// Windows named-pipe clients are wrapped in `Arc<Mutex<…>>` because
@@ -67,11 +69,6 @@ pub enum ConnectionHandle {
         path: PathBuf,
         /// The reply socket's file, removed when the last clone drops.
         reply: Option<Arc<ReplySocketFile>>,
-    },
-    /// UDP socket (Windows fallback, or Unix opt-in)
-    Udp {
-        socket: Arc<UdpSocket>,
-        addr: String,
     },
     /// Windows named-pipe client (ADR-038), split into halves with a lock
     /// each: `DaemonClient`'s receiver task waits in `recv` while requests
@@ -96,9 +93,6 @@ impl ConnectionHandle {
             Self::Unix { socket, path, .. } => {
                 socket.send_to(bytes, path).await?;
             }
-            Self::Udp { socket, addr } => {
-                socket.send_to(bytes, addr).await?;
-            }
             #[cfg(windows)]
             Self::NamedPipe { writer, .. } => {
                 use tokio::io::AsyncWriteExt;
@@ -117,7 +111,6 @@ impl ConnectionHandle {
         let len = match self {
             #[cfg(unix)]
             Self::Unix { socket, .. } => socket.recv(buf).await?,
-            Self::Udp { socket, .. } => socket.recv(buf).await?,
             #[cfg(windows)]
             Self::NamedPipe { reader, .. } => {
                 use tokio::io::AsyncReadExt;
@@ -160,21 +153,10 @@ impl ConnectionHandle {
                 // task spawned by `spawn_receiver` would sit on a socket
                 // the daemon has no idea exists, and `peko send` would
                 // hang forever waiting for response packets.
-                //
-                // Mirrors the UDP branch below: one socket, many handles.
                 Ok(Self::Unix {
                     socket: Arc::clone(socket),
                     path: path.clone(),
                     reply: reply.clone(),
-                })
-            }
-            Self::Udp { socket, addr } => {
-                // Share the same underlying UDP socket so that responses
-                // from the daemon (sent to our ephemeral port) are received
-                // by both the original handle and the clone.
-                Ok(Self::Udp {
-                    socket: Arc::clone(socket),
-                    addr: addr.clone(),
                 })
             }
             #[cfg(windows)]
@@ -243,30 +225,21 @@ impl ConnectionManager {
             // On non-Unix, fall through (the env var is silently ignored).
         }
 
-        // 2. Try env var UDP address
-        if let Ok(addr) = std::env::var(DAEMON_ADDR_ENV) {
-            debug!("Trying UDP from env: {}", addr);
-            if let Ok(handle) = Self::connect_udp_with_timeout(&addr, ping_timeout).await {
-                return Ok(handle);
-            }
-        }
-
-        // 3. Try env var Windows named pipe (ADR-038)
+        // 2. Try env var Windows named pipe (ADR-038)
         #[cfg(windows)]
         {
             if let Ok(name) = std::env::var(DAEMON_PIPE_ENV) {
                 debug!("Trying Windows named pipe from env: {}", name);
                 // An explicit pipe is the only daemon this caller means.
                 // Falling through would reach whatever answers the default
-                // pipe or UDP: the user's own daemon from an isolated test,
-                // or another user's daemon on the shared loopback port.
+                // pipe: the user's own daemon from an isolated test.
                 return Self::connect_pipe_with_timeout(name.clone(), ping_timeout)
                     .await
                     .map_err(|e| anyhow::anyhow!("No engine on {name}: {e:#}"));
             }
         }
 
-        // 4. Try default Unix socket (Unix) or default pipe (Windows)
+        // 3. Try default Unix socket (Unix) or default pipe (Windows)
         #[cfg(unix)]
         {
             let default_sock = default_socket_path();
@@ -284,13 +257,6 @@ impl ConnectionManager {
             if let Ok(handle) = Self::connect_pipe_with_timeout(default_pipe, ping_timeout).await {
                 return Ok(handle);
             }
-        }
-
-        // 5. Try default UDP — the universal last-resort safety net
-        let default_addr = format!("{}:{}", DEFAULT_HOST, DEFAULT_PORT);
-        debug!("Trying default UDP: {}", default_addr);
-        if let Ok(handle) = Self::connect_udp_with_timeout(&default_addr, ping_timeout).await {
-            return Ok(handle);
         }
 
         anyhow::bail!("No engine found")
@@ -368,7 +334,7 @@ impl ConnectionManager {
 
     /// Connect to a Windows named pipe (ADR-038) and round-trip a Ping.
     ///
-    /// Mirrors `connect_unix_with_timeout` and `connect_udp_with_timeout`
+    /// Mirrors `connect_unix_with_timeout`
     /// in shape. Tokio's `ClientOptions::open` is synchronous (it calls
     /// `CreateFileW`), so we wrap the whole open-and-ping in
     /// `spawn_blocking` to keep the async runtime non-blocked, then
@@ -438,37 +404,6 @@ impl ConnectionManager {
             reader: Arc::new(tokio::sync::Mutex::new(reader)),
             writer: Arc::new(tokio::sync::Mutex::new(writer)),
             name: handle.name,
-        })
-    }
-
-    async fn connect_udp_with_timeout(
-        addr: &str,
-        timeout: Duration,
-    ) -> anyhow::Result<ConnectionHandle> {
-        let socket = UdpSocket::bind("127.0.0.1:0")
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to bind UDP socket: {e}"))?;
-
-        // Test connectivity with a ping
-        let ping = super::packet::RequestPacket::Ping { request_id: 0 };
-        let ping_bytes = ping.to_bytes()?;
-        socket.send_to(&ping_bytes, addr).await?;
-
-        let mut buf = vec![0u8; 65536];
-        let len = tokio::time::timeout(timeout, socket.recv(&mut buf))
-            .await
-            .map_err(|_| anyhow::anyhow!("UDP ping timeout"))?
-            .map_err(|e| anyhow::anyhow!("UDP recv error: {e}"))?;
-
-        let response = super::packet::ResponsePacket::from_bytes(&buf[..len])?;
-        match response {
-            super::packet::ResponsePacket::Pong { .. } => {}
-            _ => return Err(crate::ipc::unexpected_response(&response)),
-        }
-
-        Ok(ConnectionHandle::Udp {
-            socket: Arc::new(socket),
-            addr: addr.to_string(),
         })
     }
 }

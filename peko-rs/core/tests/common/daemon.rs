@@ -84,7 +84,7 @@ impl DaemonGuard {
     ///
     /// Why 6s per poll (not 2s, not 5s): the CLI's `ConnectionManager::try_connect`
     /// ([src/ipc/connection.rs](src/ipc/connection.rs)) tries Unix-default first
-    /// (2s recv timeout), then UDP-default (another 2s recv timeout), before
+    /// (2s recv timeout; a second step, loopback UDP, was tried too until it was retired), before
     /// giving up and printing the "not running" JSON. So a single status call
     /// can take ~4s when the daemon is still binding its socket. A 6s budget
     /// fits that worst case with a little headroom for the JSON to flush.

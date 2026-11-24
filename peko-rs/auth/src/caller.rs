@@ -7,7 +7,7 @@ use super::types::ApiKeyScope;
 /// Resolved identity of the caller
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Identity {
-    /// Unix socket / localhost UDP — OS is the trust boundary
+    /// Unix socket / Windows named pipe — OS is the trust boundary
     Local,
     /// pekohub user (sub claim from JWT)
     User(String),
@@ -125,7 +125,7 @@ impl CallerContext {
     }
 
     /// Check if this caller has local trust (owner equivalent): the
-    /// socket, the named pipe, loopback UDP — or an API key with the
+    /// socket, the named pipe — or an API key with the
     /// `owner` scope (ADR-121 D3), which a service uses over the HTTP
     /// door. Such a caller stays attributable to its key id
     /// (`identity`, `rate_limit_bucket`); use [`Self::is_terminal`]
@@ -136,7 +136,7 @@ impl CallerContext {
     }
 
     /// The caller reached the engine through its own computer's
-    /// transport (socket, pipe, loopback UDP), not with a key. Making
+    /// transport (socket, pipe), not with a key. Making
     /// and revoking API keys needs this (ADR-121 D3): an `owner` key
     /// cannot make another key.
     #[must_use]

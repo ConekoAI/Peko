@@ -344,7 +344,7 @@ impl ToolHandler {
 
         let response = match triplet {
             Ok((content, result, success)) => {
-                tool_executed_packet(request_id, content, result, success)
+                tool_executed_packet(request_id, content, result, success, sink.max_packet())
             }
             Err(e) => ResponsePacket::Error {
                 request_id,
@@ -361,8 +361,9 @@ impl ToolHandler {
 /// be clipped to fit the datagram budget.
 const TRUNCATION_MARKER: &str = "\n\n[truncated by peko: result exceeded the IPC packet budget]";
 
-/// Build a `ToolExecuted` packet that fits the datagram budget —
-/// `ResponsePacket::to_bytes` refuses payloads over `MAX_PACKET_SIZE`,
+/// Build a `ToolExecuted` packet that fits `max`, the client's packet
+/// size (`ResponseSink::max_packet`) —
+/// `ResponsePacket::to_bytes_within` refuses payloads over it,
 /// and an unbounded tool result (e.g. a `Bash` stdout tail) would
 /// otherwise kill the response entirely. On overflow the structured
 /// `result` is dropped to null and `content` is clipped until the
@@ -374,6 +375,7 @@ fn tool_executed_packet(
     content: String,
     result: serde_json::Value,
     success: bool,
+    max: usize,
 ) -> ResponsePacket {
     let untruncated = ResponsePacket::ToolExecuted {
         request_id,
@@ -382,7 +384,7 @@ fn tool_executed_packet(
         success,
         truncated: false,
     };
-    if untruncated.to_bytes().is_ok() {
+    if untruncated.to_bytes_within(max).is_ok() {
         return untruncated;
     }
 
@@ -399,7 +401,7 @@ fn tool_executed_packet(
             success,
             truncated: true,
         };
-        if keep == 0 || packet.to_bytes().is_ok() {
+        if keep == 0 || packet.to_bytes_within(max).is_ok() {
             return packet;
         }
         keep /= 2;
@@ -684,6 +686,7 @@ mod tests {
             "x".repeat(200_000),
             json!({"also_big": "y".repeat(200_000)}),
             true,
+            peko_protocol::ipc::MAX_PACKET_SIZE,
         );
         let bytes = packet.to_bytes().expect("fits the datagram budget");
         assert!(bytes.len() <= peko_protocol::ipc::MAX_PACKET_SIZE);
@@ -703,12 +706,42 @@ mod tests {
         assert!(content.ends_with(TRUNCATION_MARKER), "content: {content}");
     }
 
+    /// The HTTP door takes larger packets (ADR-121): the same result
+    /// that is clipped for the socket goes through whole.
+    #[test]
+    fn tool_executed_packet_is_not_clipped_for_a_client_that_takes_more() {
+        let packet = tool_executed_packet(
+            9,
+            "x".repeat(200_000),
+            json!({"also_big": "y".repeat(200_000)}),
+            true,
+            crate::ipc::http::HTTP_MAX_PACKET,
+        );
+        let ResponsePacket::ToolExecuted {
+            content,
+            result,
+            truncated,
+            ..
+        } = packet
+        else {
+            panic!("wrong variant");
+        };
+        assert!(!truncated);
+        assert_eq!(content.len(), 200_000);
+        assert_eq!(result["also_big"].as_str().map(str::len), Some(200_000));
+    }
+
     #[test]
     fn tool_executed_packet_escape_heavy_result_still_fits() {
         // JSON escaping inflates control chars up to 6x — the halving
         // loop must still land under the budget.
-        let packet =
-            tool_executed_packet(9, "\u{1}".repeat(40_000), serde_json::Value::Null, false);
+        let packet = tool_executed_packet(
+            9,
+            "\u{1}".repeat(40_000),
+            serde_json::Value::Null,
+            false,
+            peko_protocol::ipc::MAX_PACKET_SIZE,
+        );
         let bytes = packet.to_bytes().expect("fits the datagram budget");
         assert!(bytes.len() <= peko_protocol::ipc::MAX_PACKET_SIZE);
         let ResponsePacket::ToolExecuted { truncated, .. } = packet else {
@@ -719,7 +752,13 @@ mod tests {
 
     #[test]
     fn tool_executed_packet_small_payload_passes_through() {
-        let packet = tool_executed_packet(9, "ok".to_string(), json!({"k": "v"}), true);
+        let packet = tool_executed_packet(
+            9,
+            "ok".to_string(),
+            json!({"k": "v"}),
+            true,
+            peko_protocol::ipc::MAX_PACKET_SIZE,
+        );
         let ResponsePacket::ToolExecuted {
             content,
             result,

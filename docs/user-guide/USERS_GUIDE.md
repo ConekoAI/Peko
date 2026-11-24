@@ -638,14 +638,16 @@ that is still running when the engine stops is lost. Cron jobs are saved to
 disk and resume after a restart, so use a cron job for work that must
 survive one.
 
-**The UDP fallback trusts any local process.** The CLI normally reaches the
-engine over a Unix socket in a `0700` directory with `0600` permissions. On
-Linux the engine also rejects messages from a different user id.
+**The engine needs its local socket.** The CLI reaches the engine over a
+Unix socket in a `0700` directory with `0600` permissions (a named pipe on
+Windows). On Linux the engine also rejects messages from a different user
+id. If the socket cannot be created the engine does not start, and says
+why. The usual cause is a `PEKO_HOME` so long that the socket's path passes
+what a Unix socket allows (about 100 characters): use a shorter one.
 
-If the socket cannot be created, the engine falls back to UDP on
-`127.0.0.1:11435`, and it logs `falling back to UDP` when it does. Any
-process on the machine can reach the engine on that port. On a shared
-machine, fix the socket problem instead of running on the fallback.
+Earlier versions fell back to UDP on `127.0.0.1:11435`, which any process
+on the machine could reach. That fallback is gone, and `PEKO_DAEMON_ADDR`
+is no longer read.
 
 ---
 

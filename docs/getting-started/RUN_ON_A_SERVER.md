@@ -178,8 +178,8 @@ The requests are the ones Peko Desktop and the command line send. Their
 JSON Schema, with every response, is at `GET /v1/schema` (the same file as
 [`docs/reference/ipc-schema.json`](../reference/ipc-schema.json)); each
 type is marked `stable` (breaks only in a minor version) or `internal`
-(may change in any release). A packet is at most
-60,000 bytes. The runtime's own errors come back as an `error` packet with
+(may change in any release). A request or an answer is at most
+16 MiB. The runtime's own errors come back as an `error` packet with
 status 200; status 4xx means the request did not get in (no key or a bad
 one, too large, not JSON, too many requests: 100 a minute per key by
 default, set in `auth_config.toml` under `[rate_limit]`).

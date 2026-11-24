@@ -4,7 +4,8 @@
 //! All packets are serialized with JSON for simplicity (local IPC overhead
 //! is negligible; JSON is human-debuggable with netcat/socat).
 //!
-//! Packet size is limited to ~60KB to stay well under UDP MTU.
+//! Packet size is limited to ~60KB so a packet fits one datagram or pipe
+//! message; the HTTP door carries more (`ResponseSink::max_packet`).
 //! Larger payloads are chunked at the application layer.
 
 use serde::{Deserialize, Serialize};
@@ -4050,13 +4051,19 @@ impl ResponsePacket {
     /// # Errors
     /// Returns error if serialization fails
     pub fn to_bytes(&self) -> anyhow::Result<Vec<u8>> {
+        self.to_bytes_within(MAX_PACKET_SIZE)
+    }
+
+    /// Serialize to JSON bytes for a client that takes packets of up to
+    /// `max` bytes: [`MAX_PACKET_SIZE`] on the socket and the pipe,
+    /// more on the HTTP door (`ResponseSink::max_packet`).
+    ///
+    /// # Errors
+    /// Returns error if serialization fails or the packet is over `max`
+    pub fn to_bytes_within(&self, max: usize) -> anyhow::Result<Vec<u8>> {
         let json = serde_json::to_vec(self)?;
-        if json.len() > MAX_PACKET_SIZE {
-            anyhow::bail!(
-                "Packet size {} exceeds maximum {}",
-                json.len(),
-                MAX_PACKET_SIZE
-            );
+        if json.len() > max {
+            anyhow::bail!("Packet size {} exceeds maximum {}", json.len(), max);
         }
         Ok(json)
     }
