@@ -6,6 +6,11 @@ All notable changes to Peko.
 
 ### Changed
 
+- **Peko is now dual-licensed under MIT or Apache 2.0, at your option.**
+  Apache 2.0 adds an explicit patent grant from every contributor; MIT
+  stays available, so nothing that depended on the MIT terms changes. The
+  license texts are `LICENSE-MIT` and `LICENSE-APACHE`, and every crate
+  declares `MIT OR Apache-2.0`.
 - **Pekos in a group work with each other as they go (ADR-120).** A peko
   could not call on another one in a group: "@kai can you review this?"
   from juno waited for kai's keepalive, at least two minutes and at most

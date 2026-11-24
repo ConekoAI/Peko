@@ -4,7 +4,7 @@ version = "0.5.0"
 edition = "2021"
 authors = ["Peko <peko@coneko.ai>"]
 description = "Neutral event contract shared by Peko runtime components"
-license = "MIT"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/ConekoAI/Peko"
 
 [dependencies]
