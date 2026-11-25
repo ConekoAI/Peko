@@ -1537,10 +1537,20 @@ impl crate::ipc::handlers::device::DeviceHost for AppState {
             .into_iter()
             .map(|d| (d.device_id, d.last_seen))
             .collect();
+        let router = self.link_router().await;
         let devices = status
             .devices
             .iter()
             .map(|m| crate::ipc::packet::DeviceInfo {
+                // ADR-125 D9: how each other computer is reached now.
+                path: match (&router, m.device.kind) {
+                    (Some(router), crate::security::device_list::DeviceKind::Computer)
+                        if m.device.id != status.me =>
+                    {
+                        Some(router.path_to(&m.device.id))
+                    }
+                    _ => None,
+                },
                 id: m.device.id.clone(),
                 kind: match m.device.kind {
                     crate::security::device_list::DeviceKind::Computer => "computer",

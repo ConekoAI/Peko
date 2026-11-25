@@ -124,7 +124,7 @@ mod tests {
         #[test]
         fn every_variant_carries_its_mark() {
             let doc: Value = serde_json::from_str(&generate_text()).unwrap();
-            for (name, count) in [("RequestPacket", 124), ("ResponsePacket", 112)] {
+            for (name, count) in [("RequestPacket", 127), ("ResponsePacket", 113)] {
                 let variants = doc["$defs"][name]["oneOf"].as_array().unwrap();
                 assert_eq!(variants.len(), count, "{name} variants");
                 for v in variants {

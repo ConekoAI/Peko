@@ -279,6 +279,7 @@ fn a_loopback_door_needs_no_names() {
     let network = NetworkConfig {
         http: Some("127.0.0.1:11436".into()),
         http_hosts: vec![],
+        ..NetworkConfig::default()
     };
     let config = DoorConfig::from_config(&network, &auth).unwrap().unwrap();
     assert_eq!(config.addr, "127.0.0.1:11436".parse().unwrap());
@@ -290,6 +291,7 @@ fn a_door_beyond_this_computer_needs_http_hosts() {
     let mut network = NetworkConfig {
         http: Some("0.0.0.0:11436".into()),
         http_hosts: vec![],
+        ..NetworkConfig::default()
     };
     let err = DoorConfig::from_config(&network, &auth).unwrap_err();
     assert!(err.to_string().contains("http_hosts"), "{err}");
@@ -305,6 +307,7 @@ fn the_door_needs_api_keys_enabled() {
     let network = NetworkConfig {
         http: Some("127.0.0.1:11436".into()),
         http_hosts: vec![],
+        ..NetworkConfig::default()
     };
     let err = DoorConfig::from_config(&network, &auth).unwrap_err();
     assert!(err.to_string().contains("enable_api_key"), "{err}");
@@ -316,6 +319,7 @@ fn a_bad_address_is_refused() {
     let network = NetworkConfig {
         http: Some("localhost".into()),
         http_hosts: vec![],
+        ..NetworkConfig::default()
     };
     assert!(DoorConfig::from_config(&network, &auth).is_err());
 }

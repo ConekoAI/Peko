@@ -252,6 +252,10 @@ pub(crate) struct AppState {
     /// `TunnelHealth::Degraded` (issue #8).
     tunnel_degraded: Arc<RwLock<bool>>,
 
+    /// ADR-125: the router that chooses each frame's path (a direct link
+    /// or PekoHub). `None` until the tunnel starts.
+    link_router: Arc<RwLock<Option<crate::tunnel::link::Router>>>,
+
     /// ADR-108: the phones paired with this runtime, and what the daemon
     /// keeps to tell them about conversations.
     devices: Arc<devices::DeviceRuntime>,
@@ -1030,6 +1034,7 @@ impl AppState {
             tunnel_attempts: Arc::new(RwLock::new(0)),
             tunnel_last_error: Arc::new(RwLock::new(None)),
             tunnel_degraded: Arc::new(RwLock::new(false)),
+            link_router: Arc::new(RwLock::new(None)),
             // Issue #29: outbound tunnel handle slot. Starts as
             // `None` and is filled by the dispatcher's
             // handle-publisher on every reconnect.
@@ -1407,13 +1412,14 @@ impl AppState {
         let dispatcher_for_handler = dispatcher;
 
         // ADR-110: seal what crosses PekoHub to the computer it is for.
+        let seal_policy: Arc<dyn crate::tunnel::seal::SealPolicy> = Arc::new(DaemonSealPolicy {
+            manager: Arc::clone(&self.principal_manager),
+            devices: Arc::clone(&self.devices.gate),
+        });
         let sealer = Arc::new(crate::tunnel::seal::Sealer::new(
             cred.runtime_id.clone(),
             Arc::clone(&self.runtime_signing_key),
-            Arc::new(DaemonSealPolicy {
-                manager: Arc::clone(&self.principal_manager),
-                devices: Arc::clone(&self.devices.gate),
-            }),
+            Arc::clone(&seal_policy),
             self.principal_manager.device_lists(),
             Some(self.path_resolver.runtime_dir().join("sealing.json")),
         ));
@@ -1422,12 +1428,32 @@ impl AppState {
             self.device_sync().attach(Arc::clone(&sealer), hub);
         }
 
+        // ADR-125: the router takes each frame to the computer it is
+        // sealed to, on a direct link when one is up, PekoHub otherwise.
+        let (router, hub_rx) =
+            crate::tunnel::link::Router::new(crate::tunnel::link::router::RouterConfig {
+                runtime_id: cred.runtime_id.clone(),
+                signing_key: Arc::clone(&self.runtime_signing_key),
+                sealer: Some(Arc::clone(&sealer)),
+                devices: Some(self.principal_manager.device_lists()),
+                policy: Some(seal_policy),
+                network: self.current_network_config(),
+                links_path: Some(self.path_resolver.runtime_dir().join("links.json")),
+            });
+        // Senders reach the router whether or not PekoHub is connected,
+        // so posts go out on a link while PekoHub is unreachable.
+        *self.tunnel_handle_slot.write().await = Some(router.handle());
+        if let Some(previous) = self.link_router.write().await.replace(router.clone()) {
+            previous.stop();
+        }
+        let router_for_task = router.clone();
+
         let mut client = TunnelClient::new_with(
             cred,
             Arc::clone(&self.runtime_signing_key),
             max_reconnect_attempts,
         )
-        .with_sealer(sealer);
+        .with_router(router, hub_rx, sealer);
         client.on_request(move |msg, handle| {
             let dispatcher = dispatcher_for_handler.clone();
             async move {
@@ -1511,12 +1537,31 @@ impl AppState {
         tokio::spawn(async move {
             info!("Starting PekoHub tunnel in background");
             client.run_cancellable(cancel).await;
+            router_for_task.stop();
             info!("PekoHub tunnel stopped");
             let mut connected = connected_for_task.write().await;
             *connected = false;
         });
 
         Ok(true)
+    }
+
+    /// ADR-125: the router, while the tunnel runs.
+    pub async fn link_router(&self) -> Option<crate::tunnel::link::Router> {
+        self.link_router.read().await.clone()
+    }
+
+    /// ADR-125: `[network]` as `runtime.toml` says now (a settings
+    /// request may have changed it since boot).
+    #[must_use]
+    pub fn current_network_config(&self) -> crate::common::types::config::NetworkConfig {
+        load_peko_config(&self.config_dir).network
+    }
+
+    /// ADR-125 D9: `runtime.toml`'s path, for the settings request.
+    #[must_use]
+    pub fn runtime_config_file(&self) -> PathBuf {
+        runtime_config_path(&self.config_dir)
     }
 
     /// Check if the tunnel is currently connected
@@ -2994,6 +3039,13 @@ impl crate::ipc::handlers::tunnel::TunnelHost for AppState {
             .await
     }
 
+    async fn connection(&self) -> crate::common::types::config::Connection {
+        match self.link_router().await {
+            Some(router) => router.connection(),
+            None => self.current_network_config().connection,
+        }
+    }
+
     async fn unregister_runtime(&self, token: &str, discard_unsent: bool) -> anyhow::Result<()> {
         crate::tunnel::registration::unregister_runtime(
             &self.path_resolver,
@@ -3754,6 +3806,44 @@ impl crate::security::ledger::redact::SecretSource for RuntimeSecrets {
                 .map(|token| ("run_token".to_string(), token)),
         );
         secrets
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::ipc::handlers::network::NetworkHost for AppState {
+    async fn network_status(&self) -> crate::tunnel::link::NetworkStatus {
+        if let Some(router) = self.link_router().await {
+            return router.status().await;
+        }
+        crate::tunnel::link::NetworkStatus::idle(&self.current_network_config())
+    }
+
+    async fn network_settings_set(
+        &self,
+        change: crate::ipc::handlers::network::NetworkChange,
+    ) -> Result<crate::tunnel::link::NetworkStatus, String> {
+        use crate::ipc::handlers::network::{apply_change, write_network_table};
+        let path = self.runtime_config_file();
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let mut network = self.current_network_config();
+        apply_change(&mut network, change)?;
+        let written = write_network_table(&text, &network)?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(&path, written)
+            .map_err(|e| format!("could not write {}: {e}", path.display()))?;
+        tracing::info!(connection = %network.connection.as_str(), "network settings changed");
+        if let Some(router) = self.link_router().await {
+            router.apply(network).await;
+        }
+        Ok(<Self as crate::ipc::handlers::network::NetworkHost>::network_status(self).await)
+    }
+
+    async fn network_link_retry(&self, runtime_id: Option<String>) {
+        if let Some(router) = self.link_router().await {
+            router.retry(runtime_id.as_deref()).await;
+        }
     }
 }
 

@@ -19,6 +19,7 @@ pub mod dispatcher;
 pub mod host;
 pub mod hub_directory;
 pub mod invite_token;
+pub mod link;
 pub mod local_directory;
 pub mod people;
 pub mod protocol;

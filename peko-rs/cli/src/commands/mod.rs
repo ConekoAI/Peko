@@ -23,6 +23,7 @@ pub mod daemon;
 pub mod device;
 pub mod log;
 pub mod model;
+pub mod network;
 pub mod principal;
 pub mod quota;
 pub mod runtime;
@@ -181,6 +182,21 @@ pub enum Commands {
     ///   peko device remove dev_5f0c1c1e9a7b4f52
     #[command(subcommand)]
     Device(device::DeviceCommands),
+
+    /// How this computer connects to your other computers and people's
+    ///
+    /// By default everything goes through PekoHub. `automatic` links
+    /// directly with computers on the same network (a LAN, a VPN,
+    /// Tailscale); `direct` never uses PekoHub for conversations.
+    ///
+    /// Examples:
+    ///   peko network status
+    ///   peko network mode automatic
+    ///   peko network mode direct --listen 10.0.0.5:11438
+    ///   peko network with people
+    ///   peko network peer add 10.0.0.12:11438
+    #[command(subcommand)]
+    Network(network::NetworkCommands),
 
     /// Secrets your pekos asked you for
     ///

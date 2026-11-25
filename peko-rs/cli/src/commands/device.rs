@@ -153,8 +153,13 @@ pub async fn handle_device(
                     .as_deref()
                     .map(|s| format!("  last seen {s}"))
                     .unwrap_or_default();
+                // ADR-125 D10: how each other computer is reached.
+                let path = device
+                    .path
+                    .map(|p| format!("  {}", crate::commands::network::path_words(p, None)))
+                    .unwrap_or_default();
                 println!(
-                    "  {} {name}{this}\n      {}  added {}{seen}",
+                    "  {} {name}{this}{path}\n      {}  added {}{seen}",
                     device.kind,
                     device.hub_device_id.as_deref().unwrap_or(&device.id),
                     device.added_at,

@@ -63,6 +63,9 @@ pub(crate) trait TunnelHost: Send + Sync {
 
     /// Set what this computer's person is called (ADR-124).
     async fn set_person_name(&self, name: &str) -> anyhow::Result<crate::tunnel::people::Person>;
+
+    /// How this computer connects (ADR-125 D2).
+    async fn connection(&self) -> crate::common::types::config::Connection;
 }
 
 /// `tunnel` domain request handler. Constructed with an `Arc<dyn TunnelHost>`
@@ -127,6 +130,7 @@ impl RequestHandler for TunnelHandler {
                     account: account.map(|a| a.id),
                     person_name: person.name,
                     person_handle: person.handle,
+                    connection: Some(self.host.connection().await),
                 };
                 send_response(sink, response).await?;
             }
@@ -272,6 +276,9 @@ mod tests {
             let mut person = self.person.lock().unwrap();
             person.name = Some(name);
             Ok(person.clone())
+        }
+        async fn connection(&self) -> crate::common::types::config::Connection {
+            crate::common::types::config::Connection::Automatic
         }
     }
 

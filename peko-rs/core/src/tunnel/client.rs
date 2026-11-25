@@ -21,8 +21,9 @@ use tracing::{debug, error, info, trace, warn};
 
 use super::backoff::ExponentialBackoff;
 use super::credential::{PekoHubCredential, TunnelTlsConfig};
+use super::link::router::{Handler, Router, RouterConfig};
 use super::protocol::TunnelMessage;
-use super::seal::{Inbound, Sealer};
+use super::seal::Sealer;
 
 /// Errors that can occur in the tunnel client
 #[derive(Debug, thiserror::Error)]
@@ -78,6 +79,11 @@ impl TunnelHandle {
     /// Create a new handle from a sender (test-only).
     #[cfg(test)]
     pub fn new(tx: mpsc::Sender<TunnelMessage>) -> Self {
+        Self { tx }
+    }
+
+    /// A handle onto the router's queue (ADR-125).
+    pub(crate) fn from_sender(tx: mpsc::Sender<TunnelMessage>) -> Self {
         Self { tx }
     }
 
@@ -192,17 +198,6 @@ pub struct TunnelClient {
     /// Maximum consecutive heartbeats that may go unacknowledged before the
     /// connection is treated as dead.
     max_missed_heartbeats: u32,
-    /// Optional callback for handling proxied requests
-    request_handler: Option<
-        Arc<
-            dyn Fn(
-                    TunnelMessage,
-                    TunnelHandle,
-                ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send>>
-                + Send
-                + Sync,
-        >,
-    >,
     /// Optional callback for receiving per-iteration status updates
     /// (`Connected` / `Disconnected` / `Degraded`). Used by `AppState::start_tunnel`
     /// to keep the daemon's view of tunnel health in sync and to mark the
@@ -214,15 +209,15 @@ pub struct TunnelClient {
                 + Sync,
         >,
     >,
-    /// Outbound message sender shared with all handles.
-    tx: mpsc::Sender<TunnelMessage>,
-    /// Outbound message receiver. Guarded by a mutex so each connection's
-    /// write loop can take ownership of it while the tunnel is connected; on
-    /// reconnect the next write loop acquires the same receiver and drains
-    /// any messages that accumulated while disconnected.
-    rx: Arc<tokio::sync::Mutex<mpsc::Receiver<TunnelMessage>>>,
-    /// ADR-110: seals what goes out and opens what comes in. `None` only
-    /// in tests that speak to a fake hub in the clear.
+    /// ADR-125: seals what goes out, chooses each frame's path (a direct
+    /// link or this connection), and opens what comes in. It owns the
+    /// queue every handle sends into and outlives each connection.
+    router: Router,
+    /// The router's frames for PekoHub. Guarded by a mutex so each
+    /// connection's write loop can take it while connected; on reconnect
+    /// the next write loop drains what accumulated while disconnected.
+    hub_rx: Arc<tokio::sync::Mutex<mpsc::Receiver<Vec<u8>>>>,
+    /// ADR-110: this runtime's key statement rides `runtime_hello`.
     sealer: Option<Arc<Sealer>>,
 }
 
@@ -250,7 +245,15 @@ impl TunnelClient {
         max_reconnect_attempts: u32,
     ) -> Self {
         let hub_url = credential.url.clone();
-        let (tx, rx) = mpsc::channel(TUNNEL_OUTBOUND_BUFFER_SIZE);
+        let (router, hub_rx) = Router::new(RouterConfig {
+            runtime_id: credential.runtime_id.clone(),
+            signing_key: Arc::clone(&signing_key),
+            sealer: None,
+            devices: None,
+            policy: None,
+            network: crate::common::types::config::NetworkConfig::default(),
+            links_path: None,
+        });
         Self {
             hub_url,
             credential,
@@ -265,19 +268,51 @@ impl TunnelClient {
             })),
             max_reconnect_attempts,
             max_missed_heartbeats: DEFAULT_MAX_MISSED_HEARTBEATS,
-            request_handler: None,
             on_status: None,
-            tx,
-            rx: Arc::new(tokio::sync::Mutex::new(rx)),
+            router,
+            hub_rx: Arc::new(tokio::sync::Mutex::new(hub_rx)),
             sealer: None,
         }
     }
 
-    /// Seal what this client sends and open what it receives (ADR-110).
+    /// Seal what this client sends and open what it receives (ADR-110),
+    /// through PekoHub only.
     #[must_use]
-    pub fn with_sealer(mut self, sealer: Arc<Sealer>) -> Self {
+    pub fn with_sealer(self, sealer: Arc<Sealer>) -> Self {
+        let (router, hub_rx) = Router::new(RouterConfig {
+            runtime_id: self.credential.runtime_id.clone(),
+            signing_key: Arc::clone(&self.signing_key),
+            sealer: Some(Arc::clone(&sealer)),
+            devices: None,
+            policy: None,
+            network: crate::common::types::config::NetworkConfig::default(),
+            links_path: None,
+        });
+        self.with_router(router, hub_rx, sealer)
+    }
+
+    /// Send and receive through `router` (ADR-125), which seals with
+    /// `sealer`; `hub_rx` is the queue [`Router::new`] gave with it.
+    #[must_use]
+    pub fn with_router(
+        mut self,
+        router: Router,
+        hub_rx: mpsc::Receiver<Vec<u8>>,
+        sealer: Arc<Sealer>,
+    ) -> Self {
+        if let Some(handler) = self.router.handler() {
+            router.set_handler(handler);
+        }
+        self.router = router;
+        self.hub_rx = Arc::new(tokio::sync::Mutex::new(hub_rx));
         self.sealer = Some(sealer);
         self
+    }
+
+    /// The router this client sends through.
+    #[must_use]
+    pub fn router(&self) -> &Router {
+        &self.router
     }
 
     /// Set a callback for handling proxied requests
@@ -286,7 +321,8 @@ impl TunnelClient {
         F: Fn(TunnelMessage, TunnelHandle) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<Output = ()> + Send + 'static,
     {
-        self.request_handler = Some(Arc::new(move |msg, handle| Box::pin(handler(msg, handle))));
+        let handler: Handler = Arc::new(move |msg, handle| Box::pin(handler(msg, handle)));
+        self.router.set_handler(handler);
     }
 
     /// Set a callback for receiving per-iteration status updates
@@ -316,6 +352,8 @@ impl TunnelClient {
     /// the `on_degraded` callback fires once with the attempt count and
     /// last error, and `run()` returns.
     pub async fn run(mut self) {
+        self.router.start();
+        let kick = self.router.hub_kick();
         let mut consecutive_failures: u32 = 0;
         loop {
             match self.connect_and_serve().await {
@@ -331,7 +369,11 @@ impl TunnelClient {
                     // the same instant.
                     let delay = self.backoff.first_reconnect_delay();
                     info!("reconnecting to PekoHub in {:?}", delay);
-                    tokio::time::sleep(delay).await;
+                    // ADR-125 D6: a network change reconnects at once.
+                    tokio::select! {
+                        () = tokio::time::sleep(delay) => {}
+                        () = kick.notified() => {}
+                    }
                 }
                 Err(e) => {
                     consecutive_failures = consecutive_failures.saturating_add(1);
@@ -363,7 +405,13 @@ impl TunnelClient {
                         })
                         .await;
                     }
-                    tokio::time::sleep(delay).await;
+                    tokio::select! {
+                        () = tokio::time::sleep(delay) => {}
+                        () = kick.notified() => {
+                            info!("the network changed; reconnecting to PekoHub now");
+                            self.backoff.reset();
+                        }
+                    }
                 }
             }
         }
@@ -501,11 +549,10 @@ impl TunnelClient {
         };
 
         // 3. Forward TunnelReady to handler so dispatcher can announce instances
-        let handle = TunnelHandle {
-            tx: self.tx.clone(),
-        };
+        let handle = self.router.handle();
+        self.router.hub_state(true);
 
-        if let Some(handler) = &self.request_handler {
+        if let Some(handler) = &self.router.handler() {
             handler(
                 TunnelMessage::TunnelReady {
                     heartbeat_interval_secs: heartbeat_interval,
@@ -517,12 +564,12 @@ impl TunnelClient {
 
         // 4. Start heartbeat + read + write loops
         let state = self.state.clone();
-        let request_handler = self.request_handler.clone();
+        let request_handler = self.router.handler();
         let max_missed = self.max_missed_heartbeats;
-        let rx = self.rx.clone();
+        let hub_rx = self.hub_rx.clone();
 
         // Heartbeat loop
-        let heartbeat_tx = self.tx.clone();
+        let heartbeat_handle_tx = self.router.handle();
         let heartbeat_state = state.clone();
         let heartbeat_handle = if heartbeat_interval == 0 {
             // Heartbeats disabled by hub configuration.
@@ -546,7 +593,7 @@ impl TunnelClient {
                         s.heartbeat_seq
                     };
                     let msg = TunnelMessage::Heartbeat { seq };
-                    if heartbeat_tx.try_send(msg).is_err() {
+                    if heartbeat_handle_tx.send(msg).is_err() {
                         break;
                     }
                     trace!("Sent heartbeat seq={}", seq);
@@ -556,7 +603,7 @@ impl TunnelClient {
 
         // Read loop: process incoming WebSocket messages
         let read_state = state.clone();
-        let read_sealer = self.sealer.clone();
+        let read_router = self.router.clone();
         let read_handle = tokio::spawn(async move {
             loop {
                 let frame: Vec<u8> = match read.next().await {
@@ -585,65 +632,29 @@ impl TunnelClient {
                         break;
                     }
                 };
-                let msg = match &read_sealer {
-                    Some(sealer) => match sealer.inbound(&frame).await {
-                        Inbound::Message(msg) => *msg,
-                        Inbound::MessageAnd(msg, first) => {
-                            // A newer device list was seen: ask for it,
-                            // then handle the message.
-                            for ask in first {
-                                if handle.tx.send(ask).await.is_err() {
-                                    break;
-                                }
-                            }
-                            *msg
-                        }
-                        Inbound::Release(msgs) => {
-                            // Keys arrived: these can be sealed now.
-                            for msg in msgs {
-                                if handle.tx.send(msg).await.is_err() {
-                                    break;
-                                }
-                            }
-                            continue;
-                        }
-                        Inbound::Ignore => continue,
-                    },
-                    None => match TunnelMessage::from_bytes(&frame) {
-                        Ok(msg) => msg,
-                        Err(e) => {
-                            warn!("Failed to parse tunnel message: {}", e);
-                            continue;
-                        }
-                    },
-                };
-                Self::handle_incoming_message(msg, &read_state, request_handler.as_ref(), &handle)
+                // ADR-110/125: opened, checked and put in order by the
+                // router (`direct` drops sealed frames here unopened).
+                for msg in read_router.receive_from_hub(&frame).await {
+                    Self::handle_incoming_message(
+                        msg,
+                        &read_state,
+                        request_handler.as_ref(),
+                        &handle,
+                    )
                     .await;
+                }
             }
         });
 
         // Write loop: send messages from internal channel to WebSocket
-        let write_sealer = self.sealer.clone();
+        // Write loop: frames the router chose PekoHub for (ADR-125 D6),
+        // already sealed (ADR-110).
         let write_handle = tokio::spawn(async move {
-            let mut rx = rx.lock().await;
-            'messages: while let Some(msg) = rx.recv().await {
-                let frames = match &write_sealer {
-                    // ADR-110: sealed to the computer it is for, or held
-                    // until its key arrives.
-                    Some(sealer) => sealer.outbound(msg).await,
-                    None => match msg.to_bytes() {
-                        Ok(b) => vec![b],
-                        Err(e) => {
-                            error!("Failed to serialize tunnel message: {}", e);
-                            continue;
-                        }
-                    },
-                };
-                for bytes in frames {
-                    if let Err(e) = write.send(Message::Binary(bytes.into())).await {
-                        error!("WebSocket write error: {}", e);
-                        break 'messages;
-                    }
+            let mut rx = hub_rx.lock().await;
+            while let Some(bytes) = rx.recv().await {
+                if let Err(e) = write.send(Message::Binary(bytes.into())).await {
+                    error!("WebSocket write error: {}", e);
+                    break;
                 }
             }
         });
@@ -659,6 +670,7 @@ impl TunnelClient {
             let mut s = state.write().await;
             s.ready = false;
         }
+        self.router.hub_state(false);
 
         info!("Tunnel connection closed");
         Ok(())
@@ -668,16 +680,7 @@ impl TunnelClient {
     async fn handle_incoming_message(
         msg: TunnelMessage,
         state: &Arc<RwLock<TunnelState>>,
-        request_handler: Option<
-            &Arc<
-                dyn Fn(
-                        TunnelMessage,
-                        TunnelHandle,
-                    ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send>>
-                    + Send
-                    + Sync,
-            >,
-        >,
+        request_handler: Option<&Handler>,
         handle: &TunnelHandle,
     ) {
         match msg {
@@ -759,6 +762,7 @@ impl TunnelClient {
             | TunnelMessage::TunnelPekoApprovalDecided { .. }
             | TunnelMessage::TunnelPekoBrowserRequest { .. }
             | TunnelMessage::TunnelPekoBrowser { .. }
+            | TunnelMessage::TunnelDirectAddresses { .. }
             | TunnelMessage::TunnelDeviceRequest { .. }
             | TunnelMessage::TunnelDeviceResponse { .. }
             | TunnelMessage::TunnelDeviceEvent { .. }
@@ -945,7 +949,7 @@ mod tests {
             s.heartbeat_interval_secs = 1;
         }
 
-        let tx = client.tx.clone();
+        let tx = client.router.handle();
         let state = client.state.clone();
         let max_missed = client.max_missed_heartbeats;
         let heartbeat_interval = 1;
@@ -963,7 +967,7 @@ mod tests {
                     s.missed_heartbeats += 1;
                     s.heartbeat_seq
                 };
-                if tx.try_send(TunnelMessage::Heartbeat { seq }).is_err() {
+                if tx.send(TunnelMessage::Heartbeat { seq }).is_err() {
                     break;
                 }
             }
@@ -990,9 +994,7 @@ mod tests {
             s.missed_heartbeats = 2;
         }
 
-        let handle = TunnelHandle {
-            tx: client.tx.clone(),
-        };
+        let handle = client.router.handle();
         TunnelClient::handle_incoming_message(
             TunnelMessage::HeartbeatAck { seq: 5 },
             &client.state,

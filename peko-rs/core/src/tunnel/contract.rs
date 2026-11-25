@@ -75,6 +75,7 @@ fn variant(message: &TunnelMessage) -> &'static str {
         TunnelMessage::TunnelPekoApprovalDecided { .. } => "tunnel_peko_approval_decided",
         TunnelMessage::TunnelPekoBrowserRequest { .. } => "tunnel_peko_browser_request",
         TunnelMessage::TunnelPekoBrowser { .. } => "tunnel_peko_browser",
+        TunnelMessage::TunnelDirectAddresses { .. } => "tunnel_direct_addresses",
         TunnelMessage::TunnelDeviceRequest { .. } => "tunnel_device_request",
         TunnelMessage::TunnelDeviceResponse { .. } => "tunnel_device_response",
         TunnelMessage::TunnelDeviceEvent { .. } => "tunnel_device_event",
@@ -146,6 +147,7 @@ const ALL_VARIANTS: &[&str] = &[
     "tunnel_peko_approval_decided",
     "tunnel_peko_browser_request",
     "tunnel_peko_browser",
+    "tunnel_direct_addresses",
     "tunnel_device_request",
     "tunnel_device_response",
     "tunnel_device_event",
@@ -655,6 +657,12 @@ fn samples() -> Vec<TunnelMessage> {
             ok: true,
             body: r#"{"held":true,"changed":true}"#.into(),
             signature: "runtime-signature".into(),
+        },
+        TunnelMessage::TunnelDirectAddresses {
+            request_id: "addr-1".into(),
+            source_runtime_id: RUNTIME_A.into(),
+            recipient_runtime_id: RUNTIME_B.into(),
+            statement: "runtime-signed-addresses".into(),
         },
         TunnelMessage::TunnelDeviceRequest {
             request_id: "dreq-1".into(),

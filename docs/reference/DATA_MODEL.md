@@ -68,6 +68,48 @@ first seen with. `changes`: `[{ hub_id, name?, pinned, offered,
 reported_at }]`, waiting for the owner as approval requests
 `apr_keychange<hex>` (kind `key_change`).
 
+## Direct links (ADR-125)
+
+**`<config>/runtime/links.json`** — mode `0600`. `peers`: runtime id →
+`{ told, told_iat, relay, worked, last_up? }`: the `host:port` addresses
+that computer last told (and the `iat` of that statement; an older one is
+ignored), whether it takes frames relayed through PekoHub (`false` while
+it is in `direct`), and up to four addresses a link to it came up on,
+newest first. Dialed after a restart or with PekoHub down; told addresses
+only when private (`10/8`, `172.16/12`, `192.168/16`, `100.64/10`,
+`fc00::/7`), at most 8 per computer.
+
+**The link** is a WebSocket over TLS 1.3 at `wss://peko-link/v1/link`
+(SNI `peko-link`) on the `direct_listen` port, with a self-signed
+certificate made at each start that neither side checks. Before anything
+else each side sends `{"type":"link_hello","hello":<JWS>}`: a compact JWS
+by its runtime key over `{ v: "peko-link/1", runtime_id, binding, iat }`,
+`binding` being base64url of the 32 bytes the session exports under the
+label `EXPORTER-peko-link` (RFC 5705, no context). Each side that accepts
+the other's hello (signature by the named `did:key`, binding equal to its
+own export, `iat` within 300 s, a runtime `direct_with` admits) answers
+`{"type":"link_ready"}`; a side whose hello is refused sees the connection
+close instead. Both within 10 s of the TCP connect; at most 32 connections
+wait at once. After that a link carries `heartbeat` / `heartbeat_ack`
+(every 5 s; three missed close it) and sealed frames whose
+`sourceRuntimeId` is the computer that said hello and whose
+`recipientRuntimeId` is this one; anything else closes it. Frames are
+capped per type per minute as PekoHub caps them per runtime.
+
+**`tunnel_direct_addresses`** — sealed (ADR-110), header `{ type,
+requestId, sourceRuntimeId, recipientRuntimeId }`, body `{ statement }`:
+a compact JWS by the source runtime's key over `{ v:
+"peko-direct-addresses/1", runtime_id, addresses, relay, iat }`. Relayed by
+PekoHub between any two runtimes (or carried on a link); the one sealed
+type `direct` still sends and takes through PekoHub.
+
+**`seq`** — the sealed body of `tunnel_channel_event` and
+`tunnel_channel_invite` carries `seq: { e, n }`: `e` is the sender's
+count of this start (16 hex), `n` the frame's number to that recipient
+computer (a resend of the same `requestId` keeps its number). The receiver
+holds a frame that arrives ahead of the one before it for up to 2 s. An
+older runtime ignores the field; a frame without it is never held.
+
 ## Devices and the person's read mark (ADR-108, ADR-111)
 
 **`<config>/runtime/device_uploads/<deviceId>/<id>`** — a file a phone is
@@ -880,6 +922,23 @@ http_hosts = ["peko:11436"]      # Required when `http` is not a loopback
 # The old `port`, `tls_*`, `cors_origins`, `request_timeout_seconds` and
 # `max_body_size_mb` keys were never read and are gone; files that still
 # carry them parse.
+
+# ── Direct links (ADR-125) ─────────────────────────────────────────────────
+# Same [network] table. Changed at once by IPC `network_settings_set`
+# (`peko network …`, Peko Desktop's Settings → Network, which rewrite only
+# these keys); a hand edit takes effect at the next start.
+connection       = "pekohub"      # Optional. "pekohub" (default): no listener,
+                                  # no dialing, nothing told. "automatic": a
+                                  # link when one is up, PekoHub otherwise.
+                                  # "direct": links only (D7).
+direct_with      = "mine"         # Optional. "mine" (default): computers on
+                                  # the owner's device list. "people": also
+                                  # every computer this one seals to.
+direct_listen    = "0.0.0.0:11438" # Optional. Where links are accepted.
+direct_addresses = []             # Optional. host:port to tell instead of the
+                                  # interfaces' private addresses.
+direct_peers     = []             # Optional. host:port to dial untold (any
+                                  # address; whoever answers must be admitted).
 
 # ── Provider credentials ───────────────────────────────────────────────────
 # There is no [providers] table. Models live in the catalog

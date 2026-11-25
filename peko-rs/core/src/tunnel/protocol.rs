@@ -798,6 +798,21 @@ pub enum TunnelMessage {
         signature: String,
     },
 
+    /// ADR-125 D5: where the source computer can be reached directly,
+    /// and whether it takes frames relayed through PekoHub (D7).
+    /// `statement` is the source runtime's compact JWS over
+    /// `{ v: "peko-direct-addresses/1", runtime_id, addresses, relay, iat }`
+    /// (`link::addresses::DirectAddresses`). Sealed; PekoHub relays it
+    /// between any two runtimes and reads none of it. An older runtime
+    /// does not know the type and ignores it.
+    #[serde(rename = "tunnel_direct_addresses", rename_all = "camelCase")]
+    TunnelDirectAddresses {
+        request_id: String,
+        source_runtime_id: String,
+        recipient_runtime_id: String,
+        statement: String,
+    },
+
     /// ADR-108 D3: one device verb for the runtime `runtime_id`, from a
     /// phone on the account's device list (ADR-111 D5). PekoHub relays it
     /// only from a phone signed in to the account that runtime is

@@ -270,6 +270,19 @@ impl TunnelChannelPort {
         Some(resolved.runtime_id)
     }
 
+    /// ADR-125 D8 (ADR-081 D7, ADR-110 D4): whether the registered peko
+    /// `did` is hosted on a runtime other than `source_runtime`, as the
+    /// directory says (checked against the peko's host statement). `false`
+    /// when that is not known (a peko this computer has no Hub id for).
+    pub async fn peko_hosted_elsewhere(&self, did: &str, source_runtime: &str) -> bool {
+        let Some(ctx) = self.ctx.read().await.clone() else {
+            return false;
+        };
+        self.linked_runtime(&ctx, did, false)
+            .await
+            .is_some_and(|runtime| runtime != source_runtime)
+    }
+
     /// Accept a registered principal speaking from `source_runtime` in
     /// `channel` when the directory confirms its online link moved there
     /// (ADR-081 D7); the membership row follows. Returns whether the

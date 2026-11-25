@@ -367,6 +367,13 @@
     "type": "tunnel_peko_browser"
   },
   {
+    "recipientRuntimeId": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+    "requestId": "addr-1",
+    "sealed": "hpke-sealed-body",
+    "sourceRuntimeId": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+    "type": "tunnel_direct_addresses"
+  },
+  {
     "deviceId": "dev_5f0c1c1e9a7b4f52a4f1c0de",
     "requestId": "dreq-1",
     "runtimeId": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
