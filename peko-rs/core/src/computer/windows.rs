@@ -57,11 +57,15 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
 use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
+use windows::Win32::System::Com::CoIncrementMTAUsage;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Power::{
     SetThreadExecutionState, ES_CONTINUOUS, ES_DISPLAY_REQUIRED, ES_SYSTEM_REQUIRED,
 };
-use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
+use windows::Win32::System::RemoteDesktop::{
+    ProcessIdToSessionId, WTSFreeMemory, WTSQuerySessionInformationW, WTSSessionInfoEx, WTSINFOEXW,
+    WTS_CURRENT_SERVER_HANDLE, WTS_CURRENT_SESSION, WTS_SESSIONSTATE_LOCK,
+};
 use windows::Win32::System::StationsAndDesktops::{
     CloseDesktop, GetUserObjectInformationW, OpenInputDesktop, DESKTOP_CONTROL_FLAGS,
     DESKTOP_READOBJECTS, UOI_NAME,
@@ -105,6 +109,10 @@ use super::{
 };
 
 const WHEEL_DELTA: i32 = 120;
+
+/// A virtual key Windows leaves unassigned (0xE8): pressing it means
+/// nothing to any app, but it is input this process sent.
+const VK_UNASSIGNED: VIRTUAL_KEY = VIRTUAL_KEY(0xE8);
 
 /// Run `f` per-monitor DPI aware (v2) on this thread, then put the
 /// thread's awareness back.
@@ -409,8 +417,8 @@ fn chord_inputs(chord: &Chord) -> Result<Vec<INPUT>> {
 }
 
 fn text_inputs(text: &str) -> Vec<INPUT> {
-    // Each UTF-16 unit down and up; a surrogate pair's two units go in
-    // one call, so nothing comes between them.
+    // Each UTF-16 unit down and up; a surrogate pair's halves one after
+    // the other.
     let mut inputs = Vec::new();
     for unit in text.encode_utf16() {
         inputs.push(key_input(VIRTUAL_KEY(0), unit, KEYEVENTF_UNICODE));
@@ -421,6 +429,80 @@ fn text_inputs(text: &str) -> Vec<INPUT> {
         ));
     }
     inputs
+}
+
+/// Send key events one at a time, [`KEY_GAP`] apart.
+///
+/// Some apps (Windows 11 Notepad, WinUI text boxes) handle injected keys
+/// late and read the keyboard's state as it is then, not as it was: a
+/// burst sent in one call arrived as the last character repeated ("strip
+/// check" as "strip kkkkk") and a chord lost its modifier (ctrl+s typed
+/// "s"). One event at a time, each is read as sent; a character's down
+/// and up sent together still lost characters now and then.
+fn send_paced(inputs: &[INPUT]) -> Result<()> {
+    for (i, input) in inputs.iter().enumerate() {
+        if i > 0 {
+            std::thread::sleep(KEY_GAP);
+        }
+        send(std::slice::from_ref(input))?;
+    }
+    Ok(())
+}
+
+/// Between key events (see [`send_paced`]): 1 ms garbled Notepad's text,
+/// 5 ms did not.
+const KEY_GAP: Duration = Duration::from_millis(8);
+
+/// Keep the process's multithreaded apartment alive for good.
+///
+/// Pictures are taken on the engine's blocking threads, which come and
+/// go. When the last thread in the MTA exits, COM tears the apartment
+/// down and may unload the WinRT libraries, but the `windows` crate keeps
+/// the activation factories it got in a process-wide cache: the next
+/// picture called through a dangling factory and the engine crashed
+/// (access violation in `GraphicsCaptureSession::IsSupported`). Holding
+/// one MTA usage makes the apartment outlive every thread.
+fn keep_mta() -> Result<()> {
+    static HELD: OnceLock<Result<(), String>> = OnceLock::new();
+    HELD.get_or_init(|| {
+        // The cookie is never handed back: the hold lasts as long as the
+        // process.
+        unsafe { CoIncrementMTAUsage() }
+            .map(|_cookie| ())
+            .map_err(|e| format!("COM refused to keep its apartment: {e}"))
+    })
+    .clone()
+    .map_err(|e| anyhow!(e))
+}
+
+/// What keeps a peko from the screen, from what Windows reports: the
+/// session locked, the input desktop (`None` when it cannot be opened, as
+/// for the secure desktop of an administrator prompt), the screen saver.
+fn obstruction_of(locked: bool, input_desktop: Option<&str>, saver: bool) -> Option<String> {
+    if locked {
+        return Some(
+            "The screen is locked; nothing can be seen or done until your owner unlocks it.".into(),
+        );
+    }
+    match input_desktop {
+        Some(name) if name.eq_ignore_ascii_case("Default") => {}
+        // A process of the user cannot open the secure desktop: an
+        // administrator prompt (UAC) or a sign-in is up.
+        None => {
+            return Some(
+                "Windows shows its secure desktop: an administrator prompt (UAC) or a sign-in \
+                 is waiting for your owner. Nothing was done; never answer it yourself."
+                    .into(),
+            )
+        }
+        Some(name) => {
+            return Some(format!(
+                "Windows shows its secure desktop ({name}): an administrator prompt (UAC) or a \
+                 sign-in is waiting for your owner. Nothing was done; never answer it yourself."
+            ))
+        }
+    }
+    saver.then(|| "The screen saver is on.".to_string())
 }
 
 // ─── The platform ──────────────────────────────────────────────────────
@@ -458,6 +540,41 @@ impl WindowsPlatform {
             let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
             String::from_utf16_lossy(&buf[..end])
         })
+    }
+
+    /// Whether this session is locked. On Windows 10 and 11 the lock
+    /// screen (LockApp) is shown on the session's own desktop, so the
+    /// input desktop alone does not tell; the session's state does, and
+    /// LockApp in front is taken as locked too.
+    fn session_locked() -> bool {
+        let mut info = PWSTR::null();
+        let mut len = 0u32;
+        let queried = unsafe {
+            WTSQuerySessionInformationW(
+                Some(WTS_CURRENT_SERVER_HANDLE),
+                WTS_CURRENT_SESSION,
+                WTSSessionInfoEx,
+                &mut info,
+                &mut len,
+            )
+        };
+        let mut flags = None;
+        if queried.is_ok() && !info.is_null() {
+            if len as usize >= std::mem::size_of::<WTSINFOEXW>() {
+                // WTS hands back its own allocation; read it without
+                // assuming its alignment.
+                #[allow(clippy::cast_ptr_alignment)]
+                let ex =
+                    unsafe { std::ptr::read_unaligned(info.0.cast::<WTSINFOEXW>().cast_const()) };
+                if ex.Level == 1 {
+                    flags = Some(unsafe { ex.Data.WTSInfoExLevel1.SessionFlags });
+                }
+            }
+            unsafe { WTSFreeMemory(info.0.cast()) };
+        }
+        flags == Some(WTS_SESSIONSTATE_LOCK as i32)
+            || Self::foreground()
+                .is_some_and(|fg| process_name(pid_of(fg)).eq_ignore_ascii_case("LockApp"))
     }
 
     fn screens_now() -> Vec<Screen> {
@@ -505,6 +622,7 @@ impl WindowsPlatform {
     }
 
     fn capture_wgc(target: Target) -> Result<Image> {
+        keep_mta()?;
         let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
         anyhow::ensure!(
             GraphicsCaptureSession::IsSupported().unwrap_or(false),
@@ -754,13 +872,19 @@ impl Platform for WindowsPlatform {
             if IsIconic(h).as_bool() {
                 let _ = ShowWindow(h, SW_RESTORE);
             }
-            // Windows gives the foreground to the process that sent the
-            // last input: a tap of Alt makes that this one.
-            let _ = send(&[
-                key_input(VK_MENU, 0, KEYBD_EVENT_FLAGS(0)),
-                key_input(VK_MENU, 0, KEYEVENTF_KEYUP),
-            ]);
-            let _ = SetForegroundWindow(h);
+            // Minimizing a window leaves it the foreground one: restored,
+            // it needs nothing more.
+            if GetForegroundWindow() != h {
+                // Windows gives the foreground to the process that sent
+                // the last input: a tap of an unassigned key makes that
+                // this one. Not Alt: a lone Alt tap puts the window in
+                // front in menu mode, which swallows the next key typed.
+                let _ = send(&[
+                    key_input(VK_UNASSIGNED, 0, KEYBD_EVENT_FLAGS(0)),
+                    key_input(VK_UNASSIGNED, 0, KEYEVENTF_KEYUP),
+                ]);
+                let _ = SetForegroundWindow(h);
+            }
             let _ = BringWindowToTop(h);
         });
         Ok(())
@@ -784,22 +908,6 @@ impl Platform for WindowsPlatform {
     }
 
     fn obstruction(&self) -> Option<String> {
-        match Self::input_desktop_name() {
-            None => {
-                return Some(
-                    "The screen is locked (or the sign-in screen is up); nothing can be seen or \
-                     done until your owner unlocks it."
-                        .into(),
-                )
-            }
-            Some(name) if !name.eq_ignore_ascii_case("Default") => {
-                return Some(format!(
-                    "Windows shows its secure desktop ({name}): a sign-in or an administrator \
-                     prompt is for your owner. Nothing was done."
-                ))
-            }
-            Some(_) => {}
-        }
         let mut running = BOOL(0);
         let saver = unsafe {
             SystemParametersInfoW(
@@ -811,7 +919,11 @@ impl Platform for WindowsPlatform {
         }
         .is_ok()
             && running.as_bool();
-        saver.then(|| "The screen saver is on.".to_string())
+        obstruction_of(
+            Self::session_locked(),
+            Self::input_desktop_name().as_deref(),
+            saver,
+        )
     }
 
     fn secure_input(&self) -> bool {
@@ -857,6 +969,59 @@ impl Platform for WindowsPlatform {
     }
 
     fn post(&self, event: &InputEvent) -> Result<()> {
+        let out = self.post_now(event);
+        // A press on a title bar (or an app's drag region) starts Windows'
+        // move loop only once the window's thread gets to it; input sent
+        // all at once is over, button up included, before the loop looks,
+        // and the window does not move. Give a drag time to be followed.
+        let pause = match event {
+            InputEvent::Press { down: true, .. } => DRAG_PRESS_PAUSE,
+            InputEvent::Move { held: Some(_), .. } => DRAG_STEP_PAUSE,
+            _ => Duration::ZERO,
+        };
+        if out.is_ok() && !pause.is_zero() {
+            std::thread::sleep(pause);
+        }
+        out
+    }
+
+    fn watch_input(&self, owner_input: Arc<dyn Fn() + Send + Sync>) -> Result<()> {
+        let _ = OWNER_INPUT.set(owner_input);
+        let (tx, rx) = mpsc::channel::<Result<(), String>>();
+        std::thread::Builder::new()
+            .name("peko-computer-watch".into())
+            .spawn(move || hook_thread(&tx))?;
+        rx.recv_timeout(Duration::from_secs(3))
+            .map_err(|_| anyhow!("the input watch did not start"))?
+            .map_err(|e| anyhow!(e))
+    }
+
+    fn hold_display_awake(&self) -> Option<Box<dyn Send>> {
+        // The state belongs to a thread: one lives as long as the hold.
+        let (release, wait) = mpsc::channel::<()>();
+        std::thread::Builder::new()
+            .name("peko-computer-awake".into())
+            .spawn(move || {
+                unsafe {
+                    SetThreadExecutionState(
+                        ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED,
+                    )
+                };
+                let _ = wait.recv();
+                unsafe { SetThreadExecutionState(ES_CONTINUOUS) };
+            })
+            .ok()?;
+        Some(Box::new(AwakeHold(release)))
+    }
+}
+
+/// After a button goes down: time for a window to start following it.
+const DRAG_PRESS_PAUSE: Duration = Duration::from_millis(80);
+/// After each step of a drag.
+const DRAG_STEP_PAUSE: Duration = Duration::from_millis(15);
+
+impl WindowsPlatform {
+    fn post_now(&self, event: &InputEvent) -> Result<()> {
         dpi_aware(|| match event {
             InputEvent::Move { x, y, .. } => send(&[move_to(*x, *y)]),
             InputEvent::Press {
@@ -889,38 +1054,9 @@ impl Platform for WindowsPlatform {
                 }
                 send(&inputs)
             }
-            InputEvent::Chord(chord) => send(&chord_inputs(chord)?),
-            InputEvent::Text(text) => send(&text_inputs(text)),
+            InputEvent::Chord(chord) => send_paced(&chord_inputs(chord)?),
+            InputEvent::Text(text) => send_paced(&text_inputs(text)),
         })
-    }
-
-    fn watch_input(&self, owner_input: Arc<dyn Fn() + Send + Sync>) -> Result<()> {
-        let _ = OWNER_INPUT.set(owner_input);
-        let (tx, rx) = mpsc::channel::<Result<(), String>>();
-        std::thread::Builder::new()
-            .name("peko-computer-watch".into())
-            .spawn(move || hook_thread(&tx))?;
-        rx.recv_timeout(Duration::from_secs(3))
-            .map_err(|_| anyhow!("the input watch did not start"))?
-            .map_err(|e| anyhow!(e))
-    }
-
-    fn hold_display_awake(&self) -> Option<Box<dyn Send>> {
-        // The state belongs to a thread: one lives as long as the hold.
-        let (release, wait) = mpsc::channel::<()>();
-        std::thread::Builder::new()
-            .name("peko-computer-awake".into())
-            .spawn(move || {
-                unsafe {
-                    SetThreadExecutionState(
-                        ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED,
-                    )
-                };
-                let _ = wait.recv();
-                unsafe { SetThreadExecutionState(ES_CONTINUOUS) };
-            })
-            .ok()?;
-        Some(Box::new(AwakeHold(release)))
     }
 }
 
@@ -996,6 +1132,10 @@ fn hook_thread(started: &mpsc::Sender<Result<(), String>>) {
 mod tests {
     use super::*;
 
+    /// The real-screen tests share one pointer, keyboard and foreground:
+    /// one at a time.
+    static SCREEN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn keys_map_to_windows_codes_not_mac_ones() {
         let chord = super::super::keys::parse("cmd+a", false).unwrap();
@@ -1013,9 +1153,31 @@ mod tests {
     }
 
     #[test]
+    fn a_locked_screen_and_a_uac_prompt_are_told_apart() {
+        let locked = obstruction_of(true, Some("Default"), false).unwrap();
+        assert!(locked.contains("locked"), "{locked}");
+        // Locked with the sign-in on the secure desktop: still locked.
+        assert!(obstruction_of(true, None, false)
+            .unwrap()
+            .contains("locked"));
+        let uac = obstruction_of(false, None, false).unwrap();
+        assert!(
+            uac.contains("administrator prompt") && !uac.contains("locked"),
+            "{uac}"
+        );
+        assert!(obstruction_of(false, Some("Winlogon"), false)
+            .unwrap()
+            .contains("(Winlogon)"));
+        assert!(obstruction_of(false, Some("Default"), true)
+            .unwrap()
+            .contains("screen saver"));
+        assert_eq!(obstruction_of(false, Some("default"), false), None);
+    }
+
+    #[test]
     fn text_keeps_surrogate_pairs_together() {
         let inputs = text_inputs("a😀");
-        // a down/up, then each half of the pair down/up.
+        // a down/up, then each half of the pair down/up, in order.
         assert_eq!(inputs.len(), 6);
         let scan = |i: &INPUT| unsafe { i.Anonymous.ki.wScan };
         assert_eq!(scan(&inputs[2]), 0xD83D);
@@ -1029,6 +1191,9 @@ mod tests {
         if std::env::var("PEKO_TEST_COMPUTER").ok().as_deref() != Some("1") {
             return;
         }
+        let _screen = SCREEN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let win = WindowsPlatform::new();
         assert!(win.unavailable().is_none());
         let screens = win.screens().unwrap();
@@ -1042,5 +1207,342 @@ mod tests {
             assert!(image.width > 10);
         }
         assert!(win.front().is_ok());
+    }
+
+    /// The engine takes pictures on blocking threads that exit when idle.
+    /// A picture on a thread that has exited, then one on a new thread,
+    /// crashed the process (access violation) until the MTA was held.
+    /// Real screen, by hand with `PEKO_TEST_COMPUTER=1`.
+    #[test]
+    fn pictures_from_threads_that_come_and_go() {
+        if std::env::var("PEKO_TEST_COMPUTER").ok().as_deref() != Some("1") {
+            return;
+        }
+        let _screen = SCREEN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let picture = || {
+            std::thread::spawn(|| {
+                let win = WindowsPlatform::new();
+                let main = win.screens().unwrap().into_iter().find(|s| s.main).unwrap();
+                // Windows.Graphics.Capture itself, not the GDI fallback.
+                WindowsPlatform::capture_wgc(Target::Screen(main.id))
+                    .unwrap()
+                    .width
+            })
+            .join()
+            .expect("the picture's thread")
+        };
+        for _ in 0..3 {
+            assert!(picture() > 100);
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+
+    /// A window whose client area drags it the way a web view's drag
+    /// region does (Tauri's `startDragging`): the move loop starts a little
+    /// after the button went down, once the page has answered.
+    unsafe extern "system" fn drag_region_window(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            DefWindowProcW, PostMessageW, HTCAPTION, WM_LBUTTONDOWN, WM_NCLBUTTONDOWN,
+        };
+        if m == WM_LBUTTONDOWN {
+            let id = hwnd_id(h);
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(30));
+                let _ = unsafe { windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture() };
+                let _ = unsafe {
+                    PostMessageW(
+                        Some(hwnd(id)),
+                        WM_NCLBUTTONDOWN,
+                        WPARAM(HTCAPTION as usize),
+                        LPARAM(0),
+                    )
+                };
+            });
+            return LRESULT(0);
+        }
+        unsafe { DefWindowProcW(h, m, w, l) }
+    }
+
+    /// Notepad (Windows 11's is a WinUI app) gets text and a chord as
+    /// sent. Sent in one burst, "strip check" arrived as "strip kkkkk" and
+    /// ctrl+s typed an "s". Real screen, by hand with
+    /// `PEKO_TEST_COMPUTER=1`: it opens a Notepad tab on a file in the
+    /// temp folder, types, saves and closes it.
+    #[test]
+    fn notepad_gets_text_and_chords_as_sent() {
+        if std::env::var("PEKO_TEST_COMPUTER").ok().as_deref() != Some("1") {
+            return;
+        }
+        let _screen = SCREEN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!("peko-typing-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("peko-typing-check.txt");
+        std::fs::write(&file, "").unwrap();
+        // Windows 11's notepad.exe hands the file to the Notepad app and
+        // exits; a classic Notepad stays open until the tab is closed.
+        #[allow(clippy::zombie_processes)]
+        std::process::Command::new("notepad.exe")
+            .arg(&file)
+            .spawn()
+            .unwrap();
+        let win = WindowsPlatform::new();
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        let notepad = loop {
+            if let Some(w) = win
+                .windows()
+                .unwrap()
+                .into_iter()
+                .find(|w| w.title.contains("peko-typing-check"))
+            {
+                break w;
+            }
+            assert!(std::time::Instant::now() < deadline, "Notepad opened");
+            std::thread::sleep(Duration::from_millis(200));
+        };
+        win.raise(&notepad).unwrap();
+        std::thread::sleep(Duration::from_millis(800));
+        let chord = |keys: &str| InputEvent::Chord(super::super::keys::parse(keys, false).unwrap());
+        let text = "strip check the quick brown fox, Gr\u{fc}\u{df}e";
+        for piece in super::super::pieces(text) {
+            win.post(&piece).unwrap();
+        }
+        win.post(&chord("ctrl+s")).unwrap();
+        std::thread::sleep(Duration::from_millis(1500));
+        let saved = std::fs::read_to_string(&file).unwrap();
+        win.post(&chord("ctrl+w")).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(saved.trim_start_matches('\u{feff}'), text);
+    }
+
+    static TYPED: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+    /// A window that keeps the characters it is sent.
+    unsafe extern "system" fn typing_window(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+        use windows::Win32::UI::WindowsAndMessaging::{DefWindowProcW, WM_CHAR};
+        if m == WM_CHAR {
+            if let Some(c) = char::from_u32(w.0 as u32) {
+                TYPED.lock().unwrap().push(c);
+            }
+            return LRESULT(0);
+        }
+        unsafe { DefWindowProcW(h, m, w, l) }
+    }
+
+    /// Bringing back a minimized window that is still the foreground one
+    /// (minimizing leaves it so) and typing: every character arrives. The
+    /// Alt tap that won the foreground put the window in menu mode, and
+    /// it swallowed the first character ("three" arrived as "hree").
+    /// Real screen, by hand with `PEKO_TEST_COMPUTER=1` (it types).
+    #[test]
+    fn typing_after_bringing_back_a_minimized_window_loses_nothing() {
+        use windows::core::w;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, DispatchMessageW, PeekMessageW, RegisterClassW,
+            TranslateMessage, PM_REMOVE, SW_MINIMIZE, WINDOW_EX_STYLE, WNDCLASSW,
+            WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+        };
+        if std::env::var("PEKO_TEST_COMPUTER").ok().as_deref() != Some("1") {
+            return;
+        }
+        let _screen = SCREEN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (made, window) = mpsc::channel::<u64>();
+        let (finish, finished) = mpsc::channel::<()>();
+        let ui = std::thread::spawn(move || {
+            dpi_aware(|| unsafe {
+                let instance = GetModuleHandleW(None).unwrap();
+                let class = w!("PekoTypingTest");
+                RegisterClassW(&WNDCLASSW {
+                    lpfnWndProc: Some(typing_window),
+                    hInstance: instance.into(),
+                    lpszClassName: class,
+                    ..WNDCLASSW::default()
+                });
+                let h = CreateWindowExW(
+                    WINDOW_EX_STYLE(0),
+                    class,
+                    w!("Peko typing test"),
+                    WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                    240,
+                    240,
+                    500,
+                    300,
+                    None,
+                    None,
+                    Some(instance.into()),
+                    None,
+                )
+                .unwrap();
+                made.send(hwnd_id(h)).unwrap();
+                let mut msg = MSG::default();
+                while finished.try_recv().is_err() {
+                    while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                        let _ = TranslateMessage(&msg);
+                        DispatchMessageW(&msg);
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                let _ = DestroyWindow(h);
+            });
+        });
+        let id = window.recv().unwrap();
+        let win = WindowsPlatform::new();
+        let info = || {
+            win.windows()
+                .unwrap()
+                .into_iter()
+                .find(|w| w.id == id)
+                .expect("the test window is listed")
+        };
+        win.raise(&info()).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(
+            win.front().unwrap().window,
+            Some(id),
+            "the window came forward"
+        );
+        unsafe {
+            let _ = ShowWindow(hwnd(id), SW_MINIMIZE);
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(info().minimized);
+        win.raise(&info()).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(
+            win.front().unwrap().window,
+            Some(id),
+            "the window came back"
+        );
+        TYPED.lock().unwrap().clear();
+        win.post(&InputEvent::Text("three".into())).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        let typed = TYPED.lock().unwrap().clone();
+        finish.send(()).unwrap();
+        ui.join().unwrap();
+        assert_eq!(typed, "three");
+    }
+
+    /// A drag on an app's drag region (Peko Desktop's own title bar is
+    /// one) moves the window as far as it was dragged, with the events
+    /// `act` sends for a drag. Sent all at once, the button was up before
+    /// the move loop began, and the window did not move at all. Real
+    /// screen, by hand with `PEKO_TEST_COMPUTER=1` (it moves the pointer).
+    #[test]
+    fn a_drag_on_a_drag_region_moves_the_window() {
+        use windows::core::w;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, DispatchMessageW, PeekMessageW, RegisterClassW,
+            TranslateMessage, PM_REMOVE, WINDOW_EX_STYLE, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+            WS_VISIBLE,
+        };
+        if std::env::var("PEKO_TEST_COMPUTER").ok().as_deref() != Some("1") {
+            return;
+        }
+        let _screen = SCREEN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (made, window) = mpsc::channel::<u64>();
+        let (finish, finished) = mpsc::channel::<()>();
+        let ui = std::thread::spawn(move || {
+            dpi_aware(|| unsafe {
+                let instance = GetModuleHandleW(None).unwrap();
+                let class = w!("PekoDragTest");
+                RegisterClassW(&WNDCLASSW {
+                    lpfnWndProc: Some(drag_region_window),
+                    hInstance: instance.into(),
+                    lpszClassName: class,
+                    ..WNDCLASSW::default()
+                });
+                let h = CreateWindowExW(
+                    WINDOW_EX_STYLE(0),
+                    class,
+                    w!("Peko drag test"),
+                    WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                    200,
+                    200,
+                    600,
+                    400,
+                    None,
+                    None,
+                    Some(instance.into()),
+                    None,
+                )
+                .unwrap();
+                made.send(hwnd_id(h)).unwrap();
+                let mut msg = MSG::default();
+                while finished.try_recv().is_err() {
+                    while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                        let _ = TranslateMessage(&msg);
+                        DispatchMessageW(&msg);
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                let _ = DestroyWindow(h);
+            });
+        });
+        let id = window.recv().unwrap();
+        let win = WindowsPlatform::new();
+        let bounds = |win: &WindowsPlatform| {
+            win.windows()
+                .unwrap()
+                .into_iter()
+                .find(|w| w.id == id)
+                .expect("the test window is listed")
+        };
+        let before = bounds(&win);
+        win.raise(&before).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        // In the client area, below the caption.
+        let (x0, y0) = (before.bounds.x + 150.0, before.bounds.y + 120.0);
+        let (x1, y1) = (x0 + 200.0, y0 + 100.0);
+        let mut events = vec![
+            InputEvent::Move {
+                x: x0,
+                y: y0,
+                held: None,
+            },
+            InputEvent::Press {
+                x: x0,
+                y: y0,
+                button: Button::Left,
+                down: true,
+                count: 1,
+            },
+        ];
+        for step in 1..=12 {
+            let t = f64::from(step) / 12.0;
+            events.push(InputEvent::Move {
+                x: x0 + (x1 - x0) * t,
+                y: y0 + (y1 - y0) * t,
+                held: Some(Button::Left),
+            });
+        }
+        events.push(InputEvent::Press {
+            x: x1,
+            y: y1,
+            button: Button::Left,
+            down: false,
+            count: 1,
+        });
+        for e in &events {
+            win.post(e).unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        let after = bounds(&win);
+        finish.send(()).unwrap();
+        ui.join().unwrap();
+        let (dx, dy) = (
+            after.bounds.x - before.bounds.x,
+            after.bounds.y - before.bounds.y,
+        );
+        assert!(
+            (dx - 200.0).abs() <= 4.0 && (dy - 100.0).abs() <= 4.0,
+            "dragged by (200, 100), the window moved by ({dx}, {dy})"
+        );
     }
 }
