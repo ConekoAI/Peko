@@ -881,6 +881,59 @@ impl Platform for WindowsPlatform {
     }
 
     fn post(&self, event: &InputEvent) -> Result<()> {
+        let out = self.post_now(event);
+        // A press on a title bar (or an app's drag region) starts Windows'
+        // move loop only once the window's thread gets to it; input sent
+        // all at once is over, button up included, before the loop looks,
+        // and the window does not move. Give a drag time to be followed.
+        let pause = match event {
+            InputEvent::Press { down: true, .. } => DRAG_PRESS_PAUSE,
+            InputEvent::Move { held: Some(_), .. } => DRAG_STEP_PAUSE,
+            _ => Duration::ZERO,
+        };
+        if out.is_ok() && !pause.is_zero() {
+            std::thread::sleep(pause);
+        }
+        out
+    }
+
+    fn watch_input(&self, owner_input: Arc<dyn Fn() + Send + Sync>) -> Result<()> {
+        let _ = OWNER_INPUT.set(owner_input);
+        let (tx, rx) = mpsc::channel::<Result<(), String>>();
+        std::thread::Builder::new()
+            .name("peko-computer-watch".into())
+            .spawn(move || hook_thread(&tx))?;
+        rx.recv_timeout(Duration::from_secs(3))
+            .map_err(|_| anyhow!("the input watch did not start"))?
+            .map_err(|e| anyhow!(e))
+    }
+
+    fn hold_display_awake(&self) -> Option<Box<dyn Send>> {
+        // The state belongs to a thread: one lives as long as the hold.
+        let (release, wait) = mpsc::channel::<()>();
+        std::thread::Builder::new()
+            .name("peko-computer-awake".into())
+            .spawn(move || {
+                unsafe {
+                    SetThreadExecutionState(
+                        ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED,
+                    )
+                };
+                let _ = wait.recv();
+                unsafe { SetThreadExecutionState(ES_CONTINUOUS) };
+            })
+            .ok()?;
+        Some(Box::new(AwakeHold(release)))
+    }
+}
+
+/// After a button goes down: time for a window to start following it.
+const DRAG_PRESS_PAUSE: Duration = Duration::from_millis(80);
+/// After each step of a drag.
+const DRAG_STEP_PAUSE: Duration = Duration::from_millis(15);
+
+impl WindowsPlatform {
+    fn post_now(&self, event: &InputEvent) -> Result<()> {
         dpi_aware(|| match event {
             InputEvent::Move { x, y, .. } => send(&[move_to(*x, *y)]),
             InputEvent::Press {
@@ -916,35 +969,6 @@ impl Platform for WindowsPlatform {
             InputEvent::Chord(chord) => send(&chord_inputs(chord)?),
             InputEvent::Text(text) => send(&text_inputs(text)),
         })
-    }
-
-    fn watch_input(&self, owner_input: Arc<dyn Fn() + Send + Sync>) -> Result<()> {
-        let _ = OWNER_INPUT.set(owner_input);
-        let (tx, rx) = mpsc::channel::<Result<(), String>>();
-        std::thread::Builder::new()
-            .name("peko-computer-watch".into())
-            .spawn(move || hook_thread(&tx))?;
-        rx.recv_timeout(Duration::from_secs(3))
-            .map_err(|_| anyhow!("the input watch did not start"))?
-            .map_err(|e| anyhow!(e))
-    }
-
-    fn hold_display_awake(&self) -> Option<Box<dyn Send>> {
-        // The state belongs to a thread: one lives as long as the hold.
-        let (release, wait) = mpsc::channel::<()>();
-        std::thread::Builder::new()
-            .name("peko-computer-awake".into())
-            .spawn(move || {
-                unsafe {
-                    SetThreadExecutionState(
-                        ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED,
-                    )
-                };
-                let _ = wait.recv();
-                unsafe { SetThreadExecutionState(ES_CONTINUOUS) };
-            })
-            .ok()?;
-        Some(Box::new(AwakeHold(release)))
     }
 }
 
@@ -1093,5 +1117,147 @@ mod tests {
             assert!(picture() > 100);
             std::thread::sleep(Duration::from_millis(200));
         }
+    }
+
+    /// A window whose client area drags it the way a web view's drag
+    /// region does (Tauri's `startDragging`): the move loop starts a little
+    /// after the button went down, once the page has answered.
+    unsafe extern "system" fn drag_region_window(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            DefWindowProcW, PostMessageW, HTCAPTION, WM_LBUTTONDOWN, WM_NCLBUTTONDOWN,
+        };
+        if m == WM_LBUTTONDOWN {
+            let id = hwnd_id(h);
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(30));
+                let _ = unsafe { windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture() };
+                let _ = unsafe {
+                    PostMessageW(
+                        Some(hwnd(id)),
+                        WM_NCLBUTTONDOWN,
+                        WPARAM(HTCAPTION as usize),
+                        LPARAM(0),
+                    )
+                };
+            });
+            return LRESULT(0);
+        }
+        unsafe { DefWindowProcW(h, m, w, l) }
+    }
+
+    /// A drag on an app's drag region (Peko Desktop's own title bar is
+    /// one) moves the window as far as it was dragged, with the events
+    /// `act` sends for a drag. Sent all at once, the button was up before
+    /// the move loop began, and the window did not move at all. Real
+    /// screen, by hand with `PEKO_TEST_COMPUTER=1` (it moves the pointer).
+    #[test]
+    fn a_drag_on_a_drag_region_moves_the_window() {
+        use windows::core::w;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, DispatchMessageW, PeekMessageW, RegisterClassW,
+            TranslateMessage, PM_REMOVE, WINDOW_EX_STYLE, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+            WS_VISIBLE,
+        };
+        if std::env::var("PEKO_TEST_COMPUTER").ok().as_deref() != Some("1") {
+            return;
+        }
+        let (made, window) = mpsc::channel::<u64>();
+        let (finish, finished) = mpsc::channel::<()>();
+        let ui = std::thread::spawn(move || {
+            dpi_aware(|| unsafe {
+                let instance = GetModuleHandleW(None).unwrap();
+                let class = w!("PekoDragTest");
+                RegisterClassW(&WNDCLASSW {
+                    lpfnWndProc: Some(drag_region_window),
+                    hInstance: instance.into(),
+                    lpszClassName: class,
+                    ..WNDCLASSW::default()
+                });
+                let h = CreateWindowExW(
+                    WINDOW_EX_STYLE(0),
+                    class,
+                    w!("Peko drag test"),
+                    WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                    200,
+                    200,
+                    600,
+                    400,
+                    None,
+                    None,
+                    Some(instance.into()),
+                    None,
+                )
+                .unwrap();
+                made.send(hwnd_id(h)).unwrap();
+                let mut msg = MSG::default();
+                while finished.try_recv().is_err() {
+                    while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                        let _ = TranslateMessage(&msg);
+                        DispatchMessageW(&msg);
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                let _ = DestroyWindow(h);
+            });
+        });
+        let id = window.recv().unwrap();
+        let win = WindowsPlatform::new();
+        let bounds = |win: &WindowsPlatform| {
+            win.windows()
+                .unwrap()
+                .into_iter()
+                .find(|w| w.id == id)
+                .expect("the test window is listed")
+        };
+        let before = bounds(&win);
+        win.raise(&before).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        // In the client area, below the caption.
+        let (x0, y0) = (before.bounds.x + 150.0, before.bounds.y + 120.0);
+        let (x1, y1) = (x0 + 200.0, y0 + 100.0);
+        let mut events = vec![
+            InputEvent::Move {
+                x: x0,
+                y: y0,
+                held: None,
+            },
+            InputEvent::Press {
+                x: x0,
+                y: y0,
+                button: Button::Left,
+                down: true,
+                count: 1,
+            },
+        ];
+        for step in 1..=12 {
+            let t = f64::from(step) / 12.0;
+            events.push(InputEvent::Move {
+                x: x0 + (x1 - x0) * t,
+                y: y0 + (y1 - y0) * t,
+                held: Some(Button::Left),
+            });
+        }
+        events.push(InputEvent::Press {
+            x: x1,
+            y: y1,
+            button: Button::Left,
+            down: false,
+            count: 1,
+        });
+        for e in &events {
+            win.post(e).unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        let after = bounds(&win);
+        finish.send(()).unwrap();
+        ui.join().unwrap();
+        let (dx, dy) = (
+            after.bounds.x - before.bounds.x,
+            after.bounds.y - before.bounds.y,
+        );
+        assert!(
+            (dx - 200.0).abs() <= 4.0 && (dy - 100.0).abs() <= 4.0,
+            "dragged by (200, 100), the window moved by ({dx}, {dy})"
+        );
     }
 }
