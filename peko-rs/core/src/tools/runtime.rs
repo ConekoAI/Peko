@@ -555,6 +555,10 @@ impl EngineHooks for ToolingRuntime {
     }
 
     async fn fire_stop_hook(&self, payload: serde_json::Value) {
+        // ADR-123 D2: a run that ends lets go of the computer.
+        if let Some(run_id) = payload.get("run_id").and_then(serde_json::Value::as_str) {
+            crate::computer::run_ended(run_id);
+        }
         self.fire_observe(WorkspaceHookPoint::Stop, HookInput::Json(payload))
             .await;
     }

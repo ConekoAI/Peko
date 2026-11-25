@@ -599,3 +599,142 @@ fn turned_off_in_config_means_unavailable() {
     std::fs::write(&path, "[computer]\nenabled = true\n").unwrap();
     assert!(enabled_in(&path));
 }
+
+#[test]
+fn a_run_that_ended_lets_go_of_the_screen() {
+    let (fake, desk) = desk();
+    let first = caller("r1");
+    let next = caller("r2");
+    let s1 = shot(&desk, &first, ShotRequest::default());
+    assert!(matches!(
+        act(&desk, &first, click(s1.frame.id, 500.0, 300.0, 1)),
+        Outcome::Done(_)
+    ));
+    // The hand is asked for before the frame.
+    assert_eq!(
+        refused(act(&desk, &next, click(99, 500.0, 300.0, 1))),
+        Refusal::Busy("another of your runs".into())
+    );
+    desk.run_ended("r1");
+    // The owner's hand pauses nothing of a run that is over, and the
+    // indicator goes away.
+    fake.owner_touches();
+    assert!(desk.paused().is_none());
+    assert!(desk.state_view()["using"].is_null());
+    let s2 = shot(&desk, &next, ShotRequest::default());
+    // The next run has the screen at once, and the owner's hand pauses it.
+    assert!(matches!(
+        act(&desk, &next, click(s2.frame.id, 500.0, 300.0, 1)),
+        Outcome::Done(_)
+    ));
+    fake.owner_touches();
+    assert_eq!(desk.paused().unwrap().run_id, "r2");
+    // Another run's end changes nothing.
+    desk.run_ended("r1");
+    assert!(desk.paused().is_some());
+}
+
+#[test]
+fn a_pause_outlives_the_run_it_paused() {
+    let (fake, desk) = desk();
+    let me = caller("r1");
+    let s = shot(&desk, &me, ShotRequest::default());
+    assert!(matches!(
+        act(&desk, &me, click(s.frame.id, 500.0, 300.0, 1)),
+        Outcome::Done(_)
+    ));
+    fake.owner_touches();
+    // Told it is paused, the run ends its turn; the pause waits for the
+    // owner, and the indicator still shows it.
+    desk.run_ended("r1");
+    assert!(desk.paused().is_some());
+    assert_eq!(desk.state_view()["paused"]["peko"], "mochi");
+    desk.owner_spoke("s-r1");
+    assert!(desk.paused().is_none());
+}
+
+#[test]
+fn a_point_off_the_screen_sends_nothing() {
+    let (fake, desk) = desk();
+    let me = caller("r1");
+    // Peko's window (800×600) hangs 360 points past the right edge.
+    fake.window_mut(1, |w| w.bounds = Rect::new(1000.0, 50.0, 800.0, 600.0));
+    fake.bring_front(1);
+    let s = shot(
+        &desk,
+        &me,
+        ShotRequest {
+            window: Some(1),
+            ..ShotRequest::default()
+        },
+    );
+    let k = f64::from(s.frame.picture.0) / 800.0;
+    let r = refused(act(&desk, &me, click(s.frame.id, 600.0 * k, 100.0 * k, 1)));
+    assert_eq!(r.status(), "not_in_front");
+    assert!(r.message().contains("off the screen"), "{}", r.message());
+    let r = refused(act(
+        &desk,
+        &me,
+        Input::Drag {
+            frame: s.frame.id,
+            from: (100.0 * k, 10.0 * k),
+            to: (700.0 * k, 10.0 * k),
+            window: 1,
+        },
+    ));
+    assert!(r.message().contains("off the screen"), "{}", r.message());
+    let r = refused(act(
+        &desk,
+        &me,
+        Input::Move {
+            frame: s.frame.id,
+            x: 600.0 * k,
+            y: 100.0 * k,
+        },
+    ));
+    assert!(r.message().contains("off the screen"), "{}", r.message());
+    assert!(fake.posted().is_empty(), "{:?}", fake.posted());
+    // The part on the screen still works.
+    assert!(matches!(
+        act(&desk, &me, click(s.frame.id, 100.0 * k, 100.0 * k, 1)),
+        Outcome::Done(_)
+    ));
+}
+
+#[test]
+fn the_result_names_the_window_as_the_input_left_it() {
+    let (fake, desk) = desk();
+    let me = caller("r1");
+    fake.window_mut(1, |w| w.title = "*c6.txt - Notepad".into());
+    let f = Arc::clone(&fake);
+    fake.state().after_post = Some(Arc::new(move |_| {
+        f.window_mut(1, |w| w.title = "c6.txt - Notepad".into());
+    }));
+    let save = Input::Key {
+        chord: keys::parse("ctrl+s", false).unwrap(),
+        window: 1,
+    };
+    let Outcome::Done(acted) = act(&desk, &me, save) else {
+        panic!("ctrl+s refused")
+    };
+    assert_eq!(acted.window.unwrap().title, "c6.txt - Notepad");
+
+    // A window the input closed is said to be gone.
+    let f = Arc::clone(&fake);
+    fake.state().after_post = Some(Arc::new(move |_| {
+        f.state().windows.retain(|w| w.id != 1);
+    }));
+    let close = Input::Key {
+        chord: keys::parse("ctrl+w", false).unwrap(),
+        window: 1,
+    };
+    let Outcome::Done(acted) = act(&desk, &me, close) else {
+        panic!("ctrl+w refused")
+    };
+    assert!(acted.window.is_none());
+    assert!(
+        acted.done.contains("window 1 is gone now"),
+        "{}",
+        acted.done
+    );
+}
