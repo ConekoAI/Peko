@@ -1,6 +1,6 @@
 [package]
 name = "peko-message"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 authors = ["Peko <peko@coneko.ai>"]
 description = "Neutral message contract (ContentBlock, LlmMessage, MessageRole, TokenUsage, …) shared by Peko runtime components"
