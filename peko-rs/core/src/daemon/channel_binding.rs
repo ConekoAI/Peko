@@ -19,7 +19,9 @@
 //!   D3), read per post: `mention` (the default) — a human ROOT post
 //!   that mentions the principal (`@<name>`, case-insensitive, whole
 //!   word); `human` — every human root post; `off` — nothing.
-//!   A person's reply (`parent: Some`) never wakes. Another peko's post
+//!   A person's reply is weighed like their root post, and a reply to
+//!   one of this peko's posts counts as mentioning it (ADR-126 D7). A
+//!   reaction is not a message and wakes no one (D2). Another peko's post
 //!   wakes the principal when it asks it for something (ADR-120 D1): it
 //!   mentions it, adds a board item for it, or replies to one of its
 //!   posts — while the group holds at most [`MAX_PEKO_CHAIN`] peko posts
@@ -44,7 +46,10 @@
 //! stop handle in the daemon's streaming-run registry. The responder
 //! posts the turn's final text back to the channel as the principal,
 //! threaded onto the triggering post. The turn input is
-//! `{author}: {text}` so the principal can tell speakers apart.
+//! `{author}: {text}` so the principal can tell speakers apart; a reply
+//! reads `{author} (replying to {quoted author}: “…”): {text}`, quoting
+//! the start of the message it answers from this copy's log (ADR-126
+//! D6).
 //!
 //! - **Run concurrency.** `consider_response` spawns the turn as a
 //!   detached task so the subscriber's cursor keeps advancing; turns
@@ -859,6 +864,10 @@ impl GroupWakeResponder {
         };
         let mut chain = 1usize;
         for (_, earlier) in page.events.iter().rev() {
+            // ADR-126 D2: a reaction counts toward no chain.
+            if !earlier.is_message() {
+                continue;
+            }
             let ChannelEvent::Posted { author, .. } = earlier else {
                 continue;
             };
@@ -903,10 +912,10 @@ impl GroupWakeResponder {
     /// allow. Otherwise it nudges the keepalive (ADR-086), unless it is
     /// a board change that asks nothing of this peko (ADR-101 D2).
     async fn consider_peer_post(&self, ctx: RespondCtx, wake: WakePolicy) {
-        let Some((author, text)) = self.peer_post(&ctx.event) else {
+        let Some((_, text)) = self.peer_post(&ctx.event) else {
             return;
         };
-        let input = format!("{author}: {text}");
+        let input = turn_input(self.inner.port.as_ref(), &self.inner.channel, &ctx.event).await;
         let asks = self.peer_asks_me(&ctx.event, text).await;
         if asks && wake != WakePolicy::Off && self.chain_allows(&ctx.event_id).await {
             if self.spend_peer_wake() {
@@ -938,15 +947,16 @@ impl GroupWakeResponder {
     ///   principals cannot wake each other into a loop; `public` is not
     ///   a user. The principal's own posts are principal-authored, so
     ///   self-suppression falls out of the same rule.
-    /// - `parent.is_none()` — replies never wake (every responder reply
-    ///   carries `parent: Some`).
+    /// - A reply is weighed like a root post (ADR-126 D7); a reply to
+    ///   this principal's post wakes it whether or not it mentions it
+    ///   (see `consider_response`).
     /// - Unmentioned posts don't wake anyone; the principal reads them
     ///   with ChannelRead (its turn context lists unread posts).
     ///
     /// The input is `{author}: {text}` so the woken session can tell
     /// speakers apart in a multi-party channel (see module docs).
     fn response_trigger(name: &str, event: &ChannelEvent) -> Option<String> {
-        Self::human_root_post(event)
+        Self::human_post(event)
             .filter(|(_, text)| peko_channel::mentions(text, name))
             .map(|(author, text)| format!("{author}: {text}"))
     }
@@ -1040,9 +1050,31 @@ impl GroupWakeResponder {
         open.is_some_and(|(_, for_actor)| self.is_addressee(author, for_actor.as_deref()))
     }
 
-    /// A human-authored (user or visitor) root post — what a
-    /// [`WakePolicy::Human`] binding wakes on. Principal posts and
-    /// replies never qualify, whatever the policy (ADR-072).
+    /// A human-authored (user or visitor) message, root post or reply —
+    /// what a [`WakePolicy::Human`] binding wakes on (ADR-126 D7).
+    /// Principal posts and reactions never qualify, whatever the policy
+    /// (ADR-072, ADR-126 D2).
+    fn human_post(event: &ChannelEvent) -> Option<(&str, &str)> {
+        match event {
+            ChannelEvent::Posted {
+                author,
+                text,
+                react: None,
+                ..
+            } if matches!(
+                ActorRef::from_str(author),
+                Ok(ActorRef::User(_) | ActorRef::Visitor(_))
+            ) =>
+            {
+                Some((author.as_str(), text.as_str()))
+            }
+            _ => None,
+        }
+    }
+
+    /// A human-authored (user or visitor) root post: what answers a
+    /// question card in the person's own words (ADR-114 D5), and how a
+    /// board change by a person is told apart.
     fn human_root_post(event: &ChannelEvent) -> Option<(&str, &str)> {
         match event {
             ChannelEvent::Posted {
@@ -1065,6 +1097,10 @@ impl GroupWakeResponder {
 #[async_trait]
 impl ChannelResponder for GroupWakeResponder {
     async fn consider_response(&self, ctx: RespondCtx) -> peko_channel::Result<()> {
+        // ADR-126 D2: a reaction wakes no one and nudges nothing.
+        if !ctx.event.is_message() {
+            return Ok(());
+        }
         // ADR-082 D3: read the policy per post, so `Channel wake` takes
         // effect without respawning the subscriber.
         let wake = self
@@ -1091,23 +1127,34 @@ impl ChannelResponder for GroupWakeResponder {
             let asked = Self::human_root_post(&ctx.event).is_some()
                 && board_asks(self.inner.port.as_ref(), op, &self.inner.principal);
             if asked {
-                if let Some((author, text)) = Self::human_root_post(&ctx.event) {
-                    let input = format!("{author}: {text}");
-                    spawn_turn(Arc::clone(&self.inner), ctx, input);
-                }
+                let input = self.input(&ctx.event).await;
+                spawn_turn(Arc::clone(&self.inner), ctx, input);
             }
             return Ok(());
         }
         match wake {
             WakePolicy::Off => return Ok(()),
             WakePolicy::Human => {
-                if let Some((author, text)) = Self::human_root_post(&ctx.event) {
-                    let input = format!("{author}: {text}");
+                if Self::human_post(&ctx.event).is_some() {
+                    let input = self.input(&ctx.event).await;
                     spawn_turn(Arc::clone(&self.inner), ctx, input);
                 }
                 return Ok(());
             }
             WakePolicy::Mention => {}
+        }
+        // ADR-126 D7: a person's reply to this peko's post counts as
+        // mentioning it, as Discord's reply pings its author.
+        if let ChannelEvent::Posted {
+            reply_to: Some(parent),
+            ..
+        } = &ctx.event
+        {
+            if Self::human_post(&ctx.event).is_some() && self.asked_by_me(parent).await {
+                let input = self.input(&ctx.event).await;
+                spawn_turn(Arc::clone(&self.inner), ctx, input);
+                return Ok(());
+            }
         }
         // ADR-114 D5: an answer to this peko's questions counts as
         // mentioning it.
@@ -1122,8 +1169,8 @@ impl ChannelResponder for GroupWakeResponder {
         // that is still open.
         let answered = answered || self.answers_my_open_card(&ctx.event, &ctx.event_id).await;
         if answered {
-            if let Some((author, text)) = Self::human_root_post(&ctx.event) {
-                let input = format!("{author}: {text}");
+            if Self::human_root_post(&ctx.event).is_some() {
+                let input = self.input(&ctx.event).await;
                 spawn_turn(Arc::clone(&self.inner), ctx, input);
             }
             return Ok(());
@@ -1148,11 +1195,46 @@ impl ChannelResponder for GroupWakeResponder {
                     .then(|| Self::response_trigger(&self.name, &ctx.event))
                     .flatten()
             });
-        let Some(input) = input else {
+        if input.is_none() {
             return Ok(());
-        };
+        }
+        let input = self.input(&ctx.event).await;
         spawn_turn(Arc::clone(&self.inner), ctx, input);
         Ok(())
+    }
+}
+
+impl GroupWakeResponder {
+    /// The turn input for `event` (ADR-126 D6).
+    async fn input(&self, event: &ChannelEvent) -> String {
+        turn_input(self.inner.port.as_ref(), &self.inner.channel, event).await
+    }
+}
+
+/// A post as a turn reads it (ADR-126 D6): `{author}: {text}`, or for a
+/// reply `{author} (replying to {quoted author}: “{start of the message}”):
+/// {text}`, the quote read from this copy's own log. A message this copy
+/// does not hold reads as "a message that isn't loaded".
+pub(crate) async fn turn_input(
+    port: &dyn ChannelPort,
+    channel: &ChannelId,
+    event: &ChannelEvent,
+) -> String {
+    let ChannelEvent::Posted {
+        author,
+        text,
+        reply_to,
+        ..
+    } = event
+    else {
+        return String::new();
+    };
+    match reply_to {
+        None => format!("{author}: {text}"),
+        Some(parent) => format!(
+            "{author} ({}): {text}",
+            crate::principal::peer_dm::replying_to(port, channel, parent).await
+        ),
     }
 }
 
@@ -1441,6 +1523,10 @@ impl PeerPostNudger {
     /// Whether `ctx.event` is a post by a principal other than the one
     /// this subscriber acts for.
     async fn is_peer_post(&self, ctx: &RespondCtx) -> bool {
+        // ADR-126 D2: a reaction brings no keepalive forward.
+        if !ctx.event.is_message() {
+            return false;
+        }
         let ChannelEvent::Posted { author, board, .. } = &ctx.event else {
             return false;
         };
@@ -1977,6 +2063,7 @@ mod tests {
             board: None,
             ask: None,
             answers: None,
+            react: None,
         }
     }
 
@@ -1996,6 +2083,7 @@ mod tests {
             board: None,
             ask: None,
             answers: None,
+            react: None,
         }
     }
 
@@ -2723,11 +2811,11 @@ mod tests {
 
     // -- GroupWakeResponder (ADR-049 Phase 3, D4) ----------------------------
 
-    /// The D4 trigger: fires on `user:*` ROOT posts only. Principal
-    /// posts (bare id or `principal:<did>`), `public`, threaded
-    /// replies, and non-Posted events never fire.
+    /// The D4 trigger: fires on `user:*` posts, replies too (ADR-126
+    /// D7). Principal posts (bare id or `principal:<did>`), `public`,
+    /// and non-Posted events never fire.
     #[test]
-    fn group_trigger_fires_only_on_user_root_posts() {
+    fn group_trigger_fires_only_on_user_posts() {
         let principal = "self";
 
         // Fires: a user root post that mentions the principal (input
@@ -2759,12 +2847,12 @@ mod tests {
             );
         }
 
-        // Never fires: a user-authored REPLY (threaded).
+        // Fires: a user-authored reply that mentions it (ADR-126 D7).
         let ev = posted_reply("user:alice", "3", "@self threaded follow-up");
         assert_eq!(
             GroupWakeResponder::response_trigger(principal, &ev),
-            None,
-            "replies (parent-bearing posts) must never trigger a group wake"
+            Some("user:alice: @self threaded follow-up".to_string()),
+            "a person's reply is weighed like their root post"
         );
 
         // Never fires: channel bookkeeping events.
@@ -4099,6 +4187,192 @@ mod tests {
         assert_eq!(
             authors.lock().unwrap()[0].as_deref(),
             Some(alice.to_string().as_str())
+        );
+    }
+
+    /// The `msg_id` of the post on `line`.
+    async fn msg_id_at(store: &Arc<ChannelStore>, channel: &ChannelId, line: &str) -> String {
+        store
+            .peek_with_ids(channel, &peko_channel::Checkpoint::default())
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|(id, _)| id == line)
+            .and_then(|(_, ev)| match ev {
+                ChannelEvent::Posted { msg_id, .. } => msg_id,
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    /// ADR-126 D2: a reaction wakes no one, whatever the policy, nudges
+    /// no keepalive, and does not count toward the peko chain.
+    #[tokio::test]
+    async fn reactions_wake_no_one_and_nudge_nothing() {
+        let driver = CollisionStubDriver::steady("x");
+        let calls = Arc::clone(&driver.calls);
+        let (responder, store, channel, me, peer, nudges, _tmp) = peko_group(driver).await;
+        let alice = ActorRef::User("alice".into());
+        store.bind(&channel, &me, "session-1").await.unwrap();
+        store
+            .set_wake(&channel, &me, WakePolicy::Human)
+            .await
+            .unwrap();
+        let mine = store
+            .post(
+                &channel,
+                &ActorRef::from(&me),
+                PostMsg::root("the tests pass now"),
+            )
+            .await
+            .unwrap();
+        let mine = msg_id_at(&store, &channel, &mine).await;
+        for (by, emoji) in [(&alice, "👍"), (&peer, "🎉")] {
+            post_and_consider(
+                &store,
+                &responder,
+                &me,
+                &channel,
+                by,
+                PostMsg::reaction(mine.clone(), emoji, false),
+            )
+            .await;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "a reaction starts no turn"
+        );
+        assert_eq!(*nudges.0.lock().unwrap(), 0, "a reaction nudges nothing");
+
+        // The chain: a person posts, then many peko reactions; another
+        // peko's mention still wakes, as the reactions count for nothing.
+        store
+            .set_wake(&channel, &me, WakePolicy::Mention)
+            .await
+            .unwrap();
+        let root = store
+            .post(&channel, &alice, PostMsg::root("ok team"))
+            .await
+            .unwrap();
+        let root = msg_id_at(&store, &channel, &root).await;
+        for i in 0..(MAX_PEKO_CHAIN + 5) {
+            let emoji = char::from_u32(0x1F600 + (i as u32 % 20))
+                .unwrap()
+                .to_string();
+            let remove = i >= 20;
+            store
+                .post(
+                    &channel,
+                    &peer,
+                    PostMsg::reaction(root.clone(), emoji, remove),
+                )
+                .await
+                .unwrap();
+        }
+        post_and_consider(
+            &store,
+            &responder,
+            &me,
+            &channel,
+            &peer,
+            PostMsg::root(format!("{} over to you", tag(&store, &me).await)),
+        )
+        .await;
+        assert!(eventually(|| async { calls.lock().unwrap().len() == 1 }).await);
+    }
+
+    /// ADR-126 D7: a person's reply to this peko's post wakes it under
+    /// `mention`, quoting the post (D6); under `off`, nothing wakes.
+    #[tokio::test]
+    async fn a_persons_reply_to_my_post_wakes_me_under_mention_not_off() {
+        let driver = CollisionStubDriver::steady("on it");
+        let calls = Arc::clone(&driver.calls);
+        let (responder, store, channel, me, _peer, _nudges, _tmp) = peko_group(driver).await;
+        let alice = ActorRef::User("alice".into());
+        let mine = store
+            .post(
+                &channel,
+                &ActorRef::from(&me),
+                PostMsg::root("which branch should I use?"),
+            )
+            .await
+            .unwrap();
+        post_and_consider(
+            &store,
+            &responder,
+            &me,
+            &channel,
+            &alice,
+            PostMsg::reply(mine.clone(), "main is fine"),
+        )
+        .await;
+        assert!(eventually(|| async { calls.lock().unwrap().len() == 1 }).await);
+        let input = calls.lock().unwrap()[0].1.clone();
+        assert!(
+            input.contains("replying to") && input.contains("“which branch should I use?”"),
+            "{input}"
+        );
+        assert!(input.ends_with(": main is fine"), "{input}");
+
+        store.bind(&channel, &me, "session-1").await.unwrap();
+        store
+            .set_wake(&channel, &me, WakePolicy::Off)
+            .await
+            .unwrap();
+        post_and_consider(
+            &store,
+            &responder,
+            &me,
+            &channel,
+            &alice,
+            PostMsg::reply(mine, "or dev"),
+        )
+        .await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(calls.lock().unwrap().len(), 1, "off wakes nothing");
+    }
+
+    /// ADR-126 D6: a reply's turn input quotes the message from this
+    /// copy's log; one this copy does not hold reads as not loaded.
+    #[tokio::test]
+    async fn a_reply_quotes_its_message_or_says_it_is_not_loaded() {
+        let (store, _tmp) = test_store("reply-quote");
+        let me = pid("prin_self");
+        let channel = store.create(&me, CreateOpts::runtime("g")).await.unwrap();
+        let alice = ActorRef::User("alice".into());
+        store.invite(&channel, &me, &alice).await.unwrap();
+        let line = store
+            .post(
+                &channel,
+                &alice,
+                PostMsg::root("please check the median for even lengths"),
+            )
+            .await
+            .unwrap();
+        let id = msg_id_at(&store, &channel, &line).await;
+        let mut reply = posted("user:local:alice", "ping");
+        if let ChannelEvent::Posted { reply_to, .. } = &mut reply {
+            *reply_to = Some(id);
+        }
+        let port: &dyn ChannelPort = store.as_ref();
+        let input = turn_input(port, &channel, &reply).await;
+        assert!(
+            input.starts_with("user:local:alice (replying to ")
+                && input.contains("“please check the median for even lengths”"),
+            "{input}"
+        );
+        if let ChannelEvent::Posted { reply_to, .. } = &mut reply {
+            *reply_to = Some("msg_not_here".into());
+        }
+        let input = turn_input(port, &channel, &reply).await;
+        assert_eq!(
+            input,
+            "user:local:alice (replying to a message that isn't loaded): ping"
+        );
+        assert_eq!(
+            turn_input(port, &channel, &posted("user:local:alice", "hi")).await,
+            "user:local:alice: hi"
         );
     }
 }

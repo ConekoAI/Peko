@@ -254,6 +254,7 @@ impl AppState {
             "conversations" => self.verb_conversations().await,
             "read" => self.verb_read(args).await,
             "post" => self.verb_post(device, args).await,
+            "react" => self.verb_react(args).await,
             "file" => self.verb_file(args).await,
             "upload" => self.verb_upload(device, args).await,
             "mark_read" => {
@@ -450,7 +451,45 @@ impl AppState {
             .history_page(&channel, cursor("before"), cursor("after"), limit)
             .await
             .map_err(|e| e.to_string())?;
+        // ADR-126 D2, D8: reactions are not events here; each post
+        // carries the reactions on it (its `reply_to` already rides it).
+        let reactions = self
+            .channel_port
+            .reactions(&channel)
+            .await
+            .unwrap_or_default();
+        let events: Vec<Value> = events
+            .into_iter()
+            .filter(ChannelEvent::is_message)
+            .map(|ev| with_reactions(&ev, &reactions))
+            .collect();
         Ok(json!({ "channel": channel.as_str(), "events": events, "has_more": has_more }))
+    }
+
+    /// ADR-126 D8: put the person's `emoji` on post `to` in `channel`, or
+    /// take it off (`remove`).
+    async fn verb_react(&self, args: &Value) -> Result<Value, String> {
+        let channel = self.person_channel(arg_str(args, "channel")?).await?;
+        let to = arg_str(args, "to")?;
+        let emoji = arg_str(args, "emoji")?;
+        let remove = args.get("remove").and_then(Value::as_bool).unwrap_or(false);
+        self.channel_port
+            .post(
+                &channel,
+                &me(),
+                peko_channel::PostMsg::reaction(to, emoji, remove),
+            )
+            .await
+            .map_err(|e| match e {
+                peko_channel::ChannelError::Adapter(reason) => format!("[bad_request] {reason}"),
+                other => format!("could not react: {other}"),
+            })?;
+        let reactions = self
+            .channel_port
+            .reactions(&channel)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(json!({ "channel": channel.as_str(), "to": to, "reactions": reactions.on(to) }))
     }
 
     /// ADR-108 D8: one piece of a file a post in the person's
@@ -776,10 +815,15 @@ impl AppState {
         // What the person writes is read by them.
         let _ = store.mark_person_read(&channel, &msg_id).await;
         // A DM with a peko hosted here: its turn starts as for any post
-        // of the person's that arrives over the tunnel (ADR-090 D5).
-        if args.get("reply_to").is_none() {
+        // of the person's that arrives over the tunnel (ADR-090 D5), a
+        // reply too (ADR-126 D7).
+        {
             use crate::tunnel::TunnelHost as _;
-            self.human_dm_post(channel.clone(), me, text.to_string(), files, None)
+            let reply_to = args
+                .get("reply_to")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            self.human_dm_post(channel.clone(), me, text.to_string(), files, None, reply_to)
                 .await;
         }
         Ok(json!({ "channel": channel.as_str(), "msg_id": msg_id, "repeated": false }))
@@ -1321,6 +1365,25 @@ impl AppState {
         if self.person_channel(channel.as_str()).await.is_err() {
             return;
         }
+        // ADR-126 D2, D8: a reaction reaches a watching phone as the
+        // reactions now on its post, and is never notified.
+        if let Some(op) = event.reaction() {
+            if self.devices.gate.has_watchers() {
+                let reactions = self
+                    .channel_port
+                    .reactions(&channel)
+                    .await
+                    .unwrap_or_default();
+                self.emit_device_event(json!({
+                    "kind": "reactions",
+                    "channel": channel.as_str(),
+                    "to": op.to,
+                    "reactions": reactions.on(&op.to),
+                }))
+                .await;
+            }
+            return;
+        }
         if self.devices.gate.has_watchers() {
             self.emit_device_event(json!({
                 "kind": "event",
@@ -1680,6 +1743,25 @@ impl crate::ipc::handlers::device::DeviceHost for AppState {
     }
 }
 
+/// A post as a phone reads it (ADR-126 D8): the event, with the
+/// reactions on it when there are any.
+fn with_reactions(ev: &ChannelEvent, reactions: &peko_channel::Reactions) -> Value {
+    let mut value = serde_json::to_value(ev).unwrap_or(Value::Null);
+    if let (
+        Value::Object(map),
+        ChannelEvent::Posted {
+            msg_id: Some(id), ..
+        },
+    ) = (&mut value, ev)
+    {
+        let on = reactions.on(id);
+        if !on.is_empty() {
+            map.insert("reactions".into(), json!(on));
+        }
+    }
+    value
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1941,6 +2023,52 @@ mod tests {
         assert_eq!(events.len(), 1, "{events:?}");
         assert_eq!(events[0]["msg_id"], posted["msg_id"]);
         assert_eq!(events[0]["answers"]["picks"][0]["chosen"][0], "Lisbon");
+    }
+
+    /// ADR-126 D8: the phone reacts as the person; `read` gives each post
+    /// its reactions and leaves reaction posts out; a reaction is not
+    /// unread.
+    #[tokio::test]
+    async fn a_phone_reacts_and_reads_reactions_on_posts() {
+        let mut rig = Rig::new().await;
+        let (group, peko) = rig.group().await;
+        let first = rig.peer_posts(&group, &peko, "Shall we book Lisbon?").await;
+        let reacted = rig
+            .ask(
+                "react",
+                json!({ "channel": group.as_str(), "to": first, "emoji": "👍" }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(reacted["reactions"][0]["emoji"], "👍");
+        let refused = rig
+            .ask(
+                "react",
+                json!({ "channel": group.as_str(), "to": first, "emoji": "yes" }),
+            )
+            .await
+            .unwrap_err();
+        assert!(refused.starts_with("[bad_request]"), "{refused}");
+
+        let page = rig
+            .ask("read", json!({ "channel": group.as_str() }))
+            .await
+            .unwrap();
+        let events = page["events"].as_array().unwrap();
+        assert_eq!(events.len(), 1, "the reaction is not an event: {page}");
+        assert_eq!(events[0]["reactions"][0]["emoji"], "👍");
+
+        rig.ask(
+            "react",
+            json!({ "channel": group.as_str(), "to": first, "emoji": "👍", "remove": true }),
+        )
+        .await
+        .unwrap();
+        let page = rig
+            .ask("read", json!({ "channel": group.as_str() }))
+            .await
+            .unwrap();
+        assert!(page["events"][0].get("reactions").is_none(), "{page}");
     }
 
     #[tokio::test]

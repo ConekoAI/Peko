@@ -1662,6 +1662,8 @@ impl RequestHandler for ChannelHandler {
                 attachments,
                 model,
                 answers,
+                reply_to,
+                react,
             } => {
                 // ADR-057: user identities are never declared on the
                 // wire. The sender is either the caller's own derived
@@ -1683,6 +1685,49 @@ impl RequestHandler for ChannelHandler {
                         };
                         send_response(sink, response).await?;
                         return Ok(());
+                    }
+                };
+                // ADR-126 D1: a reaction instead of a message.
+                if let Some(op) = react {
+                    let msg = peko_channel::PostMsg::reaction(op.to, op.emoji, op.remove);
+                    let response = match self.router().port().post(&ch, &sender, msg).await {
+                        Ok(task_id) => ResponsePacket::ChannelPosted {
+                            request_id,
+                            channel: ch.clone(),
+                            task_id,
+                        },
+                        Err(e) => ResponsePacket::Error {
+                            request_id,
+                            message: format!("channel post failed: {e}"),
+                        },
+                    };
+                    send_response(sink, response).await?;
+                    return Ok(());
+                }
+                // ADR-126 D6: a reply may name its post by `msg_id`.
+                let parent = match (parent, reply_to) {
+                    (Some(line), _) => Some(line),
+                    (None, None) => None,
+                    (None, Some(msg_id)) => {
+                        match self.router().port().find_post(&ch, &msg_id).await {
+                            Ok(Some((line, _))) => Some(line),
+                            Ok(None) => {
+                                return error_reply(
+                                    sink,
+                                    request_id,
+                                    format!("[not_found] no message {msg_id} in {channel}"),
+                                )
+                                .await
+                            }
+                            Err(e) => {
+                                return error_reply(
+                                    sink,
+                                    request_id,
+                                    format!("channel post failed: {e}"),
+                                )
+                                .await
+                            }
+                        }
                     }
                 };
                 // ADR-094: the engine reads attached files itself, so only
@@ -1812,6 +1857,27 @@ impl RequestHandler for ChannelHandler {
                 match result {
                     Ok((events, event_ids, has_more, resume_before)) => {
                         let files_dir = self.host.channel_port().files_dir(&ch).await.ok();
+                        // ADR-126: the reactions on this page's posts.
+                        let reactions = if events
+                            .iter()
+                            .any(peko_protocol::channel::ChannelEvent::is_message)
+                        {
+                            let folded = port.reactions(&ch).await.unwrap_or_default();
+                            events
+                                .iter()
+                                .filter_map(|ev| match ev {
+                                    peko_protocol::channel::ChannelEvent::Posted {
+                                        msg_id: Some(id),
+                                        react: None,
+                                        ..
+                                    } => Some((id.clone(), folded.on(id)))
+                                        .filter(|(_, on)| !on.is_empty()),
+                                    _ => None,
+                                })
+                                .collect()
+                        } else {
+                            Default::default()
+                        };
                         let events = events
                             .into_iter()
                             .map(|ev| with_received_paths(files_dir.as_deref(), ev))
@@ -1834,6 +1900,7 @@ impl RequestHandler for ChannelHandler {
                             has_more,
                             older_elsewhere,
                             resume_before,
+                            reactions,
                         };
                         send_response(sink, response).await?;
                     }
@@ -3083,6 +3150,8 @@ mod tests {
                     attachments: Vec::new(),
                     model: Some("work-model".into()),
                     answers: None,
+                    reply_to: None,
+                    react: None,
                 },
                 jwt,
                 "[forbidden] only the local user may pick a model",
@@ -3157,6 +3226,8 @@ mod tests {
             attachments: Vec::new(),
             model: None,
             answers: None,
+            reply_to: None,
+            react: None,
         };
         let (captured, sink) = capture_sink();
         handler
@@ -3206,6 +3277,8 @@ mod tests {
             attachments: Vec::new(),
             model: None,
             answers: None,
+            reply_to: None,
+            react: None,
         };
         let (captured, sink) = capture_sink();
         handler
@@ -3229,6 +3302,8 @@ mod tests {
             attachments: Vec::new(),
             model: None,
             answers: None,
+            reply_to: None,
+            react: None,
         };
         let (captured, sink) = capture_sink();
         handler
@@ -3264,6 +3339,8 @@ mod tests {
             attachments: Vec::new(),
             model: None,
             answers: None,
+            reply_to: None,
+            react: None,
         };
         let (captured, sink) = capture_sink();
         handler
@@ -3313,6 +3390,8 @@ mod tests {
             attachments: vec![file.display().to_string()],
             model: None,
             answers: None,
+            reply_to: None,
+            react: None,
         };
         let peer = PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback addr"));
 
@@ -3716,6 +3795,8 @@ mod tests {
             attachments: Vec::new(),
             model: None,
             answers: None,
+            reply_to: None,
+            react: None,
         };
 
         // Member user posts as themselves (derived identity).
@@ -3818,6 +3899,8 @@ mod tests {
                     attachments: Vec::new(),
                     model: None,
                     answers: None,
+                    reply_to: None,
+                    react: None,
                 },
                 &apikey,
                 &sink,
@@ -3845,6 +3928,8 @@ mod tests {
                     attachments: Vec::new(),
                     model: None,
                     answers: None,
+                    reply_to: None,
+                    react: None,
                 },
                 &apikey,
                 &sink,
@@ -4083,6 +4168,7 @@ mod tests {
                 board: None,
                 ask: None,
                 answers: None,
+                react: None,
             },
         };
         let json = serde_json::to_string(&resp).expect("encode");

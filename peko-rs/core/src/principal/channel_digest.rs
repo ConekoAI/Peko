@@ -431,13 +431,16 @@ pub(crate) async fn posted_from_here(
         if since.is_some_and(|mark| !strictly_after(&id, mark)) {
             return false;
         }
-        // A board change (ADR-101) is not the turn speaking.
+        // A board change (ADR-101) is not the turn speaking, and nor is a
+        // reaction (ADR-126 D5): a turn that reacted still posts its final
+        // text when it has any.
         let ChannelEvent::Posted {
             author,
             via,
             board: None,
             ask: None,
             answers: None,
+            react: None,
             ..
         } = ev
         else {
@@ -481,6 +484,8 @@ pub(crate) async fn own_posts_from_elsewhere(
             board: None,
             ask: None,
             answers: None,
+            // ADR-126: a reaction says nothing another run could contradict.
+            react: None,
             ..
         } = ev
         else {
@@ -1012,9 +1017,13 @@ async fn unread_events(
 /// - **elsewhere DM** — other principals' posts only (the users there
 ///   talk to the session bound to that DM).
 fn digest_worthy(ev: &ChannelEvent, own_path: &str, me: &Me<'_>, scope: Scope, kind: Kind) -> bool {
+    // ADR-126 D2: a reaction is not a message; reactions on this peko's
+    // posts reach the next turn in their own section.
+    if !ev.is_message() {
+        return false;
+    }
     let ChannelEvent::Posted {
         author,
-        parent,
         via,
         text,
         board,
@@ -1040,10 +1049,10 @@ fn digest_worthy(ev: &ChannelEvent, own_path: &str, me: &Me<'_>, scope: Scope, k
         return false;
     }
     match (scope, kind) {
-        (Scope::Bound, Kind::Dm) => parent.is_some() || !by_user,
+        // ADR-126 D7: a person's reply starts a turn like their root post.
+        (Scope::Bound, Kind::Dm) => !by_user,
         (_, Kind::Group) => {
             let woke = by_user
-                && parent.is_none()
                 && (peko_channel::mentions(text, me.name)
                     || peko_channel::mentions(text, me.address)
                     || me.hub.is_some_and(|h| peko_channel::mentions(text, h)));
@@ -1085,8 +1094,9 @@ fn sort_new_posts<'a>(
         else {
             continue;
         };
-        // A board change of its own is not an answer (ADR-101).
-        if board.is_none() && (author == me.id || author == me.address) {
+        // A board change of its own is not an answer (ADR-101), and nor
+        // is a reaction (ADR-126 D2).
+        if board.is_none() && ev.is_message() && (author == me.id || author == me.address) {
             waiting.retain(|w| !strictly_after(id, &w.id));
         }
         if !digest_worthy(ev, own_path, me, scope, kind) {
@@ -1270,6 +1280,7 @@ mod tests {
             board: None,
             ask: None,
             answers: None,
+            react: None,
         }
     }
 
@@ -1349,10 +1360,11 @@ mod tests {
             ));
         }
 
-        // Bound DM: user roots started the turn; everything else shows,
-        // including other principals' posts (they never wake us).
+        // Bound DM: a person's posts, replies too (ADR-126 D7), started
+        // the turn; everything else shows, including other principals'
+        // posts (they never wake us).
         assert!(!worthy(&posted("user:alice", None, None, "x"), Bound, Dm));
-        assert!(worthy(
+        assert!(!worthy(
             &posted("user:alice", Some("3"), None, "x"),
             Bound,
             Dm
@@ -1372,11 +1384,29 @@ mod tests {
             Bound,
             Group
         ));
-        assert!(worthy(
+        // A person's reply mentioning us woke us too (ADR-126 D7).
+        assert!(!worthy(
             &posted("user:bob", Some("3"), None, "@self"),
             Bound,
             Group
         ));
+        // A reaction is never a message (ADR-126 D2).
+        for (scope, kind) in [
+            (Bound, Dm),
+            (Bound, Group),
+            (Elsewhere, Dm),
+            (Elsewhere, Group),
+        ] {
+            let mut reaction = posted("prin_other", Some("3"), None, "rex reacted 👍");
+            if let ChannelEvent::Posted { react, .. } = &mut reaction {
+                *react = Some(peko_protocol::channel::ReactOp {
+                    to: "msg_x".into(),
+                    emoji: "👍".into(),
+                    remove: false,
+                });
+            }
+            assert!(!worthy(&reaction, scope, kind));
+        }
         assert!(worthy(&posted("prin_other", None, None, "x"), Bound, Group));
         assert!(worthy(
             &posted(me, None, Some("/group-x"), "x"),
@@ -1705,6 +1735,73 @@ mod tests {
         .unwrap();
         assert!(here().await);
         assert!(!posted_from_here(&port, &me, &dm, tip.as_deref(), None).await);
+    }
+
+    /// ADR-126 D5: a reaction is not the turn speaking. A turn that
+    /// reacted and wrote an answer posts it; one that reacted and wrote
+    /// nothing posts nothing.
+    #[tokio::test]
+    async fn a_turn_that_reacted_posts_its_answer_and_nothing_when_it_has_none() {
+        let (_dir, port) = store();
+        let dm = bound_dm(&port, "dm-react", "/principal-here").await;
+        let me = PrincipalId(ME.id.to_string());
+        let line = port
+            .post_attributed(
+                &dm,
+                &me_subject(),
+                "user:local:bo",
+                PostMsg::root("ship it?"),
+            )
+            .await
+            .unwrap();
+        let target = port
+            .peek_with_ids(&dm, &Checkpoint::default())
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|(id, _)| *id == line)
+            .and_then(|(_, ev)| match ev {
+                ChannelEvent::Posted { msg_id, .. } => msg_id,
+                _ => None,
+            })
+            .unwrap();
+        let tip = channel_tip(&port, &dm).await;
+        port.post_attributed(
+            &dm,
+            &me_subject(),
+            ME.id,
+            PostMsg::reaction(target, "👍", false).with_via("sess:/principal-here"),
+        )
+        .await
+        .unwrap();
+        assert!(
+            !posted_from_here(&port, &me, &dm, tip.as_deref(), Some("/principal-here")).await,
+            "a reaction is not the turn speaking"
+        );
+        let mine = |port: Arc<dyn ChannelPort>| {
+            let dm = dm.clone();
+            async move {
+                port.peek(&dm, &Checkpoint::default())
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .filter(|ev| ev.is_message())
+                    .filter_map(|ev| match ev {
+                        ChannelEvent::Posted { author, text, .. } if author.contains(ME.id) => {
+                            Some(text)
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            }
+        };
+        crate::principal::peer_dm::post_peer_dm_reply(&port, &me, &dm, "").await;
+        assert!(
+            mine(port.clone()).await.is_empty(),
+            "no final text: nothing posted"
+        );
+        crate::principal::peer_dm::post_peer_dm_reply(&port, &me, &dm, "Shipped as v2.").await;
+        assert_eq!(mine(port.clone()).await, ["Shipped as v2."]);
     }
 
     fn peer_id() -> peko_session::id::SessionId {

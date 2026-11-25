@@ -2548,15 +2548,17 @@ impl crate::tunnel::TunnelHost for AppState {
         text: String,
         attachments: Vec<peko_protocol::channel::Attachment>,
         model: Option<String>,
+        reply_to: Option<String>,
     ) {
         for principal in self.human_dm_recipients(&channel).await {
             let manager = Arc::clone(&self.principal_manager);
-            let (channel, author, text, attachments, model) = (
+            let (channel, author, text, attachments, model, reply_to) = (
                 channel.clone(),
                 author.clone(),
                 text.clone(),
                 attachments.clone(),
                 model.clone(),
+                reply_to.clone(),
             );
             // Registered like a turn started on this computer, so the
             // person's stop reaches it and it shows as working.
@@ -2579,6 +2581,7 @@ impl crate::tunnel::TunnelHost for AppState {
                         &text,
                         &attachments,
                         model,
+                        reply_to.as_deref(),
                         Some(&stoppable),
                     )
                     .await

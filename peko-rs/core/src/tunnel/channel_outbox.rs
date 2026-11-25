@@ -578,6 +578,7 @@ mod tests {
                 board: None,
                 ask: None,
                 answers: None,
+                react: None,
             },
             source: "prin_a".into(),
         }

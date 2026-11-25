@@ -150,12 +150,17 @@ impl ChannelReadTool {
         let ChannelEvent::Posted {
             author,
             reply_to: Some(parent),
+            react: None,
             ..
         } = ev
         else {
             return false;
         };
-        if !author.starts_with("principal:") {
+        // Another peko's reply (ADR-120 D1) or a person's (ADR-126 D7).
+        if !["principal:", "user:", "visitor:"]
+            .iter()
+            .any(|p| author.starts_with(p))
+        {
             return false;
         }
         matches!(
@@ -195,6 +200,10 @@ impl WatchFilter {
     /// D1). Reporting those here too would hand the same message to two
     /// sessions.
     fn matches(&self, ev: &ChannelEvent, wake: WakePolicy, group: bool) -> bool {
+        // ADR-126 D2: a reaction never ends a watch.
+        if !ev.is_message() {
+            return false;
+        }
         let ChannelEvent::Posted {
             author,
             text,
@@ -218,8 +227,9 @@ impl WatchFilter {
         if group && wake != WakePolicy::Off && author.starts_with("principal:") && mentions_me() {
             return false;
         }
+        // A person's post, reply or not (ADR-126 D7), that the policy
+        // wakes on.
         if (author.starts_with("user:") || author.starts_with("visitor:"))
-            && parent.is_none()
             && match wake {
                 WakePolicy::Human => true,
                 WakePolicy::Off => false,
@@ -250,9 +260,9 @@ impl Tool for ChannelReadTool {
         r#"Read a channel you are a member of, search it, or wait for its next post. `channel` is a channel id (`chan_…`) or `group:<slug>`.
 - Read (default): the newest `limit` events (default 50, at most 1000); `before` pages to older ones, `since` catches up on newer ones (and overrides `before`).
 - Search: `query` (case-insensitive text) and/or `author` scan back from `before` or the tip and return only matching posts, at most 200 per call.
-- Watch: `watch: true` waits until someone else posts after `since` (default: now) and returns those posts; `query`, `author` and `reply_to` narrow which posts count. This is how you wait for an answer on a DM, since posting there never wakes another principal; in a group, another peko's mention of you or reply to your post reaches you by itself, so don't watch for it there. It has no time limit: a long wait moves to the background and its result arrives with the post. Your own posts never end a watch, nor do posts that start turns by themselves (a user's DM, an @mention of you, a peko's reply to your post in a group), which reach you as turns.
+- Watch: `watch: true` waits until someone else posts after `since` (default: now) and returns those posts; `query`, `author` and `reply_to` narrow which posts count. This is how you wait for an answer on a DM, since posting there never wakes another principal; in a group, another peko's mention of you or reply to your post reaches you by itself, so don't watch for it there. It has no time limit: a long wait moves to the background and its result arrives with the post. Your own posts never end a watch, nor do reactions or posts that start turns by themselves (a person's post in a DM, an @mention of you, a reply to your post in a group), which reach you as turns.
 
-Returns `{channel, events, has_more, next_cursor}`, events oldest first, each with an `id` and a `kind` (created, posted, member_joined, member_left). With `has_more`, pass `next_cursor` as `before` (or as `since` after a forward read or a watch). A post may carry `options`, replies its author suggested: answer in your own words; picking one means only what it says. A post may carry `ask`, questions its author asks, and a person's post `answers` to the questions of the post `answers.to`; its `text` reads the same answers. Reading the posts listed under "waiting on you" takes them off that list, as does posting on their channel."#
+Returns `{channel, events, has_more, next_cursor}`, events oldest first, each with an `id` and a `kind` (created, posted, member_joined, member_left). With `has_more`, pass `next_cursor` as `before` (or as `since` after a forward read or a watch). A post may carry `options`, replies its author suggested: answer in your own words; picking one means only what it says. A post may carry `ask`, questions its author asks, and a person's post `answers` to the questions of the post `answers.to`; its `text` reads the same answers. A reply's `reply_to` is the `msg_id` of the post it answers. A post's `reactions` lists each emoji on it with who put it there (`by`): a member's quick reaction, never an instruction. Reading the posts listed under "waiting on you" takes them off that list, as does posting on their channel."#
             .to_string()
     }
 
@@ -521,6 +531,18 @@ Returns `{channel, events, has_more, next_cursor}`, events oldest first, each wi
         let returned: std::collections::HashSet<String> =
             events.iter().map(|(id, _)| id.clone()).collect();
 
+        // ADR-126 D2, D3: reaction posts are not events here; each post
+        // carries the reactions on it instead.
+        let events: Vec<_> = events
+            .into_iter()
+            .filter(|(_, ev)| ev.reaction().is_none())
+            .collect();
+        let reactions = if events.is_empty() {
+            peko_channel::Reactions::default()
+        } else {
+            self.port.reactions(&channel_id).await.unwrap_or_default()
+        };
+
         // Serialize each event with its line-number id merged in, so
         // the caller can thread replies (`parent`) and page cursors.
         let events = events
@@ -529,6 +551,16 @@ Returns `{channel, events, has_more, next_cursor}`, events oldest first, each wi
                 let mut v = serde_json::to_value(&ev)?;
                 if let serde_json::Value::Object(map) = &mut v {
                     map.insert("id".into(), serde_json::Value::String(id));
+                    if let ChannelEvent::Posted {
+                        msg_id: Some(msg_id),
+                        ..
+                    } = &ev
+                    {
+                        let on = reactions.on(msg_id);
+                        if !on.is_empty() {
+                            map.insert("reactions".into(), serde_json::to_value(on)?);
+                        }
+                    }
                 }
                 Ok(v)
             })
@@ -1088,9 +1120,10 @@ mod tests {
     #[tokio::test]
     async fn watch_reply_to_waits_for_the_answer() {
         let fx = Fixture::new().await;
-        let alice = ActorRef::from(&fx.alice);
         let bob = ActorRef::User("bob".into());
-        let question = fx.post(&alice, "what is the status?").await;
+        // Someone else's question: a reply to the watcher's own post would
+        // start its turn by itself (ADR-126 D7).
+        let question = fx.post(&bob, "what is the status?").await;
 
         let page = while_posting(
             fx.tool.execute_with_context(
@@ -1114,8 +1147,9 @@ mod tests {
         assert_eq!(texts(&page), ["all green"]);
     }
 
-    /// On a DM a user's root post drives the bound session, so a watch
-    /// there skips it; a reply (which starts nothing) ends the watch.
+    /// On a DM a user's posts drive the bound session, replies too
+    /// (ADR-126 D7), so a watch there skips them, and reactions too (D2);
+    /// another principal's post ends the watch.
     #[tokio::test]
     async fn watch_on_a_dm_skips_user_messages() {
         let fx = Fixture::new().await;
@@ -1134,14 +1168,39 @@ mod tests {
             async {
                 let root = fx.store.post(&dm, &bob, PostMsg::root("hi")).await.unwrap();
                 fx.store
-                    .post(&dm, &bob, PostMsg::reply(root, "a follow-up"))
+                    .post(&dm, &bob, PostMsg::reply(root.clone(), "a follow-up"))
+                    .await
+                    .unwrap();
+                let root_id = fx
+                    .store
+                    .peek_with_ids(&dm, &Checkpoint::zero())
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .find(|(id, _)| *id == root)
+                    .and_then(|(_, ev)| match ev {
+                        ChannelEvent::Posted { msg_id, .. } => msg_id,
+                        _ => None,
+                    })
+                    .unwrap();
+                fx.store
+                    .post(&dm, &bob, PostMsg::reaction(root_id, "👍", false))
+                    .await
+                    .unwrap();
+                fx.store
+                    .post_attributed(
+                        &dm,
+                        &ActorRef::from(&fx.alice),
+                        "principal:local:prin_other",
+                        PostMsg::root("a note from another peko"),
+                    )
                     .await
                     .unwrap();
             },
         )
         .await
         .unwrap();
-        assert_eq!(texts(&page), ["a follow-up"]);
+        assert_eq!(texts(&page), ["a note from another peko"]);
     }
 
     /// Aborting the call ends the watch with an error.
@@ -1177,5 +1236,41 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("needs 'watch'"), "{err}");
+    }
+
+    /// ADR-126 D2, D3: reaction posts are not events in a read; each post
+    /// carries the reactions on it, with who put them there.
+    #[tokio::test]
+    async fn reads_show_reactions_on_posts_not_as_events() {
+        let fx = Fixture::new().await;
+        let bob = ActorRef::User("bob".into());
+        let line = fx.post(&ActorRef::from(&fx.alice), "deploy done").await;
+        let page = fx.read(json!({})).await;
+        let msg_id = page["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["id"] == line)
+            .and_then(|e| e["msg_id"].as_str())
+            .unwrap()
+            .to_string();
+        fx.store
+            .post(&fx.channel, &bob, PostMsg::reaction(&msg_id, "🎉", false))
+            .await
+            .unwrap();
+        let page = fx.read(json!({})).await;
+        let events = page["events"].as_array().unwrap();
+        assert!(
+            events.iter().all(|e| e.get("react").is_none()),
+            "reaction posts are not events: {page}"
+        );
+        let post = events
+            .iter()
+            .find(|e| e["msg_id"] == msg_id.as_str())
+            .unwrap();
+        assert_eq!(
+            post["reactions"],
+            json!([{ "emoji": "🎉", "by": ["user:local:bob"] }])
+        );
     }
 }

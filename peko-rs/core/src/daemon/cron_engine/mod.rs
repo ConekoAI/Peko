@@ -1009,13 +1009,43 @@ impl CronEngine {
             CronJobAction::Send { model, .. } => model.clone(),
             _ => None,
         };
-        let message = crate::principal::genesis::fire_message(job, &*principal.config.read().await);
+        let mut message =
+            crate::principal::genesis::fire_message(job, &*principal.config.read().await);
         // ADR-078 D5: the job fires as its creator, re-entered into the
         // session it lands in.
         let channels = self
             .tooling
             .upgrade()
             .and_then(|core| core.services().channel_port());
+        // ADR-126 D4: the nightly pass is handed the owner's reactions on
+        // the peko's posts since the last pass.
+        if crate::principal::genesis::carries_memory_brief(job) {
+            if let Some(port) = &channels {
+                let since = self
+                    .scheduler_for(&job.principal_id)
+                    .await
+                    .ok()
+                    .and_then(|s| s.get_run_history(&job.id, 10).ok())
+                    .and_then(|runs| {
+                        runs.into_iter()
+                            .find(|r| r.status == "success")
+                            .map(|r| r.started_at)
+                    })
+                    .unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::days(1));
+                let owner = principal.config.read().await.owner.clone();
+                if let Some(brief) = crate::principal::reactions_prompt::owner_reactions_brief(
+                    port,
+                    &principal.id,
+                    &owner,
+                    since,
+                )
+                .await
+                {
+                    message.push_str("\n\n");
+                    message.push_str(&brief);
+                }
+            }
+        }
         let acting_for =
             match crate::principal::trust::cron_job_stamp(&principal, channels, job, &origin).await
             {
@@ -4831,6 +4861,7 @@ mod tests {
                         board: Some(op),
                         ask: None,
                         answers: None,
+                        react: None,
                     },
                 )
                 .await

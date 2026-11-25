@@ -2241,6 +2241,7 @@ mod tests {
             board: None,
             ask: None,
             answers: None,
+            react: None,
         };
         let line = port
             .append_remote_event(&channel, &remote_event)
@@ -2335,6 +2336,7 @@ mod tests {
             board: None,
             ask: None,
             answers: None,
+            react: None,
         };
         let result = port.append_remote_event(&bogus, &ev).await;
         assert!(
@@ -2390,6 +2392,7 @@ mod tests {
             board: None,
             ask: None,
             answers: None,
+            react: None,
         };
         port.append_remote_event(&channel, &remote_event)
             .await

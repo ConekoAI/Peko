@@ -688,6 +688,16 @@ pub trait ChannelPort: Send + Sync + 'static {
         )))
     }
 
+    /// ADR-126: the conversation's reactions, folded from its log, DMs
+    /// and groups alike.
+    async fn reactions(&self, channel: &ChannelId) -> Result<crate::reactions::Reactions> {
+        let events = self.peek_with_ids(channel, &Checkpoint::default()).await?;
+        Ok(crate::reactions::Reactions::fold(
+            events.iter().map(|(_, ev)| ev),
+            &SelfKeys(self),
+        ))
+    }
+
     /// ADR-100 + ADR-101: the board item an approved owner task of
     /// `member` serves in group `channel`, and what already covers its work
     /// ([`crate::board::Board::covered`]). `item` names the item (its id or
@@ -1082,6 +1092,7 @@ pub fn portable_post(event: ChannelEvent, author: String) -> ChannelEvent {
             board,
             ask,
             answers,
+            react,
             ..
         } => ChannelEvent::Posted {
             channel,
@@ -1106,6 +1117,8 @@ pub fn portable_post(event: ChannelEvent, author: String) -> ChannelEvent {
             // ADR-114: a card and its answers read the same everywhere.
             ask,
             answers,
+            // ADR-126: a reaction stays one.
+            react,
         },
         other => other,
     }
@@ -1165,6 +1178,10 @@ pub struct PostMsg {
     /// most posts. The store refuses answers that do not fit the card
     /// they name, and answers on a principal's post.
     pub answers: Option<peko_protocol::channel::Answers>,
+    /// ADR-126: the reaction this post makes; `None` for most posts. The
+    /// store checks it, writes the post's text from it, and threads it
+    /// onto the post it reacts to.
+    pub react: Option<peko_protocol::channel::ReactOp>,
 }
 
 impl PostMsg {
@@ -1181,6 +1198,7 @@ impl PostMsg {
             board: None,
             ask: None,
             answers: None,
+            react: None,
         }
     }
 
@@ -1197,6 +1215,7 @@ impl PostMsg {
             board: None,
             ask: None,
             answers: None,
+            react: None,
         }
     }
 
@@ -1236,6 +1255,17 @@ impl PostMsg {
     pub fn with_answers(mut self, answers: Option<peko_protocol::channel::Answers>) -> Self {
         self.answers = answers;
         self
+    }
+
+    /// A reaction post (ADR-126): `emoji` on post `to`, or its removal.
+    pub fn reaction(to: impl Into<String>, emoji: impl Into<String>, remove: bool) -> Self {
+        let mut msg = Self::root("");
+        msg.react = Some(peko_protocol::channel::ReactOp {
+            to: to.into(),
+            emoji: emoji.into(),
+            remove,
+        });
+        msg
     }
 
     /// Make a board change with the post (ADR-101).

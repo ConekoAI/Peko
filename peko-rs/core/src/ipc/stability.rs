@@ -17,6 +17,11 @@
 //! A test fails when a type in `packet.rs` is missing here, or a name
 //! here is no longer in `packet.rs`: a new request is marked when it is
 //! added.
+//!
+//! A new optional field on a type keeps its mark: older senders omit it
+//! and older readers ignore it (ADR-126's `reply_to` on `principal_send`,
+//! `principal_send_stream` and `channel_post`, `react` on `channel_post`,
+//! and `reactions` on `principal_log` rows and `channel_peek_result`).
 
 /// What a wire type promises about change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

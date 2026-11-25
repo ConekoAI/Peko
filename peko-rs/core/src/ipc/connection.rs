@@ -587,6 +587,7 @@ mod tests {
             attachments: Vec::new(),
             send_as: None,
             answers: None,
+            reply_to: None,
         };
         let bytes = packet.to_bytes().unwrap();
         assert!(bytes.len() > 2048 && bytes.len() <= peko_protocol::ipc::MAX_PACKET_SIZE);

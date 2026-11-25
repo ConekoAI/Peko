@@ -109,6 +109,8 @@ struct PrincipalLogResponse {
     run_failure: Option<crate::principal::run_failure::RunFailure>,
     /// The conversation's parked run, if any (ADR-089 D2).
     parked: Option<crate::principal::parking::ParkedRun>,
+    /// The DM channel the thread is (ADR-126).
+    channel: Option<ChannelId>,
 }
 
 /// RAII guard that removes a `PrincipalSendStream` run from the
@@ -567,6 +569,7 @@ impl RequestHandler for PrincipalHandler {
                 attachments,
                 send_as,
                 answers,
+                reply_to,
             } => {
                 run_principal_send(
                     request_id,
@@ -575,6 +578,7 @@ impl RequestHandler for PrincipalHandler {
                     message,
                     attachments,
                     answers,
+                    reply_to,
                     override_model,
                     send_as,
                     host,
@@ -592,6 +596,7 @@ impl RequestHandler for PrincipalHandler {
                 attachments,
                 send_as,
                 answers,
+                reply_to,
             } => {
                 run_principal_send(
                     request_id,
@@ -600,6 +605,7 @@ impl RequestHandler for PrincipalHandler {
                     message,
                     attachments,
                     answers,
+                    reply_to,
                     override_model,
                     send_as,
                     host,
@@ -642,6 +648,7 @@ impl RequestHandler for PrincipalHandler {
                         next_cursor: resp.next_cursor,
                         has_more: resp.has_more,
                         run_failure: run_failure_info(resp.run_failure, resp.parked),
+                        channel: resp.channel,
                     },
                     Err(PrincipalLogError::NotFound(msg)) => ResponsePacket::Error {
                         request_id,
@@ -2792,6 +2799,7 @@ async fn run_principal_send(
     message: String,
     attachment_paths: Vec<String>,
     answers: Option<peko_protocol::channel::Answers>,
+    reply_to: Option<String>,
     override_model: Option<String>,
     send_as: Option<crate::ipc::packet::SendAs>,
     host: &dyn PrincipalHost,
@@ -2958,6 +2966,7 @@ async fn run_principal_send(
             &message,
             &attachments,
             answers.as_ref(),
+            reply_to.as_deref(),
             IngressMode::Interactive,
         )
         .await;
@@ -3144,6 +3153,19 @@ async fn run_principal_send(
     let session_id_for_task = session_id.clone();
     // ADR-088 D4: the turn reads the message plus a note per file;
     // images, audio, and video go along for a model that takes them.
+    // ADR-126 D6: a reply's turn reads the start of the message it answers.
+    let message = match (host.principal_manager().channel_port(), &dm_channel) {
+        (Some(port), Some(dm)) => {
+            crate::principal::peer_dm::dm_turn_text(
+                port.as_ref(),
+                dm,
+                reply_to.as_deref(),
+                &message,
+            )
+            .await
+        }
+        _ => message,
+    };
     let message_for_task =
         crate::principal::attachments::turn_text(&message, &principal.workspace_path, &attachments);
     let media_for_task =
@@ -4766,6 +4788,8 @@ pub(super) fn map_posted_to_log_message(
         msg_id: card.msg_id,
         ask: card.ask,
         answers: card.answers,
+        reply_to: card.reply_to,
+        reactions: card.reactions,
     }
 }
 
@@ -4778,6 +4802,9 @@ pub(super) struct PostCard {
     pub msg_id: Option<String>,
     pub ask: Option<peko_protocol::channel::Ask>,
     pub answers: Option<peko_protocol::channel::Answers>,
+    /// ADR-126: the message it replies to, and the reactions on it.
+    pub reply_to: Option<String>,
+    pub reactions: Vec<peko_channel::Reaction>,
 }
 
 async fn read_principal_log(
@@ -4815,6 +4842,7 @@ async fn read_principal_log(
         has_more: false,
         run_failure: None,
         parked: None,
+        channel: None,
     };
 
     // No channel port (non-daemon context) ⇒ empty page + debug log.
@@ -4863,6 +4891,8 @@ async fn read_principal_log(
     let mut before: Option<String> = cursor.clone();
 
     const MAX_FILL_PAGES: usize = 10;
+    // ADR-126: the reactions on the thread's messages, folded once.
+    let reactions = port.reactions(&channel).await.unwrap_or_default();
     let mut collected: Vec<(u64, PrincipalLogMessage)> = Vec::new();
     let mut older_available = false;
     for _ in 0..MAX_FILL_PAGES {
@@ -4888,6 +4918,8 @@ async fn read_principal_log(
                 msg_id,
                 ask,
                 answers,
+                reply_to,
+                react: None,
                 ..
             } = event
             else {
@@ -4915,10 +4947,15 @@ async fn read_principal_log(
                 text,
                 attachments,
                 PostCard {
+                    reactions: msg_id
+                        .as_deref()
+                        .map(|id| reactions.on(id))
+                        .unwrap_or_default(),
                     options,
                     msg_id,
                     ask,
                     answers,
+                    reply_to,
                 },
                 &me,
             );
@@ -4962,6 +4999,7 @@ async fn read_principal_log(
         // ADR-089 D5: the conversation's last failed run, beside it.
         run_failure: principal.run_failures.get(&channel.0),
         parked: principal.parking.for_conversation(&channel.0),
+        channel: Some(channel.clone()),
     })
 }
 
@@ -5089,6 +5127,8 @@ async fn run_principal_log_watch(
     let me = LogSelf::of(principal, &port, &channel).await;
     let mut replayed: Vec<(String, String, String)> = Vec::new();
     for (line, event) in events {
+        // ADR-126 D2: a reaction is never a row; the thread's next read
+        // shows it on its message.
         let ChannelEvent::Posted {
             author,
             text,
@@ -5098,6 +5138,8 @@ async fn run_principal_log_watch(
             msg_id,
             ask,
             answers,
+            reply_to,
+            react: None,
             ..
         } = event
         else {
@@ -5121,6 +5163,8 @@ async fn run_principal_log_watch(
                 msg_id,
                 ask,
                 answers,
+                reply_to,
+                ..PostCard::default()
             },
             &me,
         );
@@ -5144,7 +5188,8 @@ async fn run_principal_log_watch(
         tokio::select! {
             ev = rx.recv() => match ev {
                 Ok(ChannelEvent::Posted {
-                    author, text, at, attachments, options, msg_id, ask, answers, ..
+                    author, text, at, attachments, options, msg_id, ask, answers, reply_to,
+                    react: None, ..
                 }) => {
                     // Skip events already covered by the replay
                     // (subscribe→peek overlap window).
@@ -5169,6 +5214,8 @@ async fn run_principal_log_watch(
                             msg_id,
                             ask,
                             answers,
+                            reply_to,
+                            ..PostCard::default()
                         },
                         &me,
                     );
@@ -6266,6 +6313,7 @@ mod tests {
                 board: None,
                 ask: None,
                 answers: None,
+                react: None,
             };
             fx.store
                 .append_remote_event(&fx.channel, &old)
@@ -6307,6 +6355,7 @@ mod tests {
                 board: None,
                 ask: None,
                 answers: None,
+                react: None,
             };
             fx.store
                 .append_remote_event(&fx.channel, &mirrored)

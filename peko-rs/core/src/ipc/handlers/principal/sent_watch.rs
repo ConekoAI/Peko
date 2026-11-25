@@ -27,7 +27,7 @@ use crate::principal::Principal;
 
 /// What a channel's forwarder hands the stream.
 enum Forwarded {
-    Event(ChannelId, ChannelEvent),
+    Event(ChannelId, Box<ChannelEvent>),
     Lagged(u64),
 }
 
@@ -184,6 +184,7 @@ async fn run(
         tokio::select! {
             forwarded = rx.recv() => match forwarded {
                 Some(Forwarded::Event(channel, event)) => {
+                    let event = *event;
                     let ChannelEvent::Posted { ref author, .. } = event else {
                         continue;
                     };
@@ -264,7 +265,7 @@ async fn watch_new_conversations(
         forwarders.0.push(tokio::spawn(async move {
             loop {
                 let item = match events.recv().await {
-                    Ok(event) => Forwarded::Event(forwarded_channel.clone(), event),
+                    Ok(event) => Forwarded::Event(forwarded_channel.clone(), Box::new(event)),
                     Err(broadcast::error::RecvError::Lagged(n)) => Forwarded::Lagged(n),
                     Err(broadcast::error::RecvError::Closed) => return,
                 };
@@ -306,6 +307,8 @@ fn appended(
         msg_id,
         ask,
         answers,
+        reply_to,
+        react: None,
         ..
     } = event
     else {
@@ -322,6 +325,8 @@ fn appended(
             msg_id,
             ask,
             answers,
+            reply_to,
+            ..PostCard::default()
         },
         &conversation.me,
     );

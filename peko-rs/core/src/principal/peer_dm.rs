@@ -209,11 +209,65 @@ pub(crate) async fn post_peer_dm_inbound(
     author: &str,
     text: &str,
 ) -> Result<()> {
-    post_peer_dm_inbound_attached(port, principal, channel, author, text, Vec::new(), None).await
+    post_peer_dm_inbound_attached(
+        port,
+        principal,
+        channel,
+        author,
+        text,
+        Vec::new(),
+        None,
+        None,
+    )
+    .await
 }
 
 /// [`post_peer_dm_inbound`] with the files the peer attached
 /// (ADR-088 D3) and the answers it gives (ADR-114 D1).
+/// Characters of a replied-to message quoted in a turn's input (ADR-126 D6).
+pub(crate) const QUOTE_CHARS: usize = 280;
+
+/// "replying to {author}: “…”" for post `msg_id` on `channel`, read from
+/// this copy's log (ADR-126 D6); "replying to a message that isn't
+/// loaded" when this copy does not hold it.
+pub(crate) async fn replying_to(
+    port: &dyn ChannelPort,
+    channel: &ChannelId,
+    msg_id: &str,
+) -> String {
+    match port.find_post(channel, msg_id).await {
+        Ok(Some((_, peko_channel::ChannelEvent::Posted { author, text, .. }))) => {
+            let who = port
+                .resolve_actor(&author)
+                .await
+                .ok()
+                .and_then(|a| a.name)
+                .unwrap_or(author);
+            format!(
+                "replying to {who}: “{}”",
+                peko_channel::reactions::excerpt(&text, QUOTE_CHARS)
+            )
+        }
+        _ => "replying to a message that isn't loaded".to_string(),
+    }
+}
+
+/// A DM post's text as its turn reads it (ADR-126 D6): `text`, or for a
+/// reply to `reply_to`, `(replying to {author}: “…”) {text}`. A DM turn's
+/// input names no author: the conversation has one other member.
+pub(crate) async fn dm_turn_text(
+    port: &dyn ChannelPort,
+    channel: &ChannelId,
+    reply_to: Option<&str>,
+    text: &str,
+) -> String {
+    match reply_to {
+        Some(parent) => format!("({}) {text}", replying_to(port, channel, parent).await),
+        None => text.to_string(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn post_peer_dm_inbound_attached(
     port: &Arc<dyn ChannelPort>,
     principal: &PrincipalId,
@@ -222,14 +276,21 @@ pub(crate) async fn post_peer_dm_inbound_attached(
     text: &str,
     attachments: Vec<peko_protocol::channel::Attachment>,
     answers: Option<peko_protocol::channel::Answers>,
+    reply_to: Option<&str>,
 ) -> Result<()> {
+    // ADR-126 D6: a reply names the post it answers by its stable id.
+    let msg = match reply_to {
+        Some(parent) => match port.find_post(channel, parent).await? {
+            Some((line, _)) => PostMsg::reply(line, text),
+            None => anyhow::bail!("the message this replies to is not in the conversation"),
+        },
+        None => PostMsg::root(text),
+    };
     port.post_attributed(
         channel,
         &ActorRef::from(principal),
         author,
-        PostMsg::root(text)
-            .with_attachments(attachments)
-            .with_answers(answers),
+        msg.with_attachments(attachments).with_answers(answers),
     )
     .await?;
     Ok(())

@@ -432,6 +432,22 @@ impl BoardOp {
     }
 }
 
+/// An emoji reaction (ADR-126 D1), carried by the post that makes it.
+/// Who reacted is the post's verified author, never anything in the op.
+/// The reactions on a message are the fold of every op in the log
+/// (`peko_channel::reactions`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ReactOp {
+    /// The `msg_id` of the post reacted to.
+    pub to: String,
+    /// One Unicode emoji (a single grapheme cluster, at most 64 bytes).
+    pub emoji: String,
+    /// Takes the author's reaction off instead of putting it on.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub remove: bool,
+}
+
 /// Causal-ordered event log for one channel.
 ///
 /// Wire shape (one example per variant):
@@ -522,6 +538,15 @@ pub enum ChannelEvent {
         /// answers. Omitted when absent.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         answers: Option<Answers>,
+        /// ADR-126 D1: an emoji reaction on another post. A post carrying
+        /// one is not a message ([`ChannelEvent::is_message`]): it wakes no
+        /// one, is not unread, and is left out of digests and reads. Its
+        /// `text` is a readable line the runtime wrote from it, and it is
+        /// written as a reply (`parent` set, `reply_to` empty), so a
+        /// runtime that predates this treats it as a reply that starts
+        /// nothing. Omitted when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        react: Option<ReactOp>,
     },
     /// A principal was invited / joined the channel. Append-only — a
     /// subsequent `MemberLeft` carries the inverse.
@@ -549,6 +574,21 @@ pub enum ChannelEvent {
 }
 
 impl ChannelEvent {
+    /// ADR-126 D2: whether this is a message — a post that is not a
+    /// reaction. Every place that counts, announces, wakes on, or shows
+    /// posts asks this.
+    pub fn is_message(&self) -> bool {
+        matches!(self, Self::Posted { react: None, .. })
+    }
+
+    /// ADR-126: the reaction this post makes, if it is one.
+    pub fn reaction(&self) -> Option<&ReactOp> {
+        match self {
+            Self::Posted { react, .. } => react.as_ref(),
+            _ => None,
+        }
+    }
+
     /// Wire-tag discriminant. Mirrors `CronJobAction::kind_label` at
     /// `peko-rs/cron/src/tools/mod.rs:158-165`.
     pub fn kind(&self) -> &'static str {
@@ -767,6 +807,7 @@ mod tests {
             board: None,
             ask: None,
             answers: None,
+            react: None,
         };
         let expected = r#"{"kind":"posted","channel":"chan_abcdefgh","author":"prin_alice","parent":null,"text":"hello","at":"2026-08-05T12:01:00Z"}"#;
         assert_eq!(serde_json::to_string(&ev).unwrap(), expected);
@@ -790,6 +831,7 @@ mod tests {
             board: None,
             ask: None,
             answers: None,
+            react: None,
         };
         let expected = r#"{"kind":"posted","channel":"chan_abcdefgh","author":"prin_bob","parent":"node_xyz12345","text":"reply","at":"2026-08-05T12:02:00Z"}"#;
         assert_eq!(serde_json::to_string(&ev).unwrap(), expected);
@@ -817,6 +859,7 @@ mod tests {
             board: None,
             ask: None,
             answers: None,
+            react: None,
         };
         let expected = r#"{"kind":"posted","channel":"chan_abcdefgh","author":"prin_alice","parent":null,"text":"hello","at":"2026-08-05T12:01:00Z","via":"/user-a/reminder"}"#;
         assert_eq!(serde_json::to_string(&ev).unwrap(), expected);
@@ -883,6 +926,7 @@ mod tests {
                     board: None,
                     ask: None,
                     answers: None,
+                    react: None,
                 },
                 "posted",
             ),

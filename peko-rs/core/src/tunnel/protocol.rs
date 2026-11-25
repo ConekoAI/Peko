@@ -1805,6 +1805,7 @@ mod tests {
             board: None,
             ask: None,
             answers: None,
+            react: None,
         };
         let msg = TunnelMessage::TunnelChannelEvent {
             request_id: "chan-evt-1".to_string(),

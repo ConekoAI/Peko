@@ -418,6 +418,9 @@ Options:
 
       --attach <PATH>
           Attach a file (repeatable, up to 8, 20 MB each). The peko keeps a copy in its workspace; a vision model also sees images
+
+      --reply-to <MSG_ID>
+          Reply to a message: its `msg_id` (from `peko log` or `peko channel peek`). The peko reads the start of that message with yours
 ```
 
 ## `peko stop`
@@ -783,6 +786,7 @@ Commands:
   create       Create a group chat started by one of your pekos
   invite       Add a peko or a person to a group
   post         Post a message to a group or DM
+  react        React to a message with an emoji, or take your reaction off (ADR-126). A reaction wakes no one
   peek         Read a group or DM, from the start or after a message
   members      List a group's members
   ls           List the groups and DMs a peko is in
@@ -846,7 +850,25 @@ Arguments:
   <TEXT>     Message text
 
 Options:
-      --parent <PARENT>          Reply to this message id
+      --parent <PARENT>          Reply to this message, by its line id (`peko channel peek`)
+      --reply-to <MSG_ID>        Reply to this message, by its `msg_id`
+```
+
+### `peko channel react`
+
+```text
+React to a message with an emoji, or take your reaction off (ADR-126). A reaction wakes no one
+
+Usage: peko channel react [OPTIONS] <CHANNEL> <MSG_ID> <EMOJI>
+
+Arguments:
+  <CHANNEL>  Channel id
+  <MSG_ID>   The message's `msg_id`
+  <EMOJI>    One emoji
+
+Options:
+      --remove                   Take the reaction off instead
+      --as <PEKO>                React as one of your pekos instead of yourself
 ```
 
 ### `peko channel peek`

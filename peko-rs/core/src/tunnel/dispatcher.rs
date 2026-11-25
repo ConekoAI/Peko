@@ -386,24 +386,25 @@ async fn apply_inbound_event(host: Arc<dyn TunnelHost>, inbound: InboundEvent) {
     port.mark_applied(&request_id).await;
     port.send_receipt(&source_runtime_id, &channel, vec![request_id.clone()])
         .await;
-    // ADR-090 D5: a person's root post in a DM is ingress — the host
-    // starts the peko's turn (only for DMs; groups wake by binding).
+    // ADR-090 D5: a person's post in a DM is ingress — the host starts
+    // the peko's turn (only for DMs; groups wake by binding). A reply
+    // starts one too (ADR-126 D7); a reaction is not a message (D2).
     if let peko_protocol::channel::ChannelEvent::Posted {
-        author,
         text,
-        parent: None,
         attachments,
         model,
+        reply_to,
         ..
     } = &event
     {
-        if let Ok(human @ (ActorRef::User(_) | ActorRef::Visitor(_))) = author.parse::<ActorRef>() {
+        if let Some(human) = person_dm_post(&event) {
             host.human_dm_post(
                 channel.clone(),
                 human,
                 text.clone(),
                 attachments.clone(),
                 model.clone(),
+                reply_to.clone(),
             )
             .await;
         }
@@ -412,6 +413,22 @@ async fn apply_inbound_event(host: Arc<dyn TunnelHost>, inbound: InboundEvent) {
         "inbound TunnelChannelEvent: verified + audited + appended to local mirror \
          (request_id={request_id}, channel_id={channel}, kind={event_kind})"
     );
+}
+
+/// The person whose post this is, when it is one that starts a DM turn
+/// on the peko's host (ADR-090 D5): a person's message, root or reply
+/// (ADR-126 D7), never a reaction (D2).
+pub(crate) fn person_dm_post(event: &peko_protocol::channel::ChannelEvent) -> Option<ActorRef> {
+    let peko_protocol::channel::ChannelEvent::Posted { author, .. } = event else {
+        return None;
+    };
+    if !event.is_message() {
+        return None;
+    }
+    match author.parse::<ActorRef>() {
+        Ok(human @ (ActorRef::User(_) | ActorRef::Visitor(_))) => Some(human),
+        _ => None,
+    }
 }
 
 /// A principal's Hub ID, from the actor registry (ADR-081 §3).
@@ -5213,6 +5230,8 @@ mod tests {
                 attachments: Vec::new(),
                 model: None,
                 answers: None,
+                reply_to: None,
+                react: None,
             })
             .await;
         assert!(
@@ -5788,6 +5807,7 @@ mod tests {
             board: None,
             ask: None,
             answers: None,
+            react: None,
         };
         let (signature, event) = build_signed_tunnel_channel_event(
             &kp,
@@ -5850,6 +5870,7 @@ mod tests {
             board: None,
             ask: None,
             answers: None,
+            react: None,
         };
         let (signature, event) = build_signed_tunnel_channel_event(
             &kp_signer,
@@ -5908,6 +5929,7 @@ mod tests {
             board: None,
             ask: None,
             answers: None,
+            react: None,
         };
 
         let result = dispatcher
@@ -5972,6 +5994,7 @@ mod tests {
             board: None,
             ask: None,
             answers: None,
+            react: None,
         };
         let (signature, event) = build_signed_tunnel_channel_event(
             &kp,
@@ -6124,6 +6147,7 @@ mod tests {
             board: None,
             ask: None,
             answers: None,
+            react: None,
         };
         deliver("req-1", post.clone()).await.unwrap();
         deliver("req-1", post.clone()).await.unwrap();
@@ -6227,6 +6251,7 @@ mod tests {
             board: None,
             ask: None,
             answers: None,
+            react: None,
         };
         let (signature, event) = build_signed_tunnel_channel_event(
             &kp,
@@ -6328,6 +6353,7 @@ mod tests {
                 board: None,
                 ask: None,
                 answers: None,
+                react: None,
             };
             let event_bytes = serde_json::to_vec(&event).expect("event must serialize");
             let signed = crate::tunnel::ChannelSignedFields {
@@ -6667,6 +6693,7 @@ mod tests {
                 board: None,
                 ask: None,
                 answers: None,
+                react: None,
             };
             let bytes = serde_json::to_vec(&event).unwrap();
             let fields = crate::tunnel::ChannelSignedFields {
@@ -7261,6 +7288,8 @@ mod tests {
                 attachments: Vec::new(),
                 model: None,
                 answers: None,
+                reply_to: None,
+                react: None,
             })
             .await;
         assert!(
@@ -7316,6 +7345,8 @@ mod tests {
                 attachments: vec![photo.display().to_string()],
                 model: None,
                 answers: None,
+                reply_to: None,
+                react: None,
             })
             .await;
         assert!(
@@ -7704,6 +7735,8 @@ mod tests {
             attachments: Vec::new(),
             model: None,
             answers: None,
+            reply_to: None,
+            react: None,
         })
         .await;
         relay(&mut a, &mut b).await;
@@ -8320,6 +8353,8 @@ mod tests {
             attachments: Vec::new(),
             model: None,
             answers: None,
+            reply_to: None,
+            react: None,
         })
         .await;
         route(&mut [&mut h, &mut p, &mut p2]).await;
@@ -9044,6 +9079,8 @@ mod tests {
                 attachments: Vec::new(),
                 model: None,
                 answers: None,
+                reply_to: None,
+                react: None,
             })
             .await;
         assert!(
@@ -9536,6 +9573,8 @@ mod tests {
             attachments: Vec::new(),
             model: None,
             answers: None,
+            reply_to: None,
+            react: None,
         };
         let texts = |port: Arc<crate::tunnel::TunnelChannelPort>,
                      channel: peko_channel::ChannelId| async move {
@@ -10785,6 +10824,8 @@ mod tests {
             attachments: Vec::new(),
             model: None,
             answers: None,
+            reply_to: None,
+            react: None,
         })
         .await;
         relay(&mut l2, &mut l1).await;
@@ -11129,6 +11170,8 @@ mod tests {
             attachments: Vec::new(),
             model: Some("work-model".into()),
             answers: None,
+            reply_to: None,
+            react: None,
         })
         .await;
         let sent = desk.sent();
@@ -11730,5 +11773,39 @@ mod tests {
             .await
             .unwrap()
             .is_some());
+    }
+
+    /// ADR-126 D2, D7: a person's DM post starts the peko's turn on its
+    /// host, a reply too; a reaction never does, nor a peko's post.
+    #[test]
+    fn a_persons_dm_reply_starts_a_turn_and_a_reaction_does_not() {
+        use peko_protocol::channel::{ChannelEvent, ChannelId, ReactOp};
+        let post =
+            |author: &str, parent: Option<&str>, react: Option<ReactOp>| ChannelEvent::Posted {
+                channel: ChannelId::parse("chan_abcd1234").unwrap(),
+                author: author.into(),
+                parent: parent.map(str::to_string),
+                text: "x".into(),
+                at: "2026-11-25T00:00:00Z".into(),
+                via: None,
+                msg_id: Some("msg_1".into()),
+                reply_to: parent.map(|_| "msg_0".to_string()),
+                attachments: Vec::new(),
+                options: Vec::new(),
+                model: None,
+                board: None,
+                ask: None,
+                answers: None,
+                react,
+            };
+        let thumbs = || ReactOp {
+            to: "msg_0".into(),
+            emoji: "👍".into(),
+            remove: false,
+        };
+        assert!(super::person_dm_post(&post("user:hub:maya", None, None)).is_some());
+        assert!(super::person_dm_post(&post("user:hub:maya", Some("3"), None)).is_some());
+        assert!(super::person_dm_post(&post("user:hub:maya", Some("3"), Some(thumbs()))).is_none());
+        assert!(super::person_dm_post(&post("principal:hub:rex", None, None)).is_none());
     }
 }

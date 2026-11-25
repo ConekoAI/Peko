@@ -249,6 +249,7 @@ mod tests {
             board: None,
             ask: None,
             answers: None,
+            react: None,
         })
         .unwrap()
     }

@@ -808,7 +808,12 @@ async fn channel_excerpt(
     let posts: Vec<(String, Passage)> = events
         .into_iter()
         .filter_map(|(id, event)| match event {
-            peko_protocol::channel::ChannelEvent::Posted { author, text, .. } => {
+            peko_protocol::channel::ChannelEvent::Posted {
+                author,
+                text,
+                react: None,
+                ..
+            } => {
                 let by_owner = author
                     .parse::<ActorRef>()
                     .is_ok_and(|actor| keys.same_actor(&actor, &owner));

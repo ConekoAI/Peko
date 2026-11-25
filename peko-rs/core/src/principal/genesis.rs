@@ -670,7 +670,7 @@ pub fn seed_default_roles(workspace: &std::path::Path) -> Result<Vec<&'static st
 const CURRENT_ROOT_SEED: &str = "1da56bd3f034ade18a2628b1caedf7340b695713944183ff2c73f92d9604d914";
 #[cfg(test)]
 const CURRENT_CONVERSATION_SEED: &str =
-    "eb197ddd4ae837fdab2203009a351a08814ba0aba8722caba31c2f2616978537";
+    "e53589830a6be5f6d5da7ff740e6ac11bbf1af3224f408add720d2cf52380591";
 #[cfg(test)]
 const CURRENT_WORKER_SEED: &str =
     "9c6c79e23786155bc4496bae3bbea473cae85b5f773b2f2453f0fa7bb0389615";
@@ -716,6 +716,7 @@ const PREVIOUS_CONVERSATION_SEEDS: &[&str] = &[
     "c6eeb8ed3df42aa814e2d264ae923fad67cb6437cefcbc76ce2aa10130b190a1",
     "e20a6531e91e4e79b9012820832bc22c94b07507a64a3ee361cde697273822eb",
     "e601541af9f74254026de20d69c10d0a51b08cd8b6677a05e502a5a3e73f8de3",
+    "eb197ddd4ae837fdab2203009a351a08814ba0aba8722caba31c2f2616978537",
 ];
 const PREVIOUS_WORKER_SEEDS: &[&str] = &[
     "52415ea266893572a6a3d83c6234f2af8d156b13d750ee0c09154b7c8a148826",

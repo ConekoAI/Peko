@@ -182,6 +182,7 @@ mod tests {
                         name: Some("Ada".into()),
                     }),
                     answers: None,
+                    reply_to: None,
                 },
                 RequestPacket::PrincipalSendStream {
                     request_id: 3,
@@ -191,6 +192,7 @@ mod tests {
                     attachments: Vec::new(),
                     send_as: None,
                     answers: None,
+                    reply_to: None,
                 },
                 // Built from its wire form: it has many optional fields.
                 serde_json::from_value(json!({
