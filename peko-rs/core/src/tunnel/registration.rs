@@ -240,7 +240,7 @@ pub fn register_pop(
     serde_json::json!({ "nonce": nonce, "jws": jws })
 }
 
-fn actor_store(resolver: &PathResolver) -> ChannelStore {
+pub(crate) fn actor_store(resolver: &PathResolver) -> ChannelStore {
     ChannelStore::new(ChannelConfig {
         runtime_dir: resolver.runtime_dir(),
         shared_dir: None,
@@ -336,10 +336,46 @@ pub async fn register_runtime(
 
     let store = actor_store(resolver);
     store.link_local_user(&runtime_did, &account).await?;
+    // ADR-124: a name chosen here before signing in replaces the one the
+    // sign-in provider gave, until the person chooses one on PekoHub. A
+    // Hub too old to say counts as chosen.
+    let hub_chosen = me
+        .get("displayNameChosen")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+    let mut display_name = display_name;
+    let mut handle = me
+        .get("namespace")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
+    if let Some(chosen) = store.person_chosen_name().await {
+        if !hub_chosen && display_name.as_deref() != Some(chosen.as_str()) {
+            match crate::tunnel::people::hub_set_name(&origin, &runtime_did, &signing_key, &chosen)
+                .await
+            {
+                Ok(person) => {
+                    display_name = Some(person.shown());
+                    handle = Some(person.handle);
+                }
+                Err(e) => tracing::warn!("keeping PekoHub's name for you: {e:#}"),
+            }
+        }
+    }
     store
         .set_person_display_name(display_name.as_deref())
         .await?;
+    if display_name.is_some() {
+        store
+            .set_person_chosen_name(display_name.as_deref())
+            .await?;
+    }
+    store.set_person_handle(handle.as_deref()).await?;
     store.name_local_user_from_hub().await?;
+    if let (Some(name), Some(handle)) = (&display_name, &handle) {
+        store
+            .refresh_people(&[(account.clone(), Some(name.clone()), Some(handle.clone()))])
+            .await?;
+    }
     // ADR-091 D5: another person's conversations do not survive a change
     // of hands, whatever path removed the old registration.
     forget_remote_dms(resolver, &store, Some(&account)).await?;
@@ -449,7 +485,10 @@ pub async fn unregister_runtime(
         "PekoHub refused to unregister the runtime: HTTP {status}"
     );
     store.unlink_local_user().await?;
+    // ADR-124: signed out, the person keeps the name they had (as their
+    // chosen one) and goes without a handle.
     store.set_person_display_name(None).await?;
+    store.set_person_handle(None).await?;
     forget_remote_dms(resolver, &store, None).await?;
     std::fs::remove_file(&path)?;
     Ok(())

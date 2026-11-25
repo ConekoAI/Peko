@@ -57,6 +57,12 @@ pub(crate) trait TunnelHost: Send + Sync {
     /// The Hub account the local user is linked to, `None` when
     /// unregistered (ADR-081 D3).
     async fn linked_account(&self) -> Option<crate::tunnel::registration::LinkedAccount>;
+
+    /// What this computer's person is called, and their handle (ADR-124).
+    async fn person(&self) -> crate::tunnel::people::Person;
+
+    /// Set what this computer's person is called (ADR-124).
+    async fn set_person_name(&self, name: &str) -> anyhow::Result<crate::tunnel::people::Person>;
 }
 
 /// `tunnel` domain request handler. Constructed with an `Arc<dyn TunnelHost>`
@@ -84,6 +90,7 @@ impl RequestHandler for TunnelHandler {
                 | RequestPacket::TunnelStatus { .. }
                 | RequestPacket::RuntimeRegister { .. }
                 | RequestPacket::RuntimeUnregister { .. }
+                | RequestPacket::PersonNameSet { .. }
         )
     }
 
@@ -109,6 +116,7 @@ impl RequestHandler for TunnelHandler {
                 let configured = crate::tunnel::credential::has_pekohub_credential();
                 let connected = self.host.tunnel_connected().await;
                 let account = self.host.linked_account().await;
+                let person = self.host.person().await;
                 let response = ResponsePacket::TunnelStatus {
                     request_id,
                     configured,
@@ -117,6 +125,8 @@ impl RequestHandler for TunnelHandler {
                     hub_url: crate::tunnel::credential::registered_hub_origin(),
                     account_name: account.as_ref().and_then(|a| a.name.clone()),
                     account: account.map(|a| a.id),
+                    person_name: person.name,
+                    person_handle: person.handle,
                 };
                 send_response(sink, response).await?;
             }
@@ -131,6 +141,30 @@ impl RequestHandler for TunnelHandler {
                     request_id,
                     message: "[permission_denied] only the local user registers this runtime"
                         .to_string(),
+                };
+                send_response(sink, response).await?;
+            }
+
+            // ADR-124: only this computer's person names themself.
+            RequestPacket::PersonNameSet { request_id, .. } if !caller.is_local() => {
+                let response = ResponsePacket::Error {
+                    request_id,
+                    message: "[permission_denied] only the local user sets their name".to_string(),
+                };
+                send_response(sink, response).await?;
+            }
+
+            RequestPacket::PersonNameSet { request_id, name } => {
+                let response = match self.host.set_person_name(&name).await {
+                    Ok(_) => ResponsePacket::Done {
+                        request_id,
+                        success: true,
+                        error: None,
+                    },
+                    Err(e) => ResponsePacket::Error {
+                        request_id,
+                        message: format!("{e:#}"),
+                    },
                 };
                 send_response(sink, response).await?;
             }
@@ -192,6 +226,7 @@ mod tests {
     struct Host {
         registered: Mutex<Vec<(String, String)>>,
         linked: Mutex<Option<crate::tunnel::registration::LinkedAccount>>,
+        person: Mutex<crate::tunnel::people::Person>,
     }
 
     #[async_trait]
@@ -224,6 +259,19 @@ mod tests {
         }
         async fn linked_account(&self) -> Option<crate::tunnel::registration::LinkedAccount> {
             self.linked.lock().unwrap().clone()
+        }
+        async fn person(&self) -> crate::tunnel::people::Person {
+            self.person.lock().unwrap().clone()
+        }
+        async fn set_person_name(
+            &self,
+            name: &str,
+        ) -> anyhow::Result<crate::tunnel::people::Person> {
+            let name = crate::tunnel::people::clean_name(name)
+                .ok_or_else(|| anyhow::anyhow!("A name is 1 to 64 characters"))?;
+            let mut person = self.person.lock().unwrap();
+            person.name = Some(name);
+            Ok(person.clone())
         }
     }
 
@@ -331,23 +379,67 @@ mod tests {
                 ResponsePacket::TunnelStatus {
                     account,
                     account_name,
+                    person_name,
+                    person_handle,
                     ..
-                } => (account, account_name),
+                } => (account, account_name, person_name, person_handle),
                 other => panic!("expected TunnelStatus, got {other:?}"),
             }
         };
-        assert_eq!(status(host.clone()).await, (None, None));
+        *host.person.lock().unwrap() = crate::tunnel::people::Person {
+            name: Some("maya".into()),
+            handle: None,
+        };
+        assert_eq!(
+            status(host.clone()).await,
+            (None, None, Some("maya".into()), None)
+        );
 
         *host.linked.lock().unwrap() = Some(crate::tunnel::registration::LinkedAccount {
             id: "0b6c7a4e-0000-4000-8000-000000000000".into(),
             name: Some("Alice".into()),
         });
+        *host.person.lock().unwrap() = crate::tunnel::people::Person {
+            name: Some("Alice".into()),
+            handle: Some("alice".into()),
+        };
         assert_eq!(
             status(host).await,
             (
                 Some("0b6c7a4e-0000-4000-8000-000000000000".into()),
-                Some("Alice".into())
+                Some("Alice".into()),
+                Some("Alice".into()),
+                Some("alice".into())
             )
         );
+    }
+
+    /// ADR-124: this computer's person names themself; nobody else does.
+    #[tokio::test]
+    async fn only_the_local_user_sets_their_name() {
+        let host = Arc::new(Host::default());
+        let set = |name: &str| RequestPacket::PersonNameSet {
+            request_id: 4,
+            name: name.into(),
+        };
+        match send(host.clone(), CallerContext::local(), set("Maya")).await {
+            ResponsePacket::Done { success: true, .. } => {}
+            other => panic!("expected Done, got {other:?}"),
+        }
+        assert_eq!(host.person.lock().unwrap().name.as_deref(), Some("Maya"));
+        match send(host.clone(), CallerContext::local(), set("  ")).await {
+            ResponsePacket::Error { message, .. } => {
+                assert!(message.contains("1 to 64"), "{message}")
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+        let visitor = CallerContext::from_jwt("someone".to_string());
+        match send(host.clone(), visitor, set("Mallory")).await {
+            ResponsePacket::Error { message, .. } => {
+                assert!(message.contains("permission_denied"), "{message}")
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+        assert_eq!(host.person.lock().unwrap().name.as_deref(), Some("Maya"));
     }
 }

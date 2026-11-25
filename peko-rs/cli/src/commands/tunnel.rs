@@ -262,6 +262,8 @@ mod tests {
             hub_url: Some("https://pekohub.ai".to_string()),
             account: Some("0b6c7a4e-0000-4000-8000-000000000000".to_string()),
             account_name: Some("Alice".to_string()),
+            person_name: Some("Alice".to_string()),
+            person_handle: Some("alice".to_string()),
         };
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
@@ -274,8 +276,12 @@ mod tests {
                 hub_url,
                 account,
                 account_name,
+                person_name,
+                person_handle,
             } => {
+                assert_eq!(person_handle.as_deref(), Some("alice"));
                 assert_eq!(request_id, 702);
+                assert_eq!(person_name.as_deref(), Some("Alice"));
                 assert_eq!(hub_url.as_deref(), Some("https://pekohub.ai"));
                 assert_eq!(
                     account.as_deref(),
@@ -306,6 +312,8 @@ mod tests {
             hub_url: None,
             account: None,
             account_name: None,
+            person_name: None,
+            person_handle: None,
         };
         assert_eq!(resp.request_id(), 3);
     }

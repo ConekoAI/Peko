@@ -3071,7 +3071,23 @@ runtime to runtime, only from a runtime of the person it names:
 Signed payloads: `peko-person-dm-invite/1` and `peko-dm-route/1` (`routesB64u`).
 The invite's `name` is the asker's PekoHub display name (else namespace),
 read at registration into `<runtime>/person_display_name` and removed on
-unregister. A request waits in `<runtime>/dm_requests/<pair id>.json`
+unregister.
+
+ADR-124: three one-line files under `<runtime>/` name this computer's person.
+`person_display_name` is their PekoHub display name while signed in (else their
+handle); it is the only one that crosses PekoHub. `person_chosen_name` is the
+name they chose here, kept when they sign out (signing in or a refresh writes the
+PekoHub name into it). `person_handle` is their PekoHub handle while signed in.
+What they are called on this computer is the first of `person_display_name`,
+`person_chosen_name` and their login name. Signing in sends `person_chosen_name`
+to PekoHub when the account's name is still the sign-in provider's
+(`/v1/auth/me` `displayNameChosen: false`). At boot and hourly a signed-in runtime
+asks PekoHub (`POST /v1/people/names`, a `PekoRuntime` proof) for the current
+name and handle of every `user:hub:<id>` in `actors.json` and its own account, and
+updates their records (`refresh_people`). IPC `person_name_set {name}` (local
+callers; `Done`) sets the name, through PekoHub (`PUT /v1/people/me/name`) when
+signed in; `tunnel_status` reports `person_name` and `person_handle`, and a
+channel's `people` rows carry `handle`. A request waits in `<runtime>/dm_requests/<pair id>.json`
 (`{channel, from, name?, source_runtime, account, received_at}`) until answered;
 block decisions are kept in `<runtime>/blocked_people.json`
 (`{<account>: {"user:hub:<id>": {"blocked": bool, "at": "<RFC 3339>"}}}`; the first
@@ -4153,7 +4169,8 @@ persisted session, task, cron, or workflow fields.
 ## ADR-073 dual identities and conversations
 
 `runtime/actors.json` contains actor records with `info` (`address`, `local_id`,
-`hub_id`, `kind`, `registration`, `name`, `mention`), an immutable `identity_key`,
+`hub_id`, `kind`, `registration`, `name`, `mention`, and for people `handle`,
+their PekoHub handle under ADR-124), an immutable `identity_key`,
 and optional private `signing_did`. Private `historical_aliases` preserve address
 resolution for past authors and memberships after promotion/unlinking; they are
 not accepted by public `resolve_actor` routing. The registry is a routing index:

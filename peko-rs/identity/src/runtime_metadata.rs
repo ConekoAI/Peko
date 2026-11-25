@@ -92,6 +92,36 @@ impl HostInfo {
             host.to_string()
         }
     }
+
+    /// The name the person signed in to this computer goes by: their
+    /// login name (`maya`). What this computer's person is called on
+    /// their own screen while it is not signed in to PekoHub; it never
+    /// leaves the computer.
+    #[must_use]
+    pub fn login_name() -> Option<String> {
+        let from_env = |key: &str| {
+            std::env::var(key)
+                .ok()
+                .map(|name| name.trim().to_string())
+                .filter(|name| !name.is_empty())
+        };
+        #[cfg(windows)]
+        let name = from_env("USERNAME");
+        #[cfg(not(windows))]
+        let name = from_env("USER")
+            .or_else(|| from_env("LOGNAME"))
+            .or_else(|| {
+                std::process::Command::new("id")
+                    .arg("-un")
+                    .output()
+                    .ok()
+                    .filter(|out| out.status.success())
+                    .and_then(|out| String::from_utf8(out.stdout).ok())
+                    .map(|name| name.trim().to_string())
+                    .filter(|name| !name.is_empty())
+            });
+        name
+    }
 }
 
 /// What a runtime was called before it was named after its computer.
@@ -187,6 +217,13 @@ mod tests {
         assert!(!name.is_empty());
         assert!(!name.ends_with(".local"), "{name}");
         assert_eq!(RuntimeMetadata::new("did:key:z6MkTest").display_name, name);
+    }
+
+    #[test]
+    fn the_person_here_has_a_login_name() {
+        let name = HostInfo::login_name().expect("a test runs as someone");
+        assert_eq!(name, name.trim());
+        assert!(!name.is_empty());
     }
 
     #[test]

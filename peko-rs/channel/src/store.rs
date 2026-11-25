@@ -89,6 +89,7 @@ impl ActorRecord {
             .expect("registered actor kind");
         let mut info = ActorInfo::from_subject(&subject, self.info.name.as_deref());
         info.registration = self.info.registration;
+        info.handle = self.info.handle.clone();
         self.info = info;
     }
 
@@ -103,6 +104,7 @@ impl ActorRecord {
             ActorInfo::from_subject(&ActorRef::User("local".into()), self.info.name.as_deref());
         info.hub_id = self.info.hub_id.clone();
         info.registration = self.info.registration;
+        info.handle = self.info.handle.clone();
         self.historical_aliases.extend(self.aliases());
         self.info = info;
     }
@@ -1324,27 +1326,24 @@ impl ChannelStore {
         Ok(())
     }
 
-    fn person_display_name_path(&self) -> PathBuf {
-        self.cfg.runtime_dir.join("person_display_name")
-    }
-
-    /// The PekoHub display name of this runtime's person, as registration
-    /// read it (ADR-095 D6): what a person they ask to DM sees.
-    pub async fn person_display_name(&self) -> Option<String> {
-        fs::read_to_string(self.person_display_name_path())
+    /// One line about this runtime's person, kept in `runtime/<file>`.
+    async fn person_text(&self, file: &str) -> Option<String> {
+        fs::read_to_string(self.cfg.runtime_dir.join(file))
             .await
             .ok()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
     }
 
-    /// Keep (or, with `None`, forget) this runtime's person's display name.
-    pub async fn set_person_display_name(&self, name: Option<&str>) -> Result<()> {
-        let path = self.person_display_name_path();
-        match name.map(str::trim).filter(|n| !n.is_empty()) {
-            Some(name) => {
+    /// Keep (or, with `None`, forget) one line about this runtime's person.
+    async fn set_person_text(&self, file: &str, text: Option<&str>) -> Result<()> {
+        let path = self.cfg.runtime_dir.join(file);
+        match text.map(str::trim).filter(|n| !n.is_empty()) {
+            Some(text) => {
                 fs::create_dir_all(&self.cfg.runtime_dir).await?;
-                fs::write(&path, name).await?;
+                let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+                fs::write(&temp, text).await?;
+                fs::rename(temp, path).await?;
             }
             None => {
                 if let Err(e) = fs::remove_file(&path).await {
@@ -1355,6 +1354,81 @@ impl ChannelStore {
             }
         }
         Ok(())
+    }
+
+    /// The PekoHub display name of this runtime's person while it is
+    /// signed in (ADR-095 D6, ADR-124): what others see.
+    pub async fn person_display_name(&self) -> Option<String> {
+        self.person_text("person_display_name").await
+    }
+
+    /// Keep (or, with `None`, forget) this runtime's person's display name.
+    pub async fn set_person_display_name(&self, name: Option<&str>) -> Result<()> {
+        self.set_person_text("person_display_name", name).await
+    }
+
+    /// The name this runtime's person chose here (ADR-124): theirs while
+    /// not signed in, and kept when they sign out.
+    pub async fn person_chosen_name(&self) -> Option<String> {
+        self.person_text("person_chosen_name").await
+    }
+
+    /// Keep (or forget) the name this runtime's person chose here.
+    pub async fn set_person_chosen_name(&self, name: Option<&str>) -> Result<()> {
+        self.set_person_text("person_chosen_name", name).await
+    }
+
+    /// This runtime's person's PekoHub handle while signed in (ADR-124).
+    pub async fn person_handle(&self) -> Option<String> {
+        self.person_text("person_handle").await
+    }
+
+    /// Keep (or forget) this runtime's person's PekoHub handle.
+    pub async fn set_person_handle(&self, handle: Option<&str>) -> Result<()> {
+        self.set_person_text("person_handle", handle).await
+    }
+
+    /// Bring people's names and handles up to what PekoHub says now
+    /// (ADR-124): each `(account, name, handle)` updates the person whose
+    /// Hub ID is `account`. A name of `None` keeps the one known. Returns
+    /// how many people changed.
+    pub async fn refresh_people(
+        &self,
+        people: &[(String, Option<String>, Option<String>)],
+    ) -> Result<usize> {
+        let path = self.cfg.runtime_dir.join("actors.json");
+        if !path.exists() || people.is_empty() {
+            return Ok(0);
+        }
+        let _lock = FileLock::acquire(&path, CHANNEL_LOCK_TIMEOUT_MS)
+            .await
+            .map_err(|e| ChannelError::Adapter(e.to_string()))?;
+        let mut records = load_actors(&path)?;
+        let mut changed = 0;
+        for record in &mut records {
+            if record.info.kind != "user" {
+                continue;
+            }
+            let Some((_, name, handle)) = people
+                .iter()
+                .find(|(account, _, _)| record.info.hub_id.as_deref() == Some(account))
+            else {
+                continue;
+            };
+            let name = name.clone().or_else(|| record.info.name.clone());
+            if record.info.name != name || record.info.handle != *handle {
+                record.info.name = name;
+                record.info.handle = handle.clone();
+                changed += 1;
+            }
+        }
+        if changed > 0 {
+            let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+            fs::write(&temp, serde_json::to_vec_pretty(&records)?).await?;
+            fs::rename(temp, &path).await?;
+            *self.actors.lock().expect("actor registry mutex") = actor_index(records);
+        }
+        Ok(changed)
     }
 
     fn dm_requests_dir(&self) -> PathBuf {
@@ -5238,6 +5312,71 @@ mod tests {
             runtime_id: runtime.to_string(),
             principal_id: principal.to_string(),
         }
+    }
+
+    /// ADR-124: people's names and handles follow what PekoHub says now;
+    /// pekos keep theirs, and a person PekoHub gives no name keeps the
+    /// one known.
+    #[tokio::test]
+    async fn people_take_the_names_pekohub_gives() {
+        let store = ChannelStore::new(tmp_cfg("refresh-people"));
+        let maya = "6f1c2a52-58b6-4b8e-9d1c-6a3f0b6f1a02";
+        let noah = "6f1c2a52-58b6-4b8e-9d1c-6a3f0b6f1a03";
+        let ada = "6f1c2a52-58b6-4b8e-9d1c-6a3f0b6f1a04";
+        for (account, kind, name) in [
+            (maya, "user", "maya-gh"),
+            (noah, "user", "Noah"),
+            (ada, "principal", "ada"),
+        ] {
+            let subject: ActorRef = format!("{kind}:hub:{account}").parse().unwrap();
+            store
+                .register_actor(
+                    &subject,
+                    Some(account),
+                    None,
+                    None,
+                    Some(name),
+                    Registration::Registered,
+                )
+                .await
+                .unwrap();
+        }
+        let people = vec![
+            (
+                maya.to_string(),
+                Some("Maya Lin".to_string()),
+                Some("maya".to_string()),
+            ),
+            (noah.to_string(), None, Some("noah".to_string())),
+            (
+                ada.to_string(),
+                Some("not a peko's name".to_string()),
+                Some("x".to_string()),
+            ),
+        ];
+        assert_eq!(store.refresh_people(&people).await.unwrap(), 2);
+        let info = |kind: &str, account: &str| {
+            let subject: ActorRef = format!("{kind}:hub:{account}").parse().unwrap();
+            let store = &store;
+            async move { store.actor_info(&subject).await }
+        };
+        let m = info("user", maya).await;
+        assert_eq!(
+            (m.name.as_deref(), m.handle.as_deref()),
+            (Some("Maya Lin"), Some("maya"))
+        );
+        let n = info("user", noah).await;
+        assert_eq!(
+            (n.name.as_deref(), n.handle.as_deref()),
+            (Some("Noah"), Some("noah"))
+        );
+        let a = info("principal", ada).await;
+        assert_eq!((a.name.as_deref(), a.handle), (Some("ada"), None));
+        // Nothing new: nothing written.
+        assert_eq!(store.refresh_people(&people).await.unwrap(), 0);
+        // The handle reaches whoever reads the actor.
+        let shown = serde_json::to_value(&m).unwrap();
+        assert_eq!(shown["handle"], "maya");
     }
 
     /// ADR-081 D3: a registered runtime's own person stays local across

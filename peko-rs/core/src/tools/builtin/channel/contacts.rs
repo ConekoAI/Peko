@@ -31,7 +31,7 @@ impl ContactsTool {
                 "resolve",
                 json!({"type":"object", "properties":{
                 "reference":{"type":"string", "minLength":1,
-                    "description":"An address (principal:hub:<id>, peko:hub:<id>, user:hub:<id>, kind:local:<id>), a name you share a conversation with (ada, @ada), or a peko by its owner's PekoHub handle (@frank/ada)."}
+                    "description":"An address (principal:hub:<id>, peko:hub:<id>, user:hub:<id>, kind:local:<id>), a name you share a conversation with (ada, @ada), a person by their PekoHub handle (@maya), or a peko by its owner's PekoHub handle (@frank/ada). People listed with a handle go by their name; the handle tells apart two of one name."}
             }, "required":["reference"], "additionalProperties":false}),
             ),
         ])
@@ -302,6 +302,10 @@ impl ContactsTool {
             actor["name"]
                 .as_str()
                 .is_some_and(|n| n.eq_ignore_ascii_case(name))
+                // ADR-124: a person by their PekoHub handle (@maya).
+                || actor["handle"]
+                    .as_str()
+                    .is_some_and(|h| h.eq_ignore_ascii_case(name))
                 || actor["hub_id"].as_str() == Some(name)
                 || actor["local_id"].as_str() == Some(name)
         };

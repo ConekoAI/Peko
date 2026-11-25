@@ -48,6 +48,13 @@
         "address": {
           "type": "string"
         },
+        "handle": {
+          "description": "A person's PekoHub handle (ADR-124): unique, so it tells apart\ntwo people of one name. Their display name is `name`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "hub_id": {
           "type": [
             "string",
@@ -1515,6 +1522,29 @@
             "type",
             "request_id",
             "token"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Set what this computer's person is called (ADR-124): 1 to 64\ncharacters, without control characters. Signed in to PekoHub, the\nHub takes it first (and may refuse it) and every conversation of\ntheirs follows; signed out, it stays on this computer until they\nsign in. Local callers only. Answered with `Done`; `tunnel_status`\nthen reports it as `person_name`.",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "request_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "person_name_set",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "name"
           ],
           "type": "object"
         },
@@ -4395,6 +4425,13 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "handle": {
+          "description": "A person's PekoHub handle, when known (ADR-124): unique, where\nnames may repeat.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "here": {
           "default": false,
@@ -7471,6 +7508,30 @@
           ],
           "type": "object",
           "x-stability": "internal"
+        },
+        {
+          "description": "Set what this computer's person is called (ADR-124): 1 to 64\ncharacters, without control characters. Signed in to PekoHub, the\nHub takes it first (and may refuse it) and every conversation of\ntheirs follows; signed out, it stays on this computer until they\nsign in. Local callers only. Answered with `Done`; `tunnel_status`\nthen reports it as `person_name`.",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "request_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "person_name_set",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "name"
+          ],
+          "type": "object",
+          "x-stability": "stable"
         },
         {
           "properties": {
@@ -12238,6 +12299,20 @@
             },
             "hub_url": {
               "description": "The hub this runtime is registered with (`https://pekohub.ai`);\nabsent when unregistered, and from older daemons.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "person_handle": {
+              "description": "Their PekoHub handle, while signed in (ADR-124).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "person_name": {
+              "description": "What this computer's person is called (ADR-124): their PekoHub\nname when signed in, else the name they chose here, else their\nlogin name on this computer (neither of which crosses\nPekoHub). Absent from older daemons.",
               "type": [
                 "string",
                 "null"

@@ -42,6 +42,14 @@ pub enum RuntimeCommands {
         #[arg(long)]
         discard_unsent: bool,
     },
+    /// Show or set what you are called in conversations. Signed in to
+    /// PekoHub, the name is your account's, so every computer and
+    /// conversation of yours follows; your @handle stays as it is.
+    /// Before signing in, it stays on this computer
+    Name {
+        /// Your new name (1 to 64 characters); leave out to show it
+        name: Option<String>,
+    },
 }
 
 /// Sign the CLI in to the Hub: show a code, wait for the user to approve
@@ -185,6 +193,7 @@ pub async fn handle_runtime(
             println!("✓ Runtime unregistered; the local user is offline-only.");
             Ok(())
         }
+        RuntimeCommands::Name { name } => person_name(name, json).await,
         RuntimeCommands::Id => {
             let client = peko_core::ipc::DaemonClient::connect().await?;
             let packet = peko_core::ipc::RequestPacket::RuntimeId { request_id: 1 };
@@ -231,5 +240,71 @@ pub async fn handle_runtime(
                 _ => anyhow::bail!("Unexpected response"),
             }
         }
+    }
+}
+
+/// `peko runtime name [NAME]`: set (when given) and show what this
+/// computer's person is called, and their handle (ADR-124).
+async fn person_name(name: Option<String>, json: bool) -> anyhow::Result<()> {
+    use peko_core::ipc::{RequestPacket, ResponsePacket};
+    let client = peko_core::ipc::DaemonClient::connect().await?;
+    if let Some(name) = name {
+        match client
+            .request_response(RequestPacket::PersonNameSet {
+                request_id: 1,
+                name,
+            })
+            .await?
+        {
+            ResponsePacket::Done { .. } => {}
+            ResponsePacket::Error { message, .. } => anyhow::bail!("{message}"),
+            _ => anyhow::bail!("Unexpected response"),
+        }
+    }
+    match client.tunnel_status().await? {
+        ResponsePacket::TunnelStatus {
+            person_name,
+            person_handle,
+            ..
+        } => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({"name": person_name, "handle": person_handle})
+                );
+            } else {
+                println!(
+                    "{}",
+                    person_line(person_name.as_deref(), person_handle.as_deref())
+                );
+            }
+            Ok(())
+        }
+        ResponsePacket::Error { message, .. } => anyhow::bail!("{message}"),
+        _ => anyhow::bail!("Unexpected response"),
+    }
+}
+
+/// `Maya Lin (@maya)`, or the name alone before signing in.
+fn person_line(name: Option<&str>, handle: Option<&str>) -> String {
+    match (name, handle) {
+        (Some(name), Some(handle)) => format!("{name} (@{handle})"),
+        (Some(name), None) => format!("{name} (not signed in to PekoHub; no handle yet)"),
+        (None, Some(handle)) => format!("@{handle}"),
+        (None, None) => "No name yet. Set one with `peko runtime name <name>`.".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod person_tests {
+    use super::person_line;
+
+    #[test]
+    fn a_name_shows_with_its_handle() {
+        assert_eq!(
+            person_line(Some("Maya Lin"), Some("maya")),
+            "Maya Lin (@maya)"
+        );
+        assert!(person_line(Some("maya"), None).starts_with("maya (not signed in"));
     }
 }
