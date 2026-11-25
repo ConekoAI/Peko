@@ -62,7 +62,10 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Power::{
     SetThreadExecutionState, ES_CONTINUOUS, ES_DISPLAY_REQUIRED, ES_SYSTEM_REQUIRED,
 };
-use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
+use windows::Win32::System::RemoteDesktop::{
+    ProcessIdToSessionId, WTSFreeMemory, WTSQuerySessionInformationW, WTSSessionInfoEx, WTSINFOEXW,
+    WTS_CURRENT_SERVER_HANDLE, WTS_CURRENT_SESSION, WTS_SESSIONSTATE_LOCK,
+};
 use windows::Win32::System::StationsAndDesktops::{
     CloseDesktop, GetUserObjectInformationW, OpenInputDesktop, DESKTOP_CONTROL_FLAGS,
     DESKTOP_READOBJECTS, UOI_NAME,
@@ -472,6 +475,36 @@ fn keep_mta() -> Result<()> {
     .map_err(|e| anyhow!(e))
 }
 
+/// What keeps a peko from the screen, from what Windows reports: the
+/// session locked, the input desktop (`None` when it cannot be opened, as
+/// for the secure desktop of an administrator prompt), the screen saver.
+fn obstruction_of(locked: bool, input_desktop: Option<&str>, saver: bool) -> Option<String> {
+    if locked {
+        return Some(
+            "The screen is locked; nothing can be seen or done until your owner unlocks it.".into(),
+        );
+    }
+    match input_desktop {
+        Some(name) if name.eq_ignore_ascii_case("Default") => {}
+        // A process of the user cannot open the secure desktop: an
+        // administrator prompt (UAC) or a sign-in is up.
+        None => {
+            return Some(
+                "Windows shows its secure desktop: an administrator prompt (UAC) or a sign-in \
+                 is waiting for your owner. Nothing was done; never answer it yourself."
+                    .into(),
+            )
+        }
+        Some(name) => {
+            return Some(format!(
+                "Windows shows its secure desktop ({name}): an administrator prompt (UAC) or a \
+                 sign-in is waiting for your owner. Nothing was done; never answer it yourself."
+            ))
+        }
+    }
+    saver.then(|| "The screen saver is on.".to_string())
+}
+
 // ─── The platform ──────────────────────────────────────────────────────
 
 pub struct WindowsPlatform;
@@ -507,6 +540,41 @@ impl WindowsPlatform {
             let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
             String::from_utf16_lossy(&buf[..end])
         })
+    }
+
+    /// Whether this session is locked. On Windows 10 and 11 the lock
+    /// screen (LockApp) is shown on the session's own desktop, so the
+    /// input desktop alone does not tell; the session's state does, and
+    /// LockApp in front is taken as locked too.
+    fn session_locked() -> bool {
+        let mut info = PWSTR::null();
+        let mut len = 0u32;
+        let queried = unsafe {
+            WTSQuerySessionInformationW(
+                Some(WTS_CURRENT_SERVER_HANDLE),
+                WTS_CURRENT_SESSION,
+                WTSSessionInfoEx,
+                &mut info,
+                &mut len,
+            )
+        };
+        let mut flags = None;
+        if queried.is_ok() && !info.is_null() {
+            if len as usize >= std::mem::size_of::<WTSINFOEXW>() {
+                // WTS hands back its own allocation; read it without
+                // assuming its alignment.
+                #[allow(clippy::cast_ptr_alignment)]
+                let ex =
+                    unsafe { std::ptr::read_unaligned(info.0.cast::<WTSINFOEXW>().cast_const()) };
+                if ex.Level == 1 {
+                    flags = Some(unsafe { ex.Data.WTSInfoExLevel1.SessionFlags });
+                }
+            }
+            unsafe { WTSFreeMemory(info.0.cast()) };
+        }
+        flags == Some(WTS_SESSIONSTATE_LOCK as i32)
+            || Self::foreground()
+                .is_some_and(|fg| process_name(pid_of(fg)).eq_ignore_ascii_case("LockApp"))
     }
 
     fn screens_now() -> Vec<Screen> {
@@ -840,22 +908,6 @@ impl Platform for WindowsPlatform {
     }
 
     fn obstruction(&self) -> Option<String> {
-        match Self::input_desktop_name() {
-            None => {
-                return Some(
-                    "The screen is locked (or the sign-in screen is up); nothing can be seen or \
-                     done until your owner unlocks it."
-                        .into(),
-                )
-            }
-            Some(name) if !name.eq_ignore_ascii_case("Default") => {
-                return Some(format!(
-                    "Windows shows its secure desktop ({name}): a sign-in or an administrator \
-                     prompt is for your owner. Nothing was done."
-                ))
-            }
-            Some(_) => {}
-        }
         let mut running = BOOL(0);
         let saver = unsafe {
             SystemParametersInfoW(
@@ -867,7 +919,11 @@ impl Platform for WindowsPlatform {
         }
         .is_ok()
             && running.as_bool();
-        saver.then(|| "The screen saver is on.".to_string())
+        obstruction_of(
+            Self::session_locked(),
+            Self::input_desktop_name().as_deref(),
+            saver,
+        )
     }
 
     fn secure_input(&self) -> bool {
@@ -1097,6 +1153,28 @@ mod tests {
     }
 
     #[test]
+    fn a_locked_screen_and_a_uac_prompt_are_told_apart() {
+        let locked = obstruction_of(true, Some("Default"), false).unwrap();
+        assert!(locked.contains("locked"), "{locked}");
+        // Locked with the sign-in on the secure desktop: still locked.
+        assert!(obstruction_of(true, None, false)
+            .unwrap()
+            .contains("locked"));
+        let uac = obstruction_of(false, None, false).unwrap();
+        assert!(
+            uac.contains("administrator prompt") && !uac.contains("locked"),
+            "{uac}"
+        );
+        assert!(obstruction_of(false, Some("Winlogon"), false)
+            .unwrap()
+            .contains("(Winlogon)"));
+        assert!(obstruction_of(false, Some("Default"), true)
+            .unwrap()
+            .contains("screen saver"));
+        assert_eq!(obstruction_of(false, Some("default"), false), None);
+    }
+
+    #[test]
     fn text_keeps_surrogate_pairs_together() {
         let inputs = text_inputs("a😀");
         // a down/up, then each half of the pair down/up, in order.
@@ -1204,6 +1282,9 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("peko-typing-check.txt");
         std::fs::write(&file, "").unwrap();
+        // Windows 11's notepad.exe hands the file to the Notepad app and
+        // exits; a classic Notepad stays open until the tab is closed.
+        #[allow(clippy::zombie_processes)]
         std::process::Command::new("notepad.exe")
             .arg(&file)
             .spawn()
