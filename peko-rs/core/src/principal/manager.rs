@@ -1378,6 +1378,14 @@ impl PrincipalManager {
             .map_err(|e| IngressError::Post(anyhow::anyhow!("{e:#}")))?;
         }
 
+        // ADR-123 D2: the owner writing where their hand paused a run on
+        // the computer lets it continue, as a channel post does.
+        if crate::computer::paused_session().as_deref() == Some(child_id.as_str())
+            && turns.driver(peer, peer).await.trust == peko_tools_core::Trust::Owner
+        {
+            crate::computer::owner_spoke(&child_id);
+        }
+
         match mode {
             IngressMode::Interactive => {
                 match self.inbox_registry.try_acquire_run(&child_id).await {
@@ -3814,6 +3822,119 @@ mod tests {
             matches!(result, Err(PrincipalManagerError::PermissionDenied(_))),
             "stranger should be denied, got {result:?}"
         );
+    }
+
+    /// ADR-123 D2: a turn that used the computer lets go of it when it
+    /// ends, so the owner's next turn is not refused as busy and the
+    /// owner's hand pauses nothing.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn a_turn_that_used_the_computer_lets_go_when_it_ends() {
+        use crate::computer::{fake::FakePlatform, ComputerDesk};
+        let (_temp, manager, adapter, id) = setup().await;
+        let fake = FakePlatform::new();
+        let desk = ComputerDesk::with_platform(Arc::new(Arc::clone(&fake)));
+        crate::computer::install_for_test(Some(&desk));
+        adapter.queue_tool_call(
+            "call-1",
+            "Computer",
+            serde_json::json!({"action": "screenshot"}),
+        );
+        adapter.queue_text("looked".to_string());
+        let response = manager
+            .receive_streaming(
+                id,
+                ActorRef::User("test-owner".into()),
+                "look at my screen".to_string(),
+                cli_channel(),
+                Box::new(|_| {}),
+                None,
+            )
+            .await;
+        // The display is held awake from the first action on.
+        let used = desk.keeping_awake();
+        let view = desk.state_view();
+        fake.owner_touches();
+        let paused = desk.paused().is_some();
+        crate::computer::install_for_test(None);
+        response.unwrap();
+        assert!(used, "the turn used the computer");
+        assert!(view["using"].is_null(), "still shown as using: {view}");
+        assert!(!paused, "the owner's hand paused a turn that had ended");
+    }
+
+    /// ADR-123 D2: the owner writing in the DM where their hand paused
+    /// a run on the computer lets it continue; a message in another
+    /// conversation does not.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn an_owner_dm_lifts_a_computer_pause_there() {
+        use crate::computer::{fake::FakePlatform, Caller, ComputerDesk, Outcome, ShotRequest};
+        let (_temp, manager, adapter, id) = setup().await;
+        manager
+            .update_config("stressy", |config| {
+                config.permissions.push(PermissionGrant {
+                    subject: ActorRef::User("friend".into()),
+                    permission: Permission::Chat,
+                    granted_at: chrono::Utc::now().to_rfc3339(),
+                    granted_by: config.owner.clone(),
+                });
+            })
+            .await
+            .unwrap();
+        let principal = manager.get(id.clone()).await.unwrap();
+        let owner = ActorRef::User("test-owner".into());
+        let child = manager
+            .ensure_peer_child_ingress(&principal, &owner)
+            .await
+            .unwrap()
+            .child_id;
+
+        let fake = FakePlatform::new();
+        let desk = ComputerDesk::with_platform(Arc::new(Arc::clone(&fake)));
+        crate::computer::install_for_test(Some(&desk));
+        let run = Caller {
+            principal_id: id.0.clone(),
+            peko: "stressy".into(),
+            session_id: Some(child.clone()),
+            run_id: "run-paused".into(),
+        };
+        assert!(matches!(
+            desk.screenshot(&run, &ShotRequest::default()).unwrap(),
+            Outcome::Done(_)
+        ));
+        fake.owner_touches();
+        assert_eq!(crate::computer::paused_session(), Some(child.clone()));
+
+        adapter.queue_text("hi friend".to_string());
+        manager
+            .receive_streaming(
+                id.clone(),
+                ActorRef::User("friend".into()),
+                "hello".to_string(),
+                cli_channel(),
+                Box::new(|_| {}),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(desk.paused().is_some(), "another conversation's message");
+
+        adapter.queue_text("going on".to_string());
+        manager
+            .receive_streaming(
+                id,
+                owner,
+                "go on".to_string(),
+                cli_channel(),
+                Box::new(|_| {}),
+                None,
+            )
+            .await
+            .unwrap();
+        let lifted = desk.paused().is_none();
+        crate::computer::install_for_test(None);
+        assert!(lifted, "the owner's message in the paused DM");
     }
 
     #[tokio::test(flavor = "multi_thread")]

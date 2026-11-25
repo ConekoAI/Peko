@@ -162,6 +162,24 @@ All notable changes to Peko.
 
 ### Fixed
 
+- **A peko lets go of your computer when its turn ends.** For 30 seconds
+  after a peko last clicked or typed, your next request that used the
+  computer was refused as "another of your runs is using the screen", your
+  mouse paused a turn that was already over, and Peko Desktop's strip
+  stayed up. A turn that ends now gives the screen back at once. A pause
+  still waits for you.
+- **Writing to a peko in your chat lets it continue** after your mouse or
+  keyboard paused it on the computer, as ADR-123 says. Only a post in a
+  bound channel did; a message from Peko Desktop's chat or `peko send` left
+  it paused until **Let it continue**.
+- **A click on the part of a window beyond the screen's edge is refused.**
+  A window's picture shows that part, and a click there went to the
+  nearest screen edge instead (the taskbar, seen on Windows). It now fails
+  with "that point is off the screen" and nothing is sent.
+- **The window named after a key or a click is read after it lands.** Its
+  title was the one from before, so after Ctrl+S a peko saw "*c6.txt" and
+  took the save to have failed. A window the input closed is said to be
+  gone.
 - **Editing a model reaches conversations already under way.** A
   conversation kept the model provider it started with until the peko
   switched to another model or the engine restarted, so a changed key,

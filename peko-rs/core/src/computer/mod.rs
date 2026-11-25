@@ -84,6 +84,10 @@ pub const TEXT_PIECE: usize = 20;
 /// Steps a drag moves in.
 const DRAG_STEPS: u32 = 12;
 
+/// How long after input the window is read again for the result, so its
+/// title shows what the input did.
+const SETTLE: Duration = Duration::from_millis(150);
+
 /// Frames of runs that have done nothing for this long are dropped.
 const FRAMES_IDLE: Duration = Duration::from_mins(30);
 
@@ -633,6 +637,16 @@ fn set_desk(desk: &Arc<ComputerDesk>) {
     *desk_slot().write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(desk));
 }
 
+/// Put `desk` in place of the installed one (`None`: none), for tests
+/// that reach the desk the way the runtime does.
+#[cfg(test)]
+pub(crate) fn install_for_test(desk: Option<&Arc<ComputerDesk>>) {
+    match desk {
+        Some(desk) => set_desk(desk),
+        None => *desk_slot().write().unwrap_or_else(|e| e.into_inner()) = None,
+    }
+}
+
 /// Install the desk with this system's platform; the daemon calls this
 /// once its inboxes and principals exist. It starts the tidy loop that
 /// lets the display sleep again.
@@ -703,6 +717,13 @@ pub fn paused_session() -> Option<String> {
 pub fn owner_spoke(session_id: &str) {
     if let Some(desk) = computer_desk() {
         desk.owner_spoke(session_id);
+    }
+}
+
+/// Run `run_id` ended: it lets go of the screen (D2).
+pub fn run_ended(run_id: &str) {
+    if let Some(desk) = computer_desk() {
+        desk.run_ended(run_id);
     }
 }
 
@@ -947,6 +968,27 @@ impl ComputerDesk {
                 json!({"change": "continued_by_message", "session_id": pause.session_id}),
             );
         }
+    }
+
+    /// Run `run_id` ended: it lets go of the screen at once, instead of
+    /// holding it for [`HAND_IDLE`] after its last input. Another run may
+    /// act, the owner's input pauses nothing, and the indicator goes away.
+    /// A pause stays until the owner lifts it (**Let it continue**, or a
+    /// message): the paused run ended its turn as told and waits for it.
+    pub fn run_ended(&self, run_id: &str) {
+        let mut st = self.state();
+        if st.hand.as_ref().is_some_and(|h| h.caller.run_id == run_id) {
+            st.hand = None;
+        }
+        if st.paused.is_none()
+            && st
+                .activity
+                .as_ref()
+                .is_some_and(|a| a.caller.run_id == run_id)
+        {
+            st.activity = None;
+        }
+        st.frames.remove(run_id);
     }
 
     /// **Stop**: the run using the screen (or paused) is refused from now
@@ -1383,6 +1425,9 @@ impl ComputerDesk {
                 Outcome::Done(p) => p,
                 Outcome::Refused(r) => return Ok(r.into()),
             };
+            if let Some(r) = self.off_screen(gx, gy)? {
+                return Ok(r.into());
+            }
             self.note(caller, input.summary(""));
             if let Outcome::Refused(r) = self.send(
                 run,
@@ -1428,6 +1473,11 @@ impl ComputerDesk {
             }
             _ => Vec::new(),
         };
+        for (x, y) in &points {
+            if let Some(r) = self.off_screen(*x, *y)? {
+                return Ok(r.into());
+            }
+        }
         if let Input::Type {
             secret: Some(_), ..
         } = input
@@ -1451,7 +1501,7 @@ impl ComputerDesk {
                 return Ok(r.into());
             }
         }
-        let done = match input {
+        let mut done = match input {
             Input::Focus { .. } => format!("window {} of {} is in front", window.id, window.app),
             Input::Click {
                 x,
@@ -1592,11 +1642,39 @@ impl ComputerDesk {
             }
             Input::Move { .. } => unreachable!("handled above"),
         };
-        let window = Some(WindowInfo {
-            title: self.scrub(&caller.principal_id, &window.title),
-            ..window
+        // The window as the input left it: its title may have changed (a
+        // save drops the "*"), or it may have closed.
+        let window = if matches!(input, Input::Focus { .. }) {
+            Some(window)
+        } else {
+            std::thread::sleep(SETTLE);
+            let now = self.window(window.id)?;
+            if now.is_none() {
+                done.push_str(&format!("; window {} is gone now", window.id));
+            }
+            now
+        };
+        let window = window.map(|w| WindowInfo {
+            title: self.scrub(&caller.principal_id, &w.title),
+            ..w
         });
         Ok(Outcome::Done(Acted { window, done }))
+    }
+
+    /// Input at a point no screen shows would land somewhere else: the
+    /// system moves the pointer to the nearest screen edge. A window's
+    /// picture shows its part beyond the edge, so it can be named.
+    fn off_screen(&self, x: f64, y: f64) -> Result<Option<Refusal>> {
+        let screens = self.platform.screens()?;
+        if screens.is_empty() || screens.iter().any(|s| s.bounds.contains(x, y)) {
+            return Ok(None);
+        }
+        Ok(Some(Refusal::Focus(
+            "that point is off the screen: this part of the window is beyond the screen's \
+             edge, so input there would land somewhere else. Nothing was sent. Move the window \
+             onto the screen first (drag it by its title bar), then take a new screenshot."
+                .into(),
+        )))
     }
 
     /// A frame of a window may only steer input to that window.

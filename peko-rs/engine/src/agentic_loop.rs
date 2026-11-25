@@ -892,6 +892,7 @@ impl AgenticLoop {
         if let serde_json::Value::Object(ref mut map) = merged {
             map.insert("role_name".to_string(), self.agent.name().into());
             map.insert("principal_id".to_string(), self.agent.principal_id().into());
+            map.insert("run_id".to_string(), run_id.into());
             if let Some(workspace) = self.agent.principal_workspace() {
                 map.insert(
                     "workspace".to_string(),
@@ -925,7 +926,6 @@ impl AgenticLoop {
         // `Stop` site above — both go through `ToolFunnel` trait
         // methods.
         funnel.fire_after_agent_hook(merged).await;
-        let _ = run_id; // currently unused by handlers; kept on signature for forward-compat
     }
 
     /// Unified agent loop — always streams internally; delivery mode controls presentation.
