@@ -414,8 +414,8 @@ fn chord_inputs(chord: &Chord) -> Result<Vec<INPUT>> {
 }
 
 fn text_inputs(text: &str) -> Vec<INPUT> {
-    // Each UTF-16 unit down and up; a surrogate pair's two units go in
-    // one call, so nothing comes between them.
+    // Each UTF-16 unit down and up; a surrogate pair's halves one after
+    // the other.
     let mut inputs = Vec::new();
     for unit in text.encode_utf16() {
         inputs.push(key_input(VIRTUAL_KEY(0), unit, KEYEVENTF_UNICODE));
@@ -427,6 +427,28 @@ fn text_inputs(text: &str) -> Vec<INPUT> {
     }
     inputs
 }
+
+/// Send key events one at a time, [`KEY_GAP`] apart.
+///
+/// Some apps (Windows 11 Notepad, WinUI text boxes) handle injected keys
+/// late and read the keyboard's state as it is then, not as it was: a
+/// burst sent in one call arrived as the last character repeated ("strip
+/// check" as "strip kkkkk") and a chord lost its modifier (ctrl+s typed
+/// "s"). One event at a time, each is read as sent; a character's down
+/// and up sent together still lost characters now and then.
+fn send_paced(inputs: &[INPUT]) -> Result<()> {
+    for (i, input) in inputs.iter().enumerate() {
+        if i > 0 {
+            std::thread::sleep(KEY_GAP);
+        }
+        send(std::slice::from_ref(input))?;
+    }
+    Ok(())
+}
+
+/// Between key events (see [`send_paced`]): 1 ms garbled Notepad's text,
+/// 5 ms did not.
+const KEY_GAP: Duration = Duration::from_millis(8);
 
 /// Keep the process's multithreaded apartment alive for good.
 ///
@@ -976,8 +998,8 @@ impl WindowsPlatform {
                 }
                 send(&inputs)
             }
-            InputEvent::Chord(chord) => send(&chord_inputs(chord)?),
-            InputEvent::Text(text) => send(&text_inputs(text)),
+            InputEvent::Chord(chord) => send_paced(&chord_inputs(chord)?),
+            InputEvent::Text(text) => send_paced(&text_inputs(text)),
         })
     }
 }
@@ -1077,7 +1099,7 @@ mod tests {
     #[test]
     fn text_keeps_surrogate_pairs_together() {
         let inputs = text_inputs("a😀");
-        // a down/up, then each half of the pair down/up.
+        // a down/up, then each half of the pair down/up, in order.
         assert_eq!(inputs.len(), 6);
         let scan = |i: &INPUT| unsafe { i.Anonymous.ki.wScan };
         assert_eq!(scan(&inputs[2]), 0xD83D);
@@ -1163,6 +1185,56 @@ mod tests {
             return LRESULT(0);
         }
         unsafe { DefWindowProcW(h, m, w, l) }
+    }
+
+    /// Notepad (Windows 11's is a WinUI app) gets text and a chord as
+    /// sent. Sent in one burst, "strip check" arrived as "strip kkkkk" and
+    /// ctrl+s typed an "s". Real screen, by hand with
+    /// `PEKO_TEST_COMPUTER=1`: it opens a Notepad tab on a file in the
+    /// temp folder, types, saves and closes it.
+    #[test]
+    fn notepad_gets_text_and_chords_as_sent() {
+        if std::env::var("PEKO_TEST_COMPUTER").ok().as_deref() != Some("1") {
+            return;
+        }
+        let _screen = SCREEN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!("peko-typing-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("peko-typing-check.txt");
+        std::fs::write(&file, "").unwrap();
+        std::process::Command::new("notepad.exe")
+            .arg(&file)
+            .spawn()
+            .unwrap();
+        let win = WindowsPlatform::new();
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        let notepad = loop {
+            if let Some(w) = win
+                .windows()
+                .unwrap()
+                .into_iter()
+                .find(|w| w.title.contains("peko-typing-check"))
+            {
+                break w;
+            }
+            assert!(std::time::Instant::now() < deadline, "Notepad opened");
+            std::thread::sleep(Duration::from_millis(200));
+        };
+        win.raise(&notepad).unwrap();
+        std::thread::sleep(Duration::from_millis(800));
+        let chord = |keys: &str| InputEvent::Chord(super::super::keys::parse(keys, false).unwrap());
+        let text = "strip check the quick brown fox, Gr\u{fc}\u{df}e";
+        for piece in super::super::pieces(text) {
+            win.post(&piece).unwrap();
+        }
+        win.post(&chord("ctrl+s")).unwrap();
+        std::thread::sleep(Duration::from_millis(1500));
+        let saved = std::fs::read_to_string(&file).unwrap();
+        win.post(&chord("ctrl+w")).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(saved.trim_start_matches('\u{feff}'), text);
     }
 
     static TYPED: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
