@@ -115,6 +115,7 @@ pub const REQUESTS: &[(&str, Stability)] = &[
     ("model_templates", Internal),
     ("model_test", Stable),
     ("model_update", Internal),
+    ("person_name_set", Stable),
     ("ping", Stable),
     ("principal_access_get", Internal),
     ("principal_access_set", Internal),

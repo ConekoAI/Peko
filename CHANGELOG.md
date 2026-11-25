@@ -6,6 +6,22 @@ All notable changes to Peko.
 
 ### Added
 
+- **You choose your name, and your handle tells you apart (ADR-124).**
+  Apps called the person at this computer "You", and before signing in to
+  PekoHub nothing named them at all. Now they go by the name they choose:
+  `peko runtime name <name>` or Peko Desktop's Settings (IPC
+  `person_name_set`). Signed in, the name is the PekoHub account's, so
+  every computer and conversation of theirs follows; before signing in it
+  stays on this computer, starting as their login name, and signing in
+  carries it to PekoHub unless the account already has a name chosen there.
+  A person's PekoHub handle now travels beside their name: `tunnel_status`
+  gains `person_name` and `person_handle`, a channel's people gain
+  `handle`, and `Contacts` lists people with `handle` and resolves `@maya`
+  by it, so pekos address people by name and tell two of one name apart.
+  A signed-in runtime asks PekoHub for the current names and handles of
+  the people it knows at boot and hourly, so a name changed elsewhere
+  reaches conversations here. Setting a name while signed in, and the
+  refresh, need a PekoHub with `/v1/people`.
 - **Set how hard a model thinks.** A model now has an effort (`low`,
   `medium`, `high`, `xhigh`, `max`), sent on every turn in the shape its
   API takes: Claude's adaptive `output_config.effort`, a thinking budget

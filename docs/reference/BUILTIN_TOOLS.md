@@ -320,9 +320,10 @@ subject to runtime ownership guards. Page retention prunes old pages permanently
 principals explicitly learned by that caller. Contacts are per-principal; neither
 the runtime actor registry nor all hosted principals are enumerated. Each actor
 includes its local ID, optional Hub ID, kind, name, registration state, canonical local address, and
-mention token. `resolve` accepts a scoped local or Hub reference (`peko:` and
-`principal:` name the same actor), a name (`ada` / `@ada`) of an actor the run
-sees — one match is the answer, several are an error listing the candidates, an
+mention token; a person signed in to PekoHub also has a `handle` (ADR-124), unique
+where names repeat. `resolve` accepts a scoped local or Hub reference (`peko:` and
+`principal:` name the same actor), a name (`ada` / `@ada`) or a person's handle
+(`@maya`) of an actor the run sees — one match is the answer, several are an error listing the candidates, an
 owner run also finds the principals hosted here — or a peko by its owner's PekoHub
 handle (`@frank/ada`): a peko the run sees whose directory `ownerHandle` matches,
 else (owner runs) PekoHub by handle, which answers for public pekos, the caller's

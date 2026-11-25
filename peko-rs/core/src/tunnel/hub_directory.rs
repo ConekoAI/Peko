@@ -239,7 +239,7 @@ impl HubAgentDirectoryClient {
 
     /// A directory proof for `path`: a compact EdDSA JWS by `sub`'s `key`,
     /// valid for 60 seconds.
-    fn directory_proof(
+    pub(crate) fn directory_proof(
         sub: &str,
         key: &ed25519_dalek::SigningKey,
         path: &str,

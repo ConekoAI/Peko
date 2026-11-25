@@ -1176,6 +1176,21 @@ impl AppState {
         self.channel_port.clone()
     }
 
+    /// Bring people's names and handles up to what PekoHub says now
+    /// (ADR-124), in the background: at boot and hourly, a name a person
+    /// changed reaches the conversations they share with this computer's.
+    pub fn refresh_people_names(&self) -> tokio::task::JoinHandle<()> {
+        let resolver = self.path_resolver.clone();
+        let vault = Arc::clone(&self.vault);
+        tokio::spawn(async move {
+            match crate::tunnel::people::refresh_people_names(&resolver, vault).await {
+                Ok(0) => {}
+                Ok(n) => tracing::info!("{n} people's names changed on PekoHub"),
+                Err(e) => tracing::debug!("could not refresh people's names: {e:#}"),
+            }
+        })
+    }
+
     // Sprint 9 Commit 4: `principal_service()` getter retired along
     // with `StatelessAgentService`. The chat-gateway adapter framework
     // (its only caller) was deleted in Commit 3; ingress now flows
@@ -2833,6 +2848,10 @@ impl crate::ipc::handlers::channel::ChannelHost for AppState {
         self.channel_port.clone()
     }
 
+    fn refresh_people_names(&self) -> Option<tokio::task::JoinHandle<()>> {
+        Some(AppState::refresh_people_names(self))
+    }
+
     fn principal_manager(&self) -> Option<&Arc<crate::principal::manager::PrincipalManager>> {
         Some(&self.principal_manager)
     }
@@ -2964,6 +2983,15 @@ impl crate::ipc::handlers::tunnel::TunnelHost for AppState {
 
     async fn linked_account(&self) -> Option<crate::tunnel::registration::LinkedAccount> {
         crate::tunnel::registration::linked_account(&self.path_resolver).await
+    }
+
+    async fn person(&self) -> crate::tunnel::people::Person {
+        crate::tunnel::people::person(&self.path_resolver).await
+    }
+
+    async fn set_person_name(&self, name: &str) -> anyhow::Result<crate::tunnel::people::Person> {
+        crate::tunnel::people::set_person_name(&self.path_resolver, Arc::clone(&self.vault), name)
+            .await
     }
 
     async fn unregister_runtime(&self, token: &str, discard_unsent: bool) -> anyhow::Result<()> {

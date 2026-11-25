@@ -851,6 +851,10 @@ pub struct ActorInfo {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mention: Option<String>,
+    /// A person's PekoHub handle (ADR-124): unique, so it tells apart
+    /// two people of one name. Their display name is `name`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handle: Option<String>,
 }
 
 impl ActorInfo {
@@ -875,6 +879,7 @@ impl ActorInfo {
             mention: matches!(subject, ActorRef::Principal(_)).then(|| format!("@{address}")),
             address,
             name: name.map(str::to_owned),
+            handle: None,
         }
     }
     pub(crate) fn bind_hub_id(&mut self, hub_id: Option<&str>) -> Result<()> {

@@ -20,6 +20,7 @@ pub mod host;
 pub mod hub_directory;
 pub mod invite_token;
 pub mod local_directory;
+pub mod people;
 pub mod protocol;
 pub mod registration;
 pub mod seal;

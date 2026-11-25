@@ -1313,6 +1313,11 @@ fn people_lines(people: &[peko_core::ipc::packet::ChannelPerson]) -> Vec<String>
                 (Some(name), false) => name.clone(),
                 (None, false) => format!("unnamed {what}"),
             };
+            // ADR-124: a person's handle tells apart two of one name.
+            let name = match &p.handle {
+                Some(handle) => format!("{name} @{handle}"),
+                None => name,
+            };
             let place = if p.here || p.you { "" } else { ", elsewhere" };
             format!("{name}  {address}  ({what}{place})")
         })
@@ -1433,19 +1438,24 @@ mod response_tests {
                 aliases: Vec::new(),
                 kind: kind.into(),
                 name: name.map(str::to_string),
+                handle: None,
                 you,
                 here,
             };
+        let mut maya = person("user:hub:9a2f", "user", Some("Maya Lin"), false, false);
+        maya.handle = Some("maya".into());
         assert_eq!(
             people_lines(&[
                 person("user:local:local", "user", Some("Frank"), true, true),
                 person("principal:hub:b1ec", "principal", Some("ada"), false, false),
                 person("user:hub:7777", "user", None, false, false),
+                maya,
             ]),
             vec![
                 "Frank (you)  user:local  (person)",
                 "ada  peko:hub:b1ec  (peko, elsewhere)",
                 "unnamed person  user:hub:7777  (person, elsewhere)",
+                "Maya Lin @maya  user:hub:9a2f  (person, elsewhere)",
             ]
         );
     }

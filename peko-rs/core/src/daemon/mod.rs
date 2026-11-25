@@ -473,6 +473,10 @@ impl Daemon {
                 // first, then finished tasks are purged from every
                 // registry that actually holds them.
                 _ = janitor_tick.tick() => {
+                    // ADR-124: names people changed on PekoHub.
+                    // In the background: the loop does not wait on PekoHub.
+                    drop(app_state.refresh_people_names());
+
                     let engine = self.cron_engine.as_ref()
                         .expect("cron_engine initialized earlier in run()");
                     match engine.reconcile_running_runs().await {

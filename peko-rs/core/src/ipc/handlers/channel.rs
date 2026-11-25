@@ -82,6 +82,13 @@ pub(crate) trait ChannelHost: Send + Sync {
     fn tunnel_channel_port(&self) -> Option<Arc<crate::tunnel::TunnelChannelPort>> {
         None
     }
+
+    /// ADR-124: ask PekoHub now for the names and handles of the people
+    /// this runtime knows, so a person just met reads by name rather than
+    /// waiting for the hourly refresh. Default: nothing to wait for.
+    fn refresh_people_names(&self) -> Option<tokio::task::JoinHandle<()>> {
+        None
+    }
 }
 
 /// `channel` domain request handler. Constructed with an `Arc<dyn
@@ -410,9 +417,14 @@ impl ChannelHandler {
             .host
             .tunnel_channel_port()
             .map(|t| Arc::clone(t.local()));
-        let display_name = match &store {
-            Some(store) => store.person_display_name().await,
-            None => None,
+        // ADR-124: you are named on your own screen even before signing
+        // in, by the name you chose here or your login name.
+        let you_are = match &store {
+            Some(store) => crate::tunnel::people::person_in(store).await,
+            None => crate::tunnel::people::Person {
+                name: crate::tunnel::people::person_name(None, None),
+                handle: None,
+            },
         };
         let me = port.actor_info(&ActorRef::User("local".into())).await;
         let mut forms: Vec<String> = membership
@@ -446,8 +458,13 @@ impl ChannelHandler {
             if let Some(local_id) = &info.local_id {
                 aliases.push(local_id.clone());
             }
+            let handle = if you {
+                you_are.handle.clone()
+            } else {
+                info.handle.clone()
+            };
             let name = if you {
-                display_name.clone()
+                you_are.name.clone()
             } else {
                 info.local_id
                     .as_ref()
@@ -464,6 +481,7 @@ impl ChannelHandler {
                         aliases: Vec::new(),
                         kind: info.kind.clone(),
                         name: None,
+                        handle: None,
                         you,
                         here,
                     });
@@ -472,6 +490,9 @@ impl ChannelHandler {
             };
             if person.name.is_none() {
                 person.name = name;
+            }
+            if person.handle.is_none() {
+                person.handle = handle;
             }
             person.here |= here;
             for alias in aliases {
@@ -640,9 +661,16 @@ impl ChannelHandler {
                 anyhow::anyhow!("Register this runtime with PekoHub first (peko runtime register)")
             });
             match request {
-                RequestPacket::ChannelOpenPersonDm { account, name, .. } => Ok(opened(
-                    port.open_person_dm(&account, name.as_deref()).await?,
-                )),
+                RequestPacket::ChannelOpenPersonDm { account, name, .. } => {
+                    let dm = port.open_person_dm(&account, name.as_deref()).await?;
+                    // ADR-124: the person reads by name at once. Best
+                    // effort, and never long.
+                    if let Some(refresh) = self.host.refresh_people_names() {
+                        let _ =
+                            tokio::time::timeout(std::time::Duration::from_secs(5), refresh).await;
+                    }
+                    Ok(opened(dm))
+                }
                 RequestPacket::ChannelDmRequests { .. } => {
                     Ok(ResponsePacket::ChannelDmRequestsResult {
                         request_id,
@@ -4397,6 +4425,23 @@ mod wake_tests {
             ResponsePacket::Error { message, .. } => message,
             other => panic!("expected Error, got {other:?}"),
         }
+    }
+
+    /// Before this computer signs in to PekoHub, the person reads by
+    /// their login name here rather than by no name at all.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn you_are_named_before_signing_in() {
+        let fx = Fixture::new().await;
+        let ResponsePacket::ChannelInfoResult { people, .. } =
+            fx.info(&fx.group, &CallerContext::local()).await
+        else {
+            panic!("expected ChannelInfoResult");
+        };
+        let you: Vec<_> = people.iter().filter(|p| p.you).collect();
+        assert_eq!(you.len(), 1, "{people:?}");
+        let login = peko_identity::runtime_metadata::HostInfo::login_name();
+        assert!(login.is_some());
+        assert_eq!(you[0].name, login);
     }
 
     #[tokio::test(flavor = "multi_thread")]

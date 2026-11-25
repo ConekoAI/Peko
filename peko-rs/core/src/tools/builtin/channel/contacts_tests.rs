@@ -114,6 +114,74 @@ async fn list_and_alias_resolution_are_scoped_to_current_channels() {
     assert!(!listed.to_string().contains(&visitor.address));
 }
 
+/// ADR-124: two people of one name are told apart by their PekoHub
+/// handles, which pekos see beside the name and resolve by.
+#[tokio::test]
+async fn people_of_one_name_are_told_apart_by_handle() {
+    let temp = tempfile::tempdir().unwrap();
+    let port = Arc::new(ChannelStore::new(ChannelConfig {
+        runtime_dir: temp.path().into(),
+        shared_dir: None,
+    }));
+    let a = PrincipalId("prin_a".into());
+    register(&*port, &ActorRef::from(&a), "Alice").await;
+    let sam = |id: &'static str| {
+        let port = port.clone();
+        async move {
+            port.register_actor(
+                &ActorRef::User(id.into()),
+                Some(&format!("hub-{id}")),
+                None,
+                Some(&format!("key-{id}")),
+                Some("Sam"),
+                peko_channel::Registration::Private,
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let first = sam("sam1").await;
+    let second = sam("sam2").await;
+    port.refresh_people(&[
+        (first.hub_id.clone().unwrap(), None, Some("sam-lee".into())),
+        (second.hub_id.clone().unwrap(), None, Some("sam-ng".into())),
+    ])
+    .await
+    .unwrap();
+    let group = port.create(&a, CreateOpts::runtime("team")).await.unwrap();
+    port.invite(&group, &a, &first.subject()).await.unwrap();
+    port.invite(&group, &a, &second.subject()).await.unwrap();
+    let tool = ContactsTool::new(port.clone(), Weak::new());
+    let ctx = context(&a);
+
+    let listed = tool
+        .execute_with_context(json!({"action":"list"}), &ctx)
+        .await
+        .unwrap();
+    let handles: Vec<_> = listed["actors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|actor| actor["name"] == "Sam")
+        .map(|actor| actor["handle"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(handles.len(), 2, "{listed}");
+    assert!(handles.contains(&"sam-lee".to_string()));
+
+    let ambiguous = tool
+        .execute_with_context(json!({"action":"resolve", "reference":"Sam"}), &ctx)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(ambiguous.contains("Several actors"), "{ambiguous}");
+    let resolved = tool
+        .execute_with_context(json!({"action":"resolve", "reference":"@sam-ng"}), &ctx)
+        .await
+        .unwrap();
+    assert_eq!(resolved["actor"]["address"], second.address);
+    assert_eq!(resolved["actor"]["handle"], "sam-ng");
+}
+
 /// ADR-078 D4: a run acting for anyone but the owner sees only its own
 /// conversation — not the principal's other channels, their rosters, or
 /// the contacts it learned — and cannot learn new contacts.

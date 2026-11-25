@@ -513,6 +513,15 @@ pub enum RequestPacket {
         discard_unsent: bool,
     },
 
+    /// Set what this computer's person is called (ADR-124): 1 to 64
+    /// characters, without control characters. Signed in to PekoHub, the
+    /// Hub takes it first (and may refuse it) and every conversation of
+    /// theirs follows; signed out, it stays on this computer until they
+    /// sign in. Local callers only. Answered with `Done`; `tunnel_status`
+    /// then reports it as `person_name`.
+    #[serde(rename = "person_name_set")]
+    PersonNameSet { request_id: u64, name: String },
+
     // ── Tunnel (ADR-035) ──
     #[serde(rename = "tunnel_stop")]
     TunnelStop { request_id: u64 },
@@ -1498,6 +1507,7 @@ impl RequestPacket {
             | Self::TunnelStatus { request_id }
             | Self::RuntimeRegister { request_id, .. }
             | Self::RuntimeUnregister { request_id, .. }
+            | Self::PersonNameSet { request_id, .. }
             | Self::Status { request_id }
             | Self::InstanceSetStatus { request_id, .. }
             | Self::InstanceSetExposure { request_id, .. }
@@ -2798,6 +2808,15 @@ pub enum ResponsePacket {
         /// display name, else its handle).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         account_name: Option<String>,
+        /// What this computer's person is called (ADR-124): their PekoHub
+        /// name when signed in, else the name they chose here, else their
+        /// login name on this computer (neither of which crosses
+        /// PekoHub). Absent from older daemons.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        person_name: Option<String>,
+        /// Their PekoHub handle, while signed in (ADR-124).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        person_handle: Option<String>,
     },
 
     /// Comprehensive daemon status payload (issue #8). Includes tunnel
@@ -3531,6 +3550,10 @@ pub struct ChannelPerson {
     /// display name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// A person's PekoHub handle, when known (ADR-124): unique, where
+    /// names may repeat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handle: Option<String>,
     /// This runtime's own person.
     #[serde(default)]
     pub you: bool,
