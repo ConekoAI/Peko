@@ -1,6 +1,6 @@
 # Peko CLI Reference
 
-Generated from the CLI's own `--help` output by `scripts/gen_cli_reference.py` (peko 0.5.0). Regenerate it after changing any command; `peko <command> --help` shows the same text.
+Generated from the CLI's own `--help` output by `scripts/gen_cli_reference.py` (peko 0.6.0). Regenerate it after changing any command; `peko <command> --help` shows the same text.
 
 ## `peko`
 
@@ -40,6 +40,7 @@ Commands:
   channel        Direct messages and group chats with people and pekos
   model          LLM model management (runtime model catalog)
   device         Your account's computers and phones
+  network        How this computer connects to your other computers and people's
   secret         Secrets your pekos asked you for
   browser        The browser your pekos use
   computer       Your pekos using this computer: its screen, mouse and keyboard
@@ -1168,6 +1169,8 @@ Options:
       --credential-id <CREDENTIAL_ID>  Reference an existing vault credential id instead of storing a new key
       --context-window <TOKENS>        Context window in tokens. Unknown when omitted
       --max-output-tokens <TOKENS>     Maximum output tokens. Unknown when omitted
+      --effort <LEVEL>                 How hard the model thinks on every turn: low, medium, high, xhigh or max. Omitted, no effort is sent (the provider's own default)
+      --effort-levels <LEVELS>         The levels the model takes, comma-separated. Read from the endpoint's model list when omitted
       --no-key                         Endpoint does not require an API key
       --header <NAME=VALUE>            Extra HTTP header; repeat for multiple headers
       --spec <JSON>                    Optional capability and pricing descriptor as JSON
@@ -1188,6 +1191,7 @@ Arguments:
 
 Options:
       --note <TEXT>              Replace the user note attached to this entry. Pass an empty string in `--note ""` to clear an existing note. Omit the flag to leave the note unchanged. Capped at 500 chars
+      --effort <LEVEL>           Set how hard the model thinks on every turn (low, medium, high, xhigh, max), or `none` to send no effort
       --dry-run                  Print what would change without touching the catalog
 ```
 
@@ -1310,6 +1314,99 @@ Usage: peko device deny [OPTIONS] <ID>
 
 Arguments:
   <ID>  Its id (`apr_owner…`, `apr_keychange…`, `apr_devreset…`)
+
+```
+
+## `peko network`
+
+```text
+How this computer connects to your other computers and people's
+
+By default everything goes through PekoHub. `automatic` links directly with computers on the same network (a LAN, a VPN, Tailscale); `direct` never uses PekoHub for conversations.
+
+Examples: peko network status peko network mode automatic peko network mode direct --listen 10.0.0.5:11438 peko network with people peko network peer add 10.0.0.12:11438
+
+Usage: peko network [OPTIONS] <COMMAND>
+
+Commands:
+  status  How this computer connects, and how each computer is reached
+  mode    Choose how this computer connects: pekohub, automatic or direct
+  with    Choose which computers this one links with directly
+  peer    Addresses to dial without being told them
+  retry   Dial the computers this one knows addresses for, now
+  help    Print this message or the help of the given subcommand(s)
+
+```
+
+### `peko network status`
+
+```text
+How this computer connects, and how each computer is reached
+
+Usage: peko network status [OPTIONS]
+
+```
+
+### `peko network mode`
+
+```text
+Choose how this computer connects: pekohub, automatic or direct
+
+Usage: peko network mode [OPTIONS] <MODE>
+
+Arguments:
+  <MODE>
+          Possible values:
+          - pekohub:   Everything through PekoHub (the default)
+          - automatic: Directly when the other computer is on the same network, through PekoHub otherwise
+          - direct:    Never through PekoHub; messages wait until the other computer is on the same network
+
+Options:
+      --listen <LISTEN>
+          Listen for direct links here (`ip:port`, default 0.0.0.0:11438)
+
+      --yes
+          Do not ask before turning PekoHub off for conversations
+```
+
+### `peko network with`
+
+```text
+Choose which computers this one links with directly
+
+Usage: peko network with [OPTIONS] <WITH>
+
+Arguments:
+  <WITH>
+          Possible values:
+          - mine:   The computers on your own account
+          - people: Also the computers of people you talk with
+
+```
+
+### `peko network peer`
+
+```text
+Addresses to dial without being told them
+
+Usage: peko network peer [OPTIONS] <COMMAND>
+
+Commands:
+  add     Dial this address without being told it (any address you write)
+  remove  Stop dialing this address
+  help    Print this message or the help of the given subcommand(s)
+
+```
+
+### `peko network retry`
+
+```text
+Dial the computers this one knows addresses for, now
+
+Usage: peko network retry [OPTIONS] [RUNTIME_ID]
+
+Arguments:
+  [RUNTIME_ID]  One computer's runtime id; every one without
 
 ```
 
