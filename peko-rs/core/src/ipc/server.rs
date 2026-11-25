@@ -1195,6 +1195,8 @@ mod buffer_tests {
         // 2048 B default, comfortably under `IPC_SEND_BUFFER_BYTES`.
         let models: Vec<crate::ipc::packet::ModelSummary> = (0..15)
             .map(|i| crate::ipc::packet::ModelSummary {
+                effort: None,
+                effort_levels: Vec::new(),
                 id: format!("test-model-{i:02}-with-a-longer-id"),
                 display_name: format!("Test Model {i:02}"),
                 template_id: None,

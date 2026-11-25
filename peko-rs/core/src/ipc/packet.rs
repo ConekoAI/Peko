@@ -2712,10 +2712,16 @@ pub enum ResponsePacket {
     /// Result of `ModelDiscover`: the chat models the endpoint lists,
     /// in its order. A failure (a refused key, an unreachable
     /// endpoint) is a `ResponsePacket::Error`.
+    ///
+    /// `details` has one row per id in `models`, same order: what the
+    /// endpoint's list says about the model and what models.dev
+    /// suggests. Older clients read `models` only.
     #[serde(rename = "models_discovered")]
     ModelsDiscovered {
         request_id: u64,
         models: Vec<String>,
+        #[serde(default)]
+        details: Vec<DiscoveredModelWire>,
     },
 
     /// Result of `ModelAdd`. Returns the catalog-summary view
@@ -3312,6 +3318,14 @@ pub struct ModelSummary {
     /// vice versa.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spec: Option<ModelSpec>,
+    /// How hard the model thinks on every turn; absent sends no
+    /// effort (the provider's own default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<peko_provider_api::ThinkingEffort>,
+    /// The levels the model takes, as its provider listed them when it
+    /// was added; empty when not known.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effort_levels: Vec<peko_provider_api::ThinkingEffort>,
     /// Phase 2 of `feature/multi-model-subagents`: free-text
     /// user note attached to this entry. Surfaced on the IPC
     /// `model.list` / `model.show` replies and (via the
@@ -3411,7 +3425,7 @@ impl Default for ModelThinkingMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ModelPricingHint {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3535,7 +3549,7 @@ pub struct ChannelPekoWake {
 }
 
 /// Where a ChatGPT sign-in stands (ADR-115).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum PlanSignInState {
@@ -3558,12 +3572,122 @@ pub enum PlanSignInState {
 }
 
 /// A model a ChatGPT plan offers.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PlanModelWire {
     /// The wire model id.
     pub slug: String,
     pub display_name: String,
+    /// What the plan's list says about the model.
+    #[serde(default, skip_serializing_if = "ModelFactsWire::is_empty")]
+    pub reported: ModelFactsWire,
+    /// What models.dev suggests, when it knows the model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested: Option<ModelFactsWire>,
+}
+
+/// A model an endpoint lists (`ModelsDiscovered`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct DiscoveredModelWire {
+    /// The wire model id.
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// What the endpoint's own list says. Many lists say nothing but
+    /// the id.
+    #[serde(default, skip_serializing_if = "ModelFactsWire::is_empty")]
+    pub reported: ModelFactsWire,
+    /// What the public models.dev catalog says, fetched when asked:
+    /// a suggestion for the person to accept or edit, never stored
+    /// unasked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested: Option<ModelFactsWire>,
+}
+
+/// What is known about a model's limits and abilities. Every field is
+/// optional: absent is "not said", not "no".
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ModelFactsWire {
+    /// Tokens the model takes in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_input: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_input: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_input: Option<bool>,
+    /// Function calling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<ModelThinkingFactsWire>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<ModelPricingHint>,
+}
+
+impl ModelFactsWire {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// How a model thinks.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ModelThinkingFactsWire {
+    pub supported: bool,
+    /// `true`: thinking cannot be turned off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required: Option<bool>,
+    /// Effort levels the model takes, lowercase, as the source names
+    /// them (`low`, `medium`, `high`, `xhigh`, `max`, `none`, …). Empty
+    /// when thinking is only on or off.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub efforts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_effort: Option<String>,
+}
+
+impl From<peko_providers::discovery::ModelFacts> for ModelFactsWire {
+    fn from(f: peko_providers::discovery::ModelFacts) -> Self {
+        Self {
+            context_window: f.context_window,
+            max_output_tokens: f.max_output_tokens,
+            image_input: f.image_input,
+            audio_input: f.audio_input,
+            video_input: f.video_input,
+            tools: f.tools,
+            thinking: f.thinking.map(|t| ModelThinkingFactsWire {
+                supported: t.supported,
+                required: t.required,
+                efforts: t.efforts,
+                default_effort: t.default_effort,
+            }),
+            pricing: f.pricing.map(|p| ModelPricingHint {
+                input_per_million: p.input_per_million,
+                output_per_million: p.output_per_million,
+                cache_read_per_million: p.cache_read_per_million,
+                cache_write_per_million: p.cache_write_per_million,
+            }),
+        }
+    }
+}
+
+impl From<peko_providers::discovery::DiscoveredModel> for DiscoveredModelWire {
+    fn from(m: peko_providers::discovery::DiscoveredModel) -> Self {
+        Self {
+            id: m.id,
+            display_name: m.display_name,
+            reported: m.reported.into(),
+            suggested: m.suggested.map(Into::into),
+        }
+    }
 }
 
 /// Explicit model endpoint settings, matching `peko model add`.
@@ -3616,6 +3740,14 @@ pub struct ModelAddArgs {
     pub spec: Option<ModelSpec>,
     #[serde(default)]
     pub compat: Option<peko_provider_api::ProviderCompat>,
+    /// How hard the model thinks on every turn (`low` … `max`);
+    /// absent or `none` sends no effort.
+    #[serde(default)]
+    pub effort: Option<peko_provider_api::ThinkingEffort>,
+    /// The levels the model takes, as its endpoint (or models.dev)
+    /// listed them, kept for changing the effort later.
+    #[serde(default)]
+    pub effort_levels: Vec<peko_provider_api::ThinkingEffort>,
     #[serde(default)]
     pub note: Option<String>,
 }
@@ -3666,6 +3798,12 @@ pub struct ModelUpdateArgs {
     /// video input here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spec: Option<ModelSpec>,
+    /// Replace the effort; `none` clears it (the provider's default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<peko_provider_api::ThinkingEffort>,
+    /// Replace the levels the model takes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort_levels: Option<Vec<peko_provider_api::ThinkingEffort>>,
 }
 
 /// Structured outcome of a live model ping. Mirrors
@@ -4790,6 +4928,8 @@ mod tests {
         let resp = ResponsePacket::ModelAdded {
             request_id: 914,
             model: ModelSummary {
+                effort: None,
+                effort_levels: Vec::new(),
                 id: "anthropic".to_string(),
                 display_name: "Anthropic".to_string(),
                 template_id: Some("anthropic".to_string()),

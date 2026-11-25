@@ -28,6 +28,8 @@ use std::time::Instant;
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 
+use crate::discovery::{self, DiscoveredModel};
+
 use crate::adapters::{AnthropicAdapter, AnyAdapter, ApiAdapter, OpenAiAdapter};
 use crate::catalog::{ApiFormat, ModelConfig};
 use crate::transport::client::{AuthConfig, HttpClient};
@@ -144,15 +146,18 @@ impl Validator {
 
 /// The chat models an endpoint offers, from its own list (`GET /models`;
 /// `GET /v1/models` for Anthropic Messages), so a model is chosen
-/// without knowing its id. Ids come back in the endpoint's order, with a
-/// Gemini-style `models/` prefix removed and embedding, speech, image
-/// and moderation models left out (anyone can still type one in).
-/// Errors are one line, safe to show as is.
+/// without knowing its id, with whatever the list says about each one's
+/// limits and abilities ([`crate::discovery`]). Models come back in the
+/// endpoint's order, with a Gemini-style `models/` prefix removed and
+/// embedding, speech, image and moderation models left out (anyone can
+/// still type one in). `suggested` is left empty; callers add
+/// suggestions with [`crate::discovery::add_suggestions`]. Errors are
+/// one line, safe to show as is.
 impl Validator {
     pub async fn list_models(
         config: &ModelConfig,
         api_key: Option<&SecretString>,
-    ) -> Result<Vec<String>, String> {
+    ) -> Result<Vec<DiscoveredModel>, String> {
         Self::list_models_within(config, api_key, VALIDATOR_TIMEOUT_SECS).await
     }
 
@@ -160,17 +165,7 @@ impl Validator {
         config: &ModelConfig,
         api_key: Option<&SecretString>,
         timeout_secs: u64,
-    ) -> Result<Vec<String>, String> {
-        #[derive(Deserialize)]
-        struct Listed {
-            id: String,
-        }
-        #[derive(Deserialize)]
-        struct ListModels {
-            #[serde(default)]
-            data: Vec<Listed>,
-        }
-
+    ) -> Result<Vec<DiscoveredModel>, String> {
         if config.base_url.trim().is_empty() {
             return Err("No base URL".to_string());
         }
@@ -180,16 +175,15 @@ impl Validator {
             ApiFormat::AnthropicMessages => "/v1/models?limit=1000",
             ApiFormat::OpenaiCompletions | ApiFormat::OpenAiResponses => "/models",
         };
-        match client.get::<ListModels>(path).await {
-            Ok(list) => {
-                let mut ids: Vec<String> = Vec::with_capacity(list.data.len());
-                for m in list.data {
-                    let id = m.id.strip_prefix("models/").unwrap_or(&m.id).to_string();
-                    if !id.is_empty() && is_chat_model(&id) && !ids.contains(&id) {
-                        ids.push(id);
+        match client.get::<serde_json::Value>(path).await {
+            Ok(body) => {
+                let mut models: Vec<DiscoveredModel> = Vec::new();
+                for m in discovery::parse_list(&body) {
+                    if is_chat_model(&m.id) && !models.iter().any(|seen| seen.id == m.id) {
+                        models.push(m);
                     }
                 }
-                Ok(ids)
+                Ok(models)
             }
             Err(e) => {
                 let outcome = map_error(e, timeout_secs);
@@ -573,6 +567,8 @@ mod tests {
         requires_key: bool,
     ) -> ModelConfig {
         ModelConfig {
+            effort: None,
+            effort_levels: Vec::new(),
             id: id.to_string(),
             display_name: id.to_string(),
             template_id: None,
@@ -655,9 +651,12 @@ mod tests {
         .await;
         let entry = make_entry("x", ApiFormat::OpenaiCompletions, base, "", true);
         let key = SecretString::from("sk-test".to_string());
-        let ids = Validator::list_models_within(&entry, Some(&key), 5)
+        let ids: Vec<String> = Validator::list_models_within(&entry, Some(&key), 5)
             .await
-            .unwrap();
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
         assert_eq!(
             ids,
             vec!["gemini-2.5-flash".to_string(), "gpt-5".to_string()]
@@ -682,10 +681,26 @@ mod tests {
         .await;
         let entry = make_entry("x", ApiFormat::AnthropicMessages, base, "", true);
         let key = SecretString::from("sk-ant-test".to_string());
-        let ids = Validator::list_models_within(&entry, Some(&key), 5)
+        let ids: Vec<String> = Validator::list_models_within(&entry, Some(&key), 5)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(ids, vec!["claude-sonnet-4-5".to_string()]);
+        // The list's own limits come back with each model.
+        let base = spawn_once(|_| {
+            ok_response(
+                r#"{"data":[{"id":"claude-sonnet-4-5","max_input_tokens":1000000,"max_tokens":64000}]}"#,
+            )
+        })
+        .await;
+        let entry = make_entry("x", ApiFormat::AnthropicMessages, base, "", true);
+        let listed = Validator::list_models_within(&entry, Some(&key), 5)
             .await
             .unwrap();
-        assert_eq!(ids, vec!["claude-sonnet-4-5".to_string()]);
+        assert_eq!(listed[0].reported.context_window, Some(1_000_000));
+        assert_eq!(listed[0].reported.max_output_tokens, Some(64_000));
         let req = rx.await.unwrap().to_ascii_lowercase();
         assert!(req.starts_with("get /v1/models?limit=1000 "), "{req}");
         assert!(req.contains("x-api-key: sk-ant-test"), "{req}");
@@ -710,9 +725,12 @@ mod tests {
             true,
         );
         let key = SecretString::from("sk-ant-test".to_string());
-        let ids = Validator::list_models_within(&entry, Some(&key), 5)
+        let ids: Vec<String> = Validator::list_models_within(&entry, Some(&key), 5)
             .await
-            .unwrap();
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
         assert_eq!(ids, vec!["claude-haiku-5-5".to_string()]);
         let req = rx.await.unwrap().to_ascii_lowercase();
         assert!(req.starts_with("get /v1/models?limit=1000 "), "{req}");

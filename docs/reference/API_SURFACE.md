@@ -1023,8 +1023,23 @@ error. `ModelTemplates` remains a compatibility endpoint returning empty
 
 `Validator::list_models(config, key)` (`peko-providers`) returns the chat
 models an endpoint lists (`GET /models`, `GET /v1/models` for Anthropic
-Messages), in its order, without embedding, speech, image or moderation
-models. `peko model add` without `--model` and IPC `ModelDiscover` use it.
+Messages) as `discovery::DiscoveredModel`s, in its order, without embedding,
+speech, image or moderation models, each with the `reported` facts its list
+gives. `peko_providers::discovery` reads those facts from any list shape by
+field name (`parse_list`), and suggests the rest from models.dev
+(`Suggestions::parse` / `suggest` / `apply`, `suggestions(source)` with a
+six-hour per-process cache, `add_suggestions`, `suggestions_source()` from
+`PEKO_MODEL_SUGGESTIONS`). `peko model add` and IPC `ModelDiscover` use it;
+`chatgpt::PlanModel::details` carries the same for a ChatGPT plan.
+
+`peko_provider_api::ThinkingEffort` serializes as its lowercase wire name
+(`none`, `low`, `medium`, `high`, `xhigh`, `max`, `adaptive`;
+`as_wire` / `from_wire`, `LEVELS` the five a model can be set to).
+`ModelConfig` gains `effort: Option<ThinkingEffort>`,
+`effort_levels: Vec<ThinkingEffort>` and `validate_effort()`;
+`ProviderRuntimeOptions` gains `thinking_effort` and `max_output_tokens`,
+read through `Provider::thinking_effort()` / `max_output_tokens()` and the
+`ProviderView` methods of the same names (defaulting to `None`).
 
 ---
 

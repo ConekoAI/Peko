@@ -729,6 +729,15 @@ The API formats are `openai_completions`, `openai_responses`, and
 `anthropic_messages`. Credentials live in the vault; the catalog stores only
 references. Optional `context_window`, `max_output_tokens`, `headers`, `spec`
 (capabilities/pricing), `compat` (adapter hints), and `note` are user supplied.
+`effort` (`low` | `medium` | `high` | `xhigh` | `max`; absent = send no effort)
+is how hard the model thinks on every turn; `effort_levels` lists the levels
+the model takes, as its endpoint listed them when it was added (empty =
+unknown). A set effort must be one of `effort_levels` when those are known,
+and is refused on a `spec` whose `thinking` is `disabled`. With an effort set
+and `max_output_tokens` known, a turn asks for that many output tokens
+instead of 8,192. IPC `ModelAddArgs` and `ModelSummary` carry both keys;
+`ModelUpdateArgs` carries `effort` (`none` clears it) and `effort_levels`.
+An edited entry reaches running conversations on their next turn.
 `spec.pricing` holds USD per 1M tokens: `input_per_million`,
 `output_per_million`, and optionally `cache_read_per_million` /
 `cache_write_per_million` (unset = the input price).
@@ -755,9 +764,25 @@ The legacy `ModelTemplates` IPC response is retained with an empty `presets`
 list so old desktop clients can still use their custom-model form.
 
 `ModelDiscover { args: { base_url, api_format, key? } }` answers
-`models_discovered { models: [String] }`: the chat models the endpoint lists,
-read with that key and in the endpoint's order. The key is not stored;
-failures (a refused key, an endpoint without a list) are `error` packets.
+`models_discovered { models: [String], details: [DiscoveredModel] }`: the
+chat models the endpoint lists, read with that key and in the endpoint's
+order. The key is not stored; failures (a refused key, an endpoint without a
+list) are `error` packets. `details` has one row per id, same order:
+`{ id, display_name?, reported?, suggested? }`. `reported` is what the
+endpoint's own list says; `suggested` is the models.dev entry for the model
+(matched by the endpoint's host, then by the model's first-party entry),
+fetched when asked and never stored unasked. Both are `ModelFacts`, every
+field optional (absent = not said): `context_window`, `max_output_tokens`,
+`image_input`, `audio_input`, `video_input`, `tools`, `pricing` (as
+`spec.pricing`), and `thinking { supported, required?, efforts?: [String],
+default_effort? }`, with efforts lowercase as the source names them. Many
+lists (OpenAI API keys, GLM, MiniMax) carry ids only. `PEKO_MODEL_SUGGESTIONS`
+set to `off` turns suggestions off; a URL replaces models.dev's. The
+ChatGPT sign-in's `models` rows carry the same `reported` / `suggested`.
+
+A model without a `context_window` runs as if it took 300,000 tokens
+(`peko_engine::agentic_loop::FALLBACK_CONTEXT_WINDOW_TOKENS`; 128,000 before
+2026-11-25).
 
 Agent configs carry `preferred_model_id` only — never an inline
 `[provider]` block. The v3-cleanup series

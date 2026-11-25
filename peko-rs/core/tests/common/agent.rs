@@ -71,6 +71,8 @@ fn seed_model_in_catalog(
     }
     let now = chrono::Utc::now();
     let entry = ModelConfig {
+        effort: None,
+        effort_levels: Vec::new(),
         id: id.to_string(),
         display_name: display_name.to_string(),
         template_id: None,

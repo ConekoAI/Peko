@@ -118,6 +118,12 @@ fn claude_generation(model_id: &str) -> Option<(u32, u32)> {
     Some((major, minor))
 }
 
+/// Tokens of `max_tokens` kept for the answer when a thinking budget
+/// is set.
+const THINKING_ANSWER_ROOM: u32 = 2048;
+/// Anthropic's smallest thinking budget.
+const MIN_THINKING_BUDGET: u32 = 1024;
+
 /// F25: model ids that take Anthropic's *adaptive* thinking mode
 /// (`thinking: {type: "adaptive"}` + `output_config: {effort}`): every
 /// Claude model from 4.6 on (Opus/Sonnet 4.6, Opus 4.7/4.8, and every
@@ -558,7 +564,7 @@ impl super::ApiAdapter for AnthropicAdapter {
                         crate::ThinkingEffort::Low => "low",
                         crate::ThinkingEffort::Medium => "medium",
                         crate::ThinkingEffort::High => "high",
-                        crate::ThinkingEffort::XHigh => "max",
+                        crate::ThinkingEffort::XHigh => "xhigh",
                         crate::ThinkingEffort::Max => "max",
                         crate::ThinkingEffort::Adaptive => "high",
                         crate::ThinkingEffort::None => "medium",
@@ -567,8 +573,13 @@ impl super::ApiAdapter for AnthropicAdapter {
                     body["output_config"] = json!({"effort": effort_str});
                 }
                 (effort, false) => {
-                    let budget = effort.to_anthropic_budget_tokens();
-                    if budget > 0 {
+                    // The budget must stay under `max_tokens`, with room
+                    // left for the answer; Anthropic refuses otherwise.
+                    let max_tokens = body["max_tokens"].as_u64().unwrap_or(0) as u32;
+                    let budget = effort
+                        .to_anthropic_budget_tokens()
+                        .min(max_tokens.saturating_sub(THINKING_ANSWER_ROOM));
+                    if budget >= MIN_THINKING_BUDGET {
                         body["thinking"] = json!({
                             "type": "enabled",
                             "budget_tokens": budget,
@@ -2140,6 +2151,7 @@ mod tests {
         let adapter = AnthropicAdapter::new();
         let options = ChatOptions {
             thinking_effort: crate::ThinkingEffort::High,
+            max_tokens: Some(64_000),
             ..Default::default()
         };
         let (_, body) = adapter
@@ -2179,6 +2191,51 @@ mod tests {
                 .any(|(k, v)| k == "anthropic-beta" && v.contains("interleaved")),
             "adaptive mode must not attach interleaved-thinking beta, got {headers:?}"
         );
+    }
+
+    /// A budget never reaches `max_tokens`: it is cut to leave room for
+    /// the answer, and dropped when too little is left.
+    #[test]
+    fn test_build_request_budget_fits_under_max_tokens() {
+        let adapter = AnthropicAdapter::new();
+        let budget = |effort, max_tokens| {
+            let options = ChatOptions {
+                thinking_effort: effort,
+                max_tokens: Some(max_tokens),
+                ..Default::default()
+            };
+            let (_, body) = adapter
+                .build_request("kimi-for-coding", &sample_messages(), None, &options, false)
+                .unwrap();
+            body["thinking"]["budget_tokens"].as_u64()
+        };
+        assert_eq!(budget(crate::ThinkingEffort::Medium, 8192), Some(4096));
+        assert_eq!(budget(crate::ThinkingEffort::High, 8192), Some(6144));
+        assert_eq!(budget(crate::ThinkingEffort::High, 64_000), Some(32_000));
+        assert_eq!(budget(crate::ThinkingEffort::Low, 2500), None);
+    }
+
+    /// Each level reaches an adaptive model by its own name.
+    #[test]
+    fn test_build_request_adaptive_model_takes_each_level_by_name() {
+        let adapter = AnthropicAdapter::new();
+        for (effort, wire) in [
+            (crate::ThinkingEffort::Low, "low"),
+            (crate::ThinkingEffort::Medium, "medium"),
+            (crate::ThinkingEffort::High, "high"),
+            (crate::ThinkingEffort::XHigh, "xhigh"),
+            (crate::ThinkingEffort::Max, "max"),
+        ] {
+            let options = ChatOptions {
+                thinking_effort: effort,
+                ..Default::default()
+            };
+            let (_, body) = adapter
+                .build_request("claude-opus-5-5", &sample_messages(), None, &options, false)
+                .unwrap();
+            assert_eq!(body["thinking"]["type"], "adaptive");
+            assert_eq!(body["output_config"]["effort"], wire, "{effort:?}");
+        }
     }
 
     /// `Adaptive` effort on a non-adaptive model falls back to

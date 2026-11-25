@@ -17,8 +17,10 @@ use crate::commands::GlobalPaths;
 use anyhow::{Context, Result};
 use peko_core::common::vault::{Credential, CredentialKind, Vault};
 use peko_providers::catalog::{ApiFormat, ModelCatalog, ModelConfig};
+use peko_providers::discovery::DiscoveredModel;
 use peko_providers::spec::{PricingHint, ThinkingMode, ToolSupport};
 use peko_providers::validator::Validator;
+use peko_providers::ThinkingEffort;
 use serde::Serialize;
 
 /// Vault namespace for model API keys.
@@ -194,6 +196,15 @@ pub struct AddArgs {
     /// Maximum output tokens. Unknown when omitted.
     #[arg(long, value_name = "TOKENS")]
     max_output_tokens: Option<u32>,
+    /// How hard the model thinks on every turn: low, medium, high,
+    /// xhigh or max. Omitted, no effort is sent (the provider's own
+    /// default).
+    #[arg(long, value_name = "LEVEL", value_parser = parse_effort)]
+    effort: Option<ThinkingEffort>,
+    /// The levels the model takes, comma-separated. Read from the
+    /// endpoint's model list when omitted.
+    #[arg(long, value_name = "LEVELS", value_delimiter = ',', value_parser = parse_effort)]
+    effort_levels: Vec<ThinkingEffort>,
     /// Endpoint does not require an API key.
     #[arg(long)]
     no_key: bool,
@@ -235,9 +246,46 @@ pub struct EditArgs {
     /// 500 chars.
     #[arg(long, value_name = "TEXT", allow_hyphen_values = true)]
     note: Option<String>,
+    /// Set how hard the model thinks on every turn (low, medium, high,
+    /// xhigh, max), or `none` to send no effort.
+    #[arg(long, value_name = "LEVEL", value_parser = parse_effort)]
+    effort: Option<ThinkingEffort>,
     /// Print what would change without touching the catalog.
     #[arg(long)]
     dry_run: bool,
+}
+
+fn effort_text(effort: Option<ThinkingEffort>) -> &'static str {
+    effort.map_or("none (the provider's default)", ThinkingEffort::as_wire)
+}
+
+/// An effort level by its wire name.
+fn parse_effort(s: &str) -> std::result::Result<ThinkingEffort, String> {
+    ThinkingEffort::from_wire(s)
+        .filter(|e| *e != ThinkingEffort::Adaptive)
+        .ok_or_else(|| {
+            format!("'{s}' is not an effort level (none, low, medium, high, xhigh, max)")
+        })
+}
+
+/// The levels named in a list, those peko can send, mildest first.
+fn levels_in(names: &[String]) -> Vec<ThinkingEffort> {
+    ThinkingEffort::LEVELS
+        .into_iter()
+        .filter(|l| {
+            names
+                .iter()
+                .any(|n| ThinkingEffort::from_wire(n) == Some(*l))
+        })
+        .collect()
+}
+
+fn level_names(levels: &[ThinkingEffort]) -> String {
+    levels
+        .iter()
+        .map(|l| l.as_wire())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Execute a model subcommand.
@@ -344,6 +392,9 @@ async fn list_cmd(paths: &GlobalPaths, detailed: bool, json: bool) -> Result<()>
             if let Some(mot) = e.max_output_tokens {
                 println!("      max_output_tokens: {mot}");
             }
+            if let Some(eff) = e.effort {
+                println!("      effort:        {}", eff.as_wire());
+            }
             println!("      requires_key:  {}", e.requires_key,);
             match &e.credential_id {
                 Some(cid) => println!("      credential_id: {cid}"),
@@ -384,23 +435,18 @@ async fn templates_cmd() -> Result<()> {
 
 /// The model to add when `--model` is left out: the endpoint's only
 /// chat model, or else an error that lists them.
-async fn listed_model(probe: &ModelConfig, key: Option<&str>) -> Result<String> {
-    let key = key.map(|k| secrecy::SecretString::from(k.to_string()));
-    let models = Validator::list_models(probe, key.as_ref())
-        .await
-        .map_err(|e| {
-            anyhow::anyhow!(
-                "--model <wire-id> is required (listing the endpoint's models failed: {e})"
-            )
-        })?;
+fn listed_model(models: Result<Vec<DiscoveredModel>, String>) -> Result<DiscoveredModel> {
+    let models = models.map_err(|e| {
+        anyhow::anyhow!("--model <wire-id> is required (listing the endpoint's models failed: {e})")
+    })?;
     match models.as_slice() {
         [only] => {
-            println!("Using {only}, the only model the endpoint lists.");
+            println!("Using {}, the only model the endpoint lists.", only.id);
             Ok(only.clone())
         }
         [] => anyhow::bail!("--model <wire-id> is required; the endpoint lists no models"),
         many => {
-            let shown: Vec<&str> = many.iter().take(40).map(String::as_str).collect();
+            let shown: Vec<&str> = many.iter().take(40).map(|m| m.id.as_str()).collect();
             let more = many.len() - shown.len();
             anyhow::bail!(
                 "pick a model with --model <wire-id>. The endpoint offers:\n  {}{}",
@@ -412,6 +458,69 @@ async fn listed_model(probe: &ModelConfig, key: Option<&str>) -> Result<String> 
                 }
             )
         }
+    }
+}
+
+/// Limits left out are taken from what the endpoint's own list says
+/// about the model. What models.dev suggests is only shown, as the
+/// flags that would set it: a suggestion is the person's to accept.
+fn fill_limits(entry: &mut ModelConfig, found: &DiscoveredModel) {
+    if entry.context_window.is_none() {
+        if let Some(n) = found.reported.context_window {
+            entry.context_window = Some(n);
+            println!("Context window: {n} tokens, as the endpoint lists it.");
+        }
+    }
+    if entry.max_output_tokens.is_none() {
+        if let Some(n) = found.reported.max_output_tokens {
+            entry.max_output_tokens = Some(n);
+            println!("Max output: {n} tokens, as the endpoint lists it.");
+        }
+    }
+    let reported_levels = found
+        .reported
+        .thinking
+        .as_ref()
+        .map(|t| levels_in(&t.efforts))
+        .unwrap_or_default();
+    if entry.effort_levels.is_empty() && !reported_levels.is_empty() {
+        println!(
+            "Effort levels: {}, as the endpoint lists them.",
+            level_names(&reported_levels)
+        );
+        entry.effort_levels = reported_levels;
+    }
+    let Some(s) = &found.suggested else { return };
+    let mut flags = Vec::new();
+    if entry.context_window.is_none() {
+        if let Some(n) = s.context_window {
+            flags.push(format!("--context-window {n}"));
+        }
+    }
+    if entry.max_output_tokens.is_none() {
+        if let Some(n) = s.max_output_tokens {
+            flags.push(format!("--max-output-tokens {n}"));
+        }
+    }
+    if entry.effort_levels.is_empty() {
+        let levels = s
+            .thinking
+            .as_ref()
+            .map(|t| levels_in(&t.efforts))
+            .unwrap_or_default();
+        if !levels.is_empty() {
+            flags.push(format!(
+                "--effort-levels {}",
+                levels
+                    .iter()
+                    .map(|l| l.as_wire())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ));
+        }
+    }
+    if !flags.is_empty() {
+        println!("models.dev suggests: {}", flags.join(" "));
     }
 }
 
@@ -432,18 +541,40 @@ async fn add_cmd(args: AddArgs, paths: &GlobalPaths) -> Result<()> {
     let api_format =
         ApiFormat::from_wire(format).with_context(|| format!("unknown --api-format '{format}'"))?;
     let base_url = args.base_url.clone().context("--base-url is required")?;
+    let mut probe = ModelConfig::new("probe", api_format, base_url.clone(), String::new());
+    probe.requires_key = !args.no_key && args.key.is_some();
+    for header in &args.headers {
+        if let Some((name, value)) = header.split_once('=') {
+            probe.headers.insert(name.to_string(), value.to_string());
+        }
+    }
+    let probe_key = args
+        .key
+        .as_deref()
+        .filter(|_| !args.no_key)
+        .map(|k| secrecy::SecretString::from(k.to_string()));
+    // Listed when the model or a limit is left out; the list says what
+    // it can about each model. Unit tests name real vendor hosts with
+    // fake keys, so there only a missing model is listed, and models.dev
+    // is never asked.
+    let limits_left_out = args.context_window.is_none() || args.max_output_tokens.is_none();
+    let listed = if args.model.is_none() || (limits_left_out && !cfg!(test)) {
+        let mut listed = Validator::list_models(&probe, probe_key.as_ref()).await;
+        if let (Ok(models), false) = (&mut listed, cfg!(test)) {
+            peko_providers::discovery::add_suggestions(&base_url, models).await;
+        }
+        Some(listed)
+    } else {
+        None
+    };
+    let found = match (&args.model, listed) {
+        (None, Some(listed)) => Some(listed_model(listed)?),
+        (Some(m), Some(Ok(models))) => models.into_iter().find(|d| &d.id == m),
+        _ => None,
+    };
     let model_id = match &args.model {
         Some(m) => m.clone(),
-        None => {
-            let mut probe = ModelConfig::new("probe", api_format, base_url.clone(), String::new());
-            probe.requires_key = !args.no_key && args.key.is_some();
-            for header in &args.headers {
-                if let Some((name, value)) = header.split_once('=') {
-                    probe.headers.insert(name.to_string(), value.to_string());
-                }
-            }
-            listed_model(&probe, args.key.as_deref().filter(|_| !args.no_key)).await?
-        }
+        None => found.as_ref().map(|f| f.id.clone()).unwrap_or_default(),
     };
     let id = args.id.clone().unwrap_or_else(|| model_id.clone());
     let mut entry = ModelConfig::new(id, api_format, base_url, model_id);
@@ -453,6 +584,14 @@ async fn add_cmd(args: AddArgs, paths: &GlobalPaths) -> Result<()> {
     entry.requires_key = !args.no_key;
     entry.context_window = args.context_window;
     entry.max_output_tokens = args.max_output_tokens;
+    entry.effort_levels = ThinkingEffort::LEVELS
+        .into_iter()
+        .filter(|l| args.effort_levels.contains(l))
+        .collect();
+    if let Some(found) = &found {
+        fill_limits(&mut entry, found);
+    }
+    entry.effort = args.effort.filter(|e| e.is_enabled());
     entry.note = args.note.clone();
     entry.spec = args
         .spec
@@ -502,6 +641,21 @@ async fn add_cmd(args: AddArgs, paths: &GlobalPaths) -> Result<()> {
         println!("           api_format:   {}", entry.api_format);
         println!("           base_url:     {}", entry.base_url);
         println!("           requires_key: {}", entry.requires_key);
+        if let Some(n) = entry.context_window {
+            println!("           context_window: {n}");
+        }
+        if let Some(n) = entry.max_output_tokens {
+            println!("           max_output_tokens: {n}");
+        }
+        if let Some(e) = entry.effort {
+            println!("           effort:       {}", e.as_wire());
+        }
+        if !entry.effort_levels.is_empty() {
+            println!(
+                "           effort_levels: {}",
+                level_names(&entry.effort_levels)
+            );
+        }
         return Ok(());
     }
 
@@ -579,6 +733,11 @@ async fn edit_cmd(args: EditArgs, paths: &GlobalPaths) -> Result<()> {
         .with_context(|| format!("model not found in catalog: {id}"))?;
 
     let before_note = entry.note.clone();
+    let before_effort = entry.effort;
+    if let Some(effort) = args.effort {
+        entry.effort = Some(effort).filter(|e| e.is_enabled());
+        entry.validate_effort()?;
+    }
 
     if let Some(note) = args.note.clone() {
         if note.is_empty() {
@@ -597,19 +756,32 @@ async fn edit_cmd(args: EditArgs, paths: &GlobalPaths) -> Result<()> {
         println!("[dry-run] Would edit model '{id}'.");
         if before_note != new_note {
             println!("  note: {:?} -> {:?}", before_note, new_note);
-        } else {
+        }
+        if before_effort != entry.effort {
+            println!(
+                "  effort: {} -> {}",
+                effort_text(before_effort),
+                effort_text(entry.effort)
+            );
+        }
+        if before_note == new_note && before_effort == entry.effort {
             println!("  (no changes)");
         }
         return Ok(());
     }
 
+    let entry_effort = entry.effort;
     cat.upsert(entry)
         .await
         .with_context(|| format!("failed to update model '{id}' — note must be ≤500 chars"))?;
 
     if before_note != new_note {
         println!("Updated note on '{id}'.");
-    } else {
+    }
+    if before_effort != entry_effort {
+        println!("Effort on '{id}' is now {}.", effort_text(entry_effort));
+    }
+    if before_note == new_note && before_effort == entry_effort {
         println!("No changes to '{id}'.");
     }
 
@@ -729,6 +901,10 @@ struct ModelSummaryWire {
     headers: Vec<(String, String)>,
     /// Optional user-supplied capabilities. None means unknown.
     spec: Option<ModelSpecWire>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effort: Option<ThinkingEffort>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    effort_levels: Vec<ThinkingEffort>,
     /// Phase 2 of `feature/multi-model-subagents`: free-text
     /// user note attached to this entry. Surfaced to the parent
     /// agent via the `ModelList` tool and to operators via
@@ -759,6 +935,8 @@ impl ModelSummaryWire {
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
             spec: cfg.spec.map(ModelSpecWire::from_spec),
+            effort: cfg.effort,
+            effort_levels: cfg.effort_levels.clone(),
             note: cfg.note.clone(),
         }
     }
@@ -884,6 +1062,12 @@ fn print_detail(e: &ModelConfig) {
     if let Some(mot) = e.max_output_tokens {
         println!("    max_output_tokens:{mot}");
     }
+    if let Some(eff) = e.effort {
+        println!("    effort:          {}", eff.as_wire());
+    }
+    if !e.effort_levels.is_empty() {
+        println!("    effort_levels:   {}", level_names(&e.effort_levels));
+    }
     println!("    requires_key:    {}", e.requires_key);
     match &e.credential_id {
         Some(cid) => println!("    credential_id:   {cid}"),
@@ -961,6 +1145,20 @@ fn render_add_command(e: &ModelConfig) -> String {
     if let Some(mot) = e.max_output_tokens {
         parts.push("--max-output-tokens".to_string());
         parts.push(mot.to_string());
+    }
+    if let Some(eff) = e.effort {
+        parts.push("--effort".to_string());
+        parts.push(eff.as_wire().to_string());
+    }
+    if !e.effort_levels.is_empty() {
+        parts.push("--effort-levels".to_string());
+        parts.push(
+            e.effort_levels
+                .iter()
+                .map(|l| l.as_wire())
+                .collect::<Vec<_>>()
+                .join(","),
+        );
     }
     for (name, value) in &e.headers {
         parts.push("--header".to_string());
@@ -1448,6 +1646,8 @@ mod tests {
             credential_id: None,
             context_window: None,
             max_output_tokens: None,
+            effort: None,
+            effort_levels: Vec::new(),
             dry_run: false,
             // Phase 2 of `feature/multi-model-subagents` —
             // tests don't exercise the note flag, so the field
@@ -1506,6 +1706,8 @@ mod tests {
             credential_id: None,
             context_window: None,
             max_output_tokens: None,
+            effort: None,
+            effort_levels: Vec::new(),
             dry_run: false,
             // Phase 2 of `feature/multi-model-subagents` —
             // tests don't exercise the note flag, so the field
@@ -1542,6 +1744,8 @@ mod tests {
             credential_id: None,
             context_window: None,
             max_output_tokens: None,
+            effort: None,
+            effort_levels: Vec::new(),
             dry_run: false,
             // Phase 2 of `feature/multi-model-subagents` —
             // tests don't exercise the note flag, so the field
@@ -1576,6 +1780,8 @@ mod tests {
             credential_id: Some("no-such-credential".into()),
             context_window: None,
             max_output_tokens: None,
+            effort: None,
+            effort_levels: Vec::new(),
             dry_run: false,
             // Phase 2 of `feature/multi-model-subagents` —
             // tests don't exercise the note flag, so the field
@@ -1614,6 +1820,8 @@ mod tests {
                 credential_id: None,
                 context_window: None,
                 max_output_tokens: None,
+                effort: None,
+                effort_levels: Vec::new(),
                 dry_run: false,
                 // Phase 2 — tests don't exercise the note flag,
                 // so the field stays at its default.
@@ -1640,6 +1848,8 @@ mod tests {
                 credential_id: None,
                 context_window: None,
                 max_output_tokens: None,
+                effort: None,
+                effort_levels: Vec::new(),
                 dry_run: false,
                 // Phase 2 — tests don't exercise the note flag,
                 // so the field stays at its default.
@@ -1723,6 +1933,8 @@ mod tests {
                 credential_id: None,
                 context_window: None,
                 max_output_tokens: None,
+                effort: None,
+                effort_levels: Vec::new(),
                 dry_run: false,
                 note: Some("very cheap, use it for cron".into()),
             },
@@ -1754,6 +1966,81 @@ mod tests {
         assert!(s.contains("\"note\":\"very cheap, use it for cron\""));
     }
 
+    /// `--effort` is stored, changed and cleared; a level the model
+    /// does not take is refused.
+    #[tokio::test]
+    #[serial_test::serial(vault_passphrase)]
+    async fn effort_is_set_changed_and_cleared() {
+        let paths = fresh_paths();
+        let id = "claude-opus-5-5";
+        add_cmd(
+            AddArgs {
+                no_key: false,
+                headers: vec![],
+                spec: None,
+                compat: None,
+                template: None,
+                id: Some(id.into()),
+                model: Some(id.into()),
+                display_name: None,
+                custom: false,
+                api_format: Some("anthropic_messages".into()),
+                base_url: Some("https://api.anthropic.com".into()),
+                key: Some("sk-ant-test-key".into()),
+                credential_id: None,
+                context_window: None,
+                max_output_tokens: None,
+                effort: Some(ThinkingEffort::High),
+                effort_levels: vec![
+                    ThinkingEffort::Max,
+                    ThinkingEffort::Low,
+                    ThinkingEffort::High,
+                ],
+                dry_run: false,
+                note: None,
+            },
+            &paths,
+        )
+        .await
+        .expect("add succeeds");
+        let read = || async {
+            peko_providers::catalog::ModelCatalog::load_or_init(
+                &paths
+                    .config_dir
+                    .join(peko_providers::catalog::ModelCatalog::FILENAME),
+            )
+            .await
+            .unwrap()
+            .get(id)
+            .await
+            .unwrap()
+        };
+        let entry = read().await;
+        assert_eq!(entry.effort, Some(ThinkingEffort::High));
+        assert_eq!(
+            entry.effort_levels,
+            [
+                ThinkingEffort::Low,
+                ThinkingEffort::High,
+                ThinkingEffort::Max
+            ]
+        );
+        let edit = |effort| EditArgs {
+            id: id.into(),
+            note: None,
+            effort: Some(effort),
+            dry_run: false,
+        };
+        let err = edit_cmd(edit(ThinkingEffort::Medium), &paths)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("low, high, max"), "{err}");
+        edit_cmd(edit(ThinkingEffort::Max), &paths).await.unwrap();
+        assert_eq!(read().await.effort, Some(ThinkingEffort::Max));
+        edit_cmd(edit(ThinkingEffort::None), &paths).await.unwrap();
+        assert_eq!(read().await.effort, None);
+    }
+
     /// `--note ""` clears the note via the edit path.
     #[tokio::test]
     #[serial_test::serial(vault_passphrase)]
@@ -1776,6 +2063,8 @@ mod tests {
                 credential_id: None,
                 context_window: None,
                 max_output_tokens: None,
+                effort: None,
+                effort_levels: Vec::new(),
                 dry_run: false,
                 note: Some("very cheap, use it for cron".into()),
             },
@@ -1788,6 +2077,7 @@ mod tests {
             EditArgs {
                 id: "anthropic-claude-3-5-haiku-latest".into(),
                 note: Some(String::new()),
+                effort: None,
                 dry_run: false,
             },
             &paths,
@@ -1832,6 +2122,8 @@ mod tests {
                 credential_id: None,
                 context_window: None,
                 max_output_tokens: None,
+                effort: None,
+                effort_levels: Vec::new(),
                 dry_run: false,
                 note: None,
             },
@@ -1846,6 +2138,7 @@ mod tests {
             EditArgs {
                 id: "anthropic-claude-3-5-haiku-latest".into(),
                 note: Some(too_long),
+                effort: None,
                 dry_run: false,
             },
             &paths,
@@ -1866,6 +2159,20 @@ mod tests {
         assert!(t.ends_with('…'));
         // 9 chars + ellipsis char
         assert!(t.chars().count() <= 11);
+    }
+
+    #[test]
+    fn effort_levels_are_named_and_kept_in_order() {
+        assert_eq!(parse_effort("XHigh"), Ok(ThinkingEffort::XHigh));
+        assert!(parse_effort("adaptive").is_err());
+        assert!(parse_effort("minimal")
+            .unwrap_err()
+            .contains("not an effort level"));
+        let names = ["max", "minimal", "low", "none"].map(String::from);
+        assert_eq!(
+            levels_in(&names),
+            [ThinkingEffort::Low, ThinkingEffort::Max]
+        );
     }
 
     #[tokio::test]
@@ -2087,6 +2394,8 @@ mod tests {
                 credential_id: None,
                 context_window: None,
                 max_output_tokens: None,
+                effort: None,
+                effort_levels: Vec::new(),
                 dry_run: true,
                 // Phase 2 — tests don't exercise the note flag,
                 // so the field stays at its default.

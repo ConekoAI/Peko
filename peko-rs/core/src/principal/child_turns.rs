@@ -285,7 +285,16 @@ struct LiveDefinition {
 struct CurrentDefinition {
     agent_config: AgentConfig,
     model: Option<String>,
+    /// The catalog entry `provider` was built from, so an edit to the
+    /// entry itself (effort, limits, headers, endpoint) reaches the
+    /// next turn too, not only a change of `model`.
+    entry: Option<serde_json::Value>,
     provider: Arc<peko_providers::Provider>,
+}
+
+/// A catalog entry as compared between turns.
+fn entry_print(config: &peko_providers::ModelConfig) -> Option<serde_json::Value> {
+    serde_json::to_value(config).ok()
 }
 
 impl PeerChildTurns {
@@ -334,12 +343,13 @@ impl PeerChildTurns {
         // (`Provider::with_model_id` on a clone + pre-flight
         // `SpecGate::check`), so the cached bundle stays
         // override-neutral.
-        let (provider, _choice) = llm_resolver
+        let (provider, choice) = llm_resolver
             .build(peko_providers::resolver::ResolveRequest {
                 agent_model: preferred_model_id.as_deref(),
                 ..Default::default()
             })
             .await?;
+        let entry = entry_print(&choice.config);
 
         // Session manager mirrors `agent_runner`'s root-agent
         // construction (see `peer_child_session_manager`).
@@ -381,6 +391,7 @@ impl PeerChildTurns {
             current: tokio::sync::Mutex::new(CurrentDefinition {
                 agent_config,
                 model: preferred_model_id,
+                entry,
                 provider,
             }),
         };
@@ -1076,16 +1087,19 @@ impl PeerChildTurns {
                 "cannot read a conversation or root role; this turn keeps the one it had: {e:#}"
             ),
         }
-        if model != current.model {
-            let (provider, _choice) = live
-                .llm_resolver
-                .build(peko_providers::resolver::ResolveRequest {
-                    agent_model: model.as_deref(),
-                    ..Default::default()
-                })
-                .await?;
-            current.provider = provider;
+        // A catalog lookup, no network: the provider is rebuilt when the
+        // pinned model changes or its catalog entry was edited.
+        let request = peko_providers::resolver::ResolveRequest {
+            agent_model: model.as_deref(),
+            ..Default::default()
+        };
+        let choice = live.llm_resolver.resolve(request).await;
+        let entry = choice.as_ref().ok().and_then(|c| entry_print(&c.config));
+        if model != current.model || entry != current.entry {
+            let choice = choice?;
+            current.provider = live.llm_resolver.build_provider(&choice.config).await?;
             current.model = model;
+            current.entry = entry;
         }
         Ok(self
             .executor
@@ -1792,6 +1806,66 @@ mod tests {
         assert!(kinds(&unknown).is_empty());
         assert!(text_of(&unknown).starts_with("look"));
         assert!(text_of(&unknown).contains("cannot take images, audio or video"));
+    }
+
+    /// An edit to the peko's model entry (here its effort) reaches the
+    /// conversation's next turn without a restart; before, only a
+    /// switch to another model id rebuilt the provider.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn an_edited_model_entry_reaches_the_next_turn() {
+        use peko_provider_api::ThinkingEffort;
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("PEKO_HOME", tmp.path());
+        peko_identity::init_test_env();
+        let (llm, _adapter) = peko_providers::resolver::LlmResolver::mock(
+            peko_providers::mock::MockAdapter::new(),
+            tmp.path().join("models.toml"),
+        )
+        .await;
+        let manager = crate::principal::PrincipalManager::with_path_resolver(
+            crate::common::paths::PathResolver::with_dirs(
+                tmp.path().join("config"),
+                tmp.path().join("data"),
+                tmp.path().join("cache"),
+            ),
+            Arc::new(crate::principal::DefaultPrincipalMemoryFactory),
+            Arc::new(crate::principal::DefaultPrincipalRouterFactory),
+            crate::async_exec::executor::standalone_inbox_registry(),
+        )
+        .with_resolver(llm.clone());
+        let principal = manager
+            .create(test_config("editor", PrincipalRoutingConfig::default()))
+            .await
+            .unwrap();
+        let turns = PeerChildTurns::build(
+            &principal,
+            &llm,
+            Arc::new(Observability::new("test")),
+            Some(manager.shared_inbox_registry()),
+            crate::tools::runtime::ToolingRuntime::standalone(),
+        )
+        .await
+        .unwrap();
+        let effort = |executor: &SubagentExecutor| {
+            executor
+                .provider_for_cost_estimate()
+                .map(|p| p.thinking_effort())
+        };
+        let before = turns.turn_executor(None).await.unwrap();
+        assert_eq!(effort(&before), Some(ThinkingEffort::None));
+
+        let mut entry = llm.catalog().get("mock").await.unwrap();
+        entry.effort = Some(ThinkingEffort::High);
+        llm.catalog().upsert(entry).await.unwrap();
+        let after = turns.turn_executor(None).await.unwrap();
+        assert_eq!(effort(&after), Some(ThinkingEffort::High));
+        // Unchanged, the provider is kept.
+        let again = turns.turn_executor(None).await.unwrap();
+        assert!(Arc::ptr_eq(
+            again.provider_for_cost_estimate().unwrap(),
+            after.provider_for_cost_estimate().unwrap()
+        ));
     }
 
     /// A per-message model is a catalog id, resolved to that entry's own

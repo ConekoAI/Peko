@@ -218,6 +218,8 @@ fn seed_mock_provider_catalog(
     let base_url = mock_llm_url.trim_end_matches('/').to_string();
     let now = chrono::Utc::now();
     let entry = ModelConfig {
+        effort: None,
+        effort_levels: Vec::new(),
         id: "mock-llm".to_string(),
         display_name: "mock-llm".to_string(),
         template_id: None,

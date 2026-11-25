@@ -141,6 +141,8 @@ mod tests {
 
     fn anthropic_info() -> ModelSummary {
         ModelSummary {
+            effort: None,
+            effort_levels: Vec::new(),
             id: "anthropic".to_string(),
             display_name: "Anthropic".to_string(),
             template_id: Some("anthropic".to_string()),
@@ -162,6 +164,8 @@ mod tests {
 
     fn ollama_info() -> ModelSummary {
         ModelSummary {
+            effort: None,
+            effort_levels: Vec::new(),
             id: "ollama".to_string(),
             display_name: "Ollama".to_string(),
             template_id: Some("ollama".to_string()),
@@ -184,6 +188,8 @@ mod tests {
     /// Disabled-flavor entry to verify enabled=false flows through.
     fn disabled_info() -> ModelSummary {
         ModelSummary {
+            effort: None,
+            effort_levels: Vec::new(),
             id: "disabled-model".to_string(),
             display_name: "Disabled model".to_string(),
             template_id: None,
@@ -313,6 +319,8 @@ mod tests {
     #[tokio::test]
     async fn model_list_emits_user_added_models() {
         let custom = ModelSummary {
+            effort: None,
+            effort_levels: Vec::new(),
             id: "my-internal-llm".to_string(),
             display_name: "Internal LLM".to_string(),
             template_id: None,

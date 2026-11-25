@@ -173,6 +173,8 @@ mod tests {
 
     fn stub_anthropic() -> ModelSummary {
         ModelSummary {
+            effort: None,
+            effort_levels: Vec::new(),
             id: "anthropic".to_string(),
             display_name: "Anthropic".to_string(),
             template_id: Some("anthropic".to_string()),

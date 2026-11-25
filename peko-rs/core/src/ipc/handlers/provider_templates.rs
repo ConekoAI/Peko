@@ -12,19 +12,31 @@ use crate::ipc::send_response::send_response;
 use crate::ipc::server::PeerAddr;
 use async_trait::async_trait;
 use peko_auth::caller::CallerContext;
+use peko_providers::discovery::{self, DiscoveredModel};
 use peko_providers::validator::Validator;
 use peko_providers::{ApiFormat, ModelConfig};
 
-pub(crate) struct ProviderTemplatesHandler;
+pub(crate) struct ProviderTemplatesHandler {
+    /// Where suggestions come from (`PEKO_MODEL_SUGGESTIONS`), `None`
+    /// when turned off.
+    suggestions: Option<String>,
+}
 
 impl ProviderTemplatesHandler {
     pub(crate) fn new() -> Self {
-        Self
+        Self {
+            suggestions: discovery::suggestions_source(),
+        }
     }
 }
 
-/// The chat models the endpoint in `args` lists.
-pub(crate) async fn discover(args: ModelDiscoverArgs) -> Result<Vec<String>, String> {
+/// The chat models the endpoint in `args` lists, with what its list
+/// says about each and, from `suggestions` (a models.dev URL; `None`
+/// for none), what the public catalog suggests.
+pub(crate) async fn discover(
+    args: ModelDiscoverArgs,
+    suggestions: Option<&str>,
+) -> Result<Vec<DiscoveredModel>, String> {
     let base_url = args.base_url.trim();
     if base_url.is_empty() {
         return Err("a base URL is required".to_string());
@@ -37,7 +49,14 @@ pub(crate) async fn discover(args: ModelDiscoverArgs) -> Result<Vec<String>, Str
         .map(|k| secrecy::SecretString::from(k.trim().to_string()));
     let mut probe = ModelConfig::new("discover", api_format, base_url, String::new());
     probe.requires_key = key.is_some();
-    Validator::list_models(&probe, key.as_ref()).await
+    let mut models = Validator::list_models(&probe, key.as_ref()).await?;
+    if let Some(catalog) = match suggestions {
+        Some(source) => discovery::suggestions(source).await,
+        None => None,
+    } {
+        catalog.apply(base_url, &mut models);
+    }
+    Ok(models)
 }
 
 #[async_trait]
@@ -63,13 +82,19 @@ impl RequestHandler for ProviderTemplatesHandler {
                 request_id,
                 presets: vec![],
             },
-            RequestPacket::ModelDiscover { request_id, args } => match discover(args).await {
-                Ok(models) => ResponsePacket::ModelsDiscovered { request_id, models },
-                Err(message) => ResponsePacket::Error {
-                    request_id,
-                    message,
-                },
-            },
+            RequestPacket::ModelDiscover { request_id, args } => {
+                match discover(args, self.suggestions.as_deref()).await {
+                    Ok(models) => ResponsePacket::ModelsDiscovered {
+                        request_id,
+                        models: models.iter().map(|m| m.id.clone()).collect(),
+                        details: models.into_iter().map(Into::into).collect(),
+                    },
+                    Err(message) => ResponsePacket::Error {
+                        request_id,
+                        message,
+                    },
+                }
+            }
             _ => unreachable!("ProviderTemplatesHandler::matches allowed an unhandled variant"),
         };
         send_response(sink, response).await?;
@@ -94,7 +119,7 @@ mod tests {
     async fn legacy_discovery_returns_empty_presets() {
         let bytes = Arc::new(Mutex::new(Vec::new()));
         let sink = CaptureSink(bytes.clone());
-        ProviderTemplatesHandler::new()
+        ProviderTemplatesHandler { suggestions: None }
             .handle(
                 RequestPacket::ModelTemplates { request_id: 51 },
                 &CallerContext::local(),
@@ -110,9 +135,16 @@ mod tests {
     }
 
     async fn respond(request: RequestPacket) -> serde_json::Value {
+        respond_with(request, None).await
+    }
+
+    async fn respond_with(
+        request: RequestPacket,
+        suggestions: Option<String>,
+    ) -> serde_json::Value {
         let bytes = Arc::new(Mutex::new(Vec::new()));
         let sink = CaptureSink(bytes.clone());
-        ProviderTemplatesHandler::new()
+        ProviderTemplatesHandler { suggestions }
             .handle(
                 request,
                 &CallerContext::local(),
@@ -125,34 +157,77 @@ mod tests {
         serde_json::from_slice(&bytes).unwrap()
     }
 
-    #[tokio::test]
-    async fn discover_lists_the_endpoints_chat_models() {
+    /// A server that answers every request with `body`.
+    async fn serve(body: &'static str) -> std::net::SocketAddr {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
-            let (mut s, _) = listener.accept().await.unwrap();
-            let mut buf = [0u8; 4096];
-            let _ = s.read(&mut buf).await;
-            let body =
-                r#"{"data":[{"id":"text-embedding-3-small"},{"id":"gpt-4o"},{"id":"gpt-5"}]}"#;
-            let resp = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            let _ = s.write_all(resp.as_bytes()).await;
+            while let Ok((mut s, _)) = listener.accept().await {
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf).await;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = s.write_all(resp.as_bytes()).await;
+            }
         });
-        let r = respond(RequestPacket::ModelDiscover {
+        addr
+    }
+
+    fn discover_at(addr: std::net::SocketAddr) -> RequestPacket {
+        RequestPacket::ModelDiscover {
             request_id: 8,
             args: ModelDiscoverArgs {
                 base_url: format!("http://{addr}"),
                 api_format: "openai_completions".into(),
                 key: Some("sk-test".into()),
             },
-        })
+        }
+    }
+
+    #[tokio::test]
+    async fn discover_lists_the_endpoints_chat_models() {
+        let addr = serve(
+            r#"{"data":[{"id":"text-embedding-3-small"},{"id":"gpt-4o"},{"id":"gpt-5","context_length":400000}]}"#,
+        )
         .await;
+        let r = respond(discover_at(addr)).await;
         assert_eq!(r["type"], "models_discovered", "{r}");
         assert_eq!(r["models"], serde_json::json!(["gpt-4o", "gpt-5"]));
+        assert_eq!(
+            r["details"],
+            serde_json::json!([
+                {"id": "gpt-4o"},
+                {"id": "gpt-5", "reported": {"context_window": 400_000}}
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn discover_adds_what_the_catalog_suggests() {
+        let endpoint = serve(r#"{"data":[{"id":"glm-5.4"},{"id":"gpt-5"}]}"#).await;
+        let catalog = serve(
+            r#"{"openai":{"models":{"gpt-5":{"reasoning":true,"tool_call":true,
+                "reasoning_options":[{"type":"effort","values":["low","high"]}],
+                "limit":{"context":400000,"output":128000},
+                "canonical_model_id":"openai/gpt-5"}}}}"#,
+        )
+        .await;
+        let r = respond_with(
+            discover_at(endpoint),
+            Some(format!("http://{catalog}/api.json")),
+        )
+        .await;
+        assert_eq!(r["details"][0], serde_json::json!({"id": "glm-5.4"}), "{r}");
+        assert_eq!(
+            r["details"][1]["suggested"],
+            serde_json::json!({
+                "context_window": 400_000, "max_output_tokens": 128_000, "tools": true,
+                "thinking": {"supported": true, "efforts": ["low", "high"]}
+            })
+        );
     }
 
     #[tokio::test]

@@ -245,6 +245,7 @@ fn model_summary_to_json(e: &peko_providers::catalog::ModelConfig) -> Value {
         "model_id": e.model_id,
         "context_window": e.context_window,
         "max_output_tokens": e.max_output_tokens,
+        "effort": e.effort.map(|x| x.as_wire()),
         "headers": e.headers,
         "credential_id": e.credential_id,
         "requires_key": e.requires_key,
@@ -318,6 +319,8 @@ mod tests {
         let mut headers = BTreeMap::new();
         headers.insert("X-Stub".to_string(), "true".to_string());
         ModelConfig {
+            effort: None,
+            effort_levels: Vec::new(),
             id: id.to_string(),
             display_name: display_name.to_string(),
             template_id: None,

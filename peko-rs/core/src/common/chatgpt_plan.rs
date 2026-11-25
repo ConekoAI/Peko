@@ -339,7 +339,7 @@ async fn reply(socket: &mut tokio::net::TcpStream, status: u16, text: &str) {
 }
 
 /// A sign-in the engine runs for a client (Peko Desktop), by flow id.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum FlowState {
     /// Waiting for the browser or a pasted address.
     Waiting,
@@ -352,7 +352,7 @@ pub enum FlowState {
 }
 
 /// What a finished sign-in stored.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SignedIn {
     pub credential_id: String,
     pub account: String,
@@ -406,9 +406,19 @@ impl SignInFlows {
                 let tokens = pending.finish(rx).await?;
                 let credential_id = store_plan(&vault, &name, &tokens, &host_id)
                     .context("could not store the ChatGPT sign-in")?;
-                let models = chatgpt::list_models(&http(), tokens.access_token.expose_secret())
+                let mut models = chatgpt::list_models(&http(), tokens.access_token.expose_secret())
                     .await
                     .unwrap_or_default();
+                // Tests never ask models.dev.
+                let source =
+                    peko_providers::discovery::suggestions_source().filter(|_| !cfg!(test));
+                if let Some(source) = source {
+                    if let Some(catalog) = peko_providers::discovery::suggestions(&source).await {
+                        for m in &mut models {
+                            m.details.suggested = catalog.suggest(chatgpt::API_BASE_URL, &m.slug);
+                        }
+                    }
+                }
                 anyhow::Ok(SignedIn {
                     credential_id,
                     account: tokens.session.account().to_string(),

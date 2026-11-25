@@ -4654,6 +4654,40 @@
       ],
       "type": "object"
     },
+    "DiscoveredModelWire": {
+      "description": "A model an endpoint lists (`ModelsDiscovered`).",
+      "properties": {
+        "display_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "The wire model id.",
+          "type": "string"
+        },
+        "reported": {
+          "$ref": "#/$defs/ModelFactsWire",
+          "description": "What the endpoint's own list says. Many lists say nothing but\nthe id."
+        },
+        "suggested": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelFactsWire"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What the public models.dev catalog says, fetched when asked:\na suggestion for the person to accept or edit, never stored\nunasked."
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
     "DmRequest": {
       "description": "A person's request to DM this runtime's person, waiting for their\nanswer (ADR-095 D6). It names only who asks; nothing goes back to the\nasker until it is accepted.",
       "properties": {
@@ -5028,6 +5062,26 @@
             "null"
           ]
         },
+        "effort": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ThinkingEffort"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "How hard the model thinks on every turn (`low` … `max`);\nabsent or `none` sends no effort."
+        },
+        "effort_levels": {
+          "default": [],
+          "description": "The levels the model takes, as its endpoint (or models.dev)\nlisted them, kept for changing the effort later.",
+          "items": {
+            "$ref": "#/$defs/ThinkingEffort"
+          },
+          "type": "array"
+        },
         "headers": {
           "default": [],
           "items": {
@@ -5138,6 +5192,74 @@
         "base_url",
         "api_format"
       ],
+      "type": "object"
+    },
+    "ModelFactsWire": {
+      "description": "What is known about a model's limits and abilities. Every field is\noptional: absent is \"not said\", not \"no\".",
+      "properties": {
+        "audio_input": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "context_window": {
+          "description": "Tokens the model takes in.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "image_input": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "max_output_tokens": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "pricing": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelPricingHint"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "thinking": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelThinkingFactsWire"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tools": {
+          "description": "Function calling.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "video_input": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
       "type": "object"
     },
     "ModelPresetInfo": {
@@ -5295,6 +5417,24 @@
         "display_name": {
           "type": "string"
         },
+        "effort": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ThinkingEffort"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How hard the model thinks on every turn; absent sends no\neffort (the provider's own default)."
+        },
+        "effort_levels": {
+          "description": "The levels the model takes, as its provider listed them when it\nwas added; empty when not known.",
+          "items": {
+            "$ref": "#/$defs/ThinkingEffort"
+          },
+          "type": "array"
+        },
         "enabled": {
           "description": "Catalog `enabled` flag. Disabled entries still appear in the\nlist so the desktop can render them greyed-out / at the bottom\nof the models panel.",
           "type": "boolean"
@@ -5401,6 +5541,38 @@
       ],
       "type": "object"
     },
+    "ModelThinkingFactsWire": {
+      "description": "How a model thinks.",
+      "properties": {
+        "default_effort": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "efforts": {
+          "description": "Effort levels the model takes, lowercase, as the source names\nthem (`low`, `medium`, `high`, `xhigh`, `max`, `none`, …). Empty\nwhen thinking is only on or off.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "required": {
+          "description": "`true`: thinking cannot be turned off.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "supported": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "supported"
+      ],
+      "type": "object"
+    },
     "ModelThinkingMode": {
       "enum": [
         "disabled",
@@ -5455,6 +5627,27 @@
           "description": "Replace the display name.",
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "effort": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ThinkingEffort"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Replace the effort; `none` clears it (the provider's default)."
+        },
+        "effort_levels": {
+          "description": "Replace the levels the model takes.",
+          "items": {
+            "$ref": "#/$defs/ThinkingEffort"
+          },
+          "type": [
+            "array",
             "null"
           ]
         },
@@ -5702,9 +5895,24 @@
         "display_name": {
           "type": "string"
         },
+        "reported": {
+          "$ref": "#/$defs/ModelFactsWire",
+          "description": "What the plan's list says about the model."
+        },
         "slug": {
           "description": "The wire model id.",
           "type": "string"
+        },
+        "suggested": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelFactsWire"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What models.dev suggests, when it knows the model."
         }
       },
       "required": [
@@ -11782,8 +11990,15 @@
           "x-stability": "internal"
         },
         {
-          "description": "Result of `ModelDiscover`: the chat models the endpoint lists,\nin its order. A failure (a refused key, an unreachable\nendpoint) is a `ResponsePacket::Error`.",
+          "description": "Result of `ModelDiscover`: the chat models the endpoint lists,\nin its order. A failure (a refused key, an unreachable\nendpoint) is a `ResponsePacket::Error`.\n\n`details` has one row per id in `models`, same order: what the\nendpoint's list says about the model and what models.dev\nsuggests. Older clients read `models` only.",
           "properties": {
+            "details": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/DiscoveredModelWire"
+              },
+              "type": "array"
+            },
             "models": {
               "items": {
                 "type": "string"
@@ -13721,6 +13936,19 @@
         "offline",
         "busy",
         "error"
+      ],
+      "type": "string"
+    },
+    "ThinkingEffort": {
+      "description": "Reasoning-effort knob surfaced to callers (F25).\n\nEach adapter maps this onto its provider-native field:\n- OpenAI Chat Completions: `body[\"reasoning_effort\"] = \"low\"|\"medium\"|\"high\"`\n- OpenAI Responses:        `body[\"reasoning\"] = {effort, summary}`\n- Anthropic:               `thinking: {type:\"adaptive\"}` + `output_config`\n                           for Opus 4-6+ / Sonnet 5 / Fable 5+, otherwise\n                           `thinking: {type:\"enabled\", budget_tokens: N}`\n                           with an effort→budget mapping\n                           (low→1024, medium→4096, high→32_000).\n\n`None` means \"do not request reasoning\" (default — most callers\nwon't have reasoning enabled). `Adaptive` is honored only on\nadapters that detect adaptive-capable model ids; others fall\nback to a `High` budget mapping.\n`XHigh` and `Max` map to OpenAI's wire vocabulary (`\"xhigh\"`,\n`\"max\"`) but are silently clamped on adapters that don't yet\nsupport them.\n\nOn the wire (catalog, IPC) a level is its lowercase name: `none`,\n`low`, `medium`, `high`, `xhigh`, `max`, `adaptive`.",
+      "enum": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "adaptive"
       ],
       "type": "string"
     },

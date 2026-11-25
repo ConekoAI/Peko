@@ -241,6 +241,8 @@ mod tests {
 
     fn stub_model() -> ModelSummary {
         ModelSummary {
+            effort: None,
+            effort_levels: Vec::new(),
             id: "openai".to_string(),
             display_name: "OpenAI".to_string(),
             template_id: Some("openai".to_string()),

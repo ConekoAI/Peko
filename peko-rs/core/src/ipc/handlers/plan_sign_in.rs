@@ -58,6 +58,8 @@ fn wire(state: FlowState) -> PlanSignInState {
                 .map(|m| PlanModelWire {
                     slug: m.slug,
                     display_name: m.display_name,
+                    reported: m.details.reported.into(),
+                    suggested: m.details.suggested.map(Into::into),
                 })
                 .collect(),
         },
@@ -187,6 +189,15 @@ mod tests {
                     models: vec![peko_providers::chatgpt::PlanModel {
                         slug: "gpt-6.2-sol".into(),
                         display_name: "GPT-6.2-Sol".into(),
+                        details: peko_providers::discovery::DiscoveredModel {
+                            id: "gpt-6.2-sol".into(),
+                            display_name: Some("GPT-6.2-Sol".into()),
+                            reported: peko_providers::discovery::ModelFacts {
+                                context_window: Some(272_000),
+                                ..Default::default()
+                            },
+                            suggested: None,
+                        },
                     }],
                 })
             } else {
@@ -255,6 +266,10 @@ mod tests {
         assert_eq!(done["state"]["state"], "done");
         assert_eq!(done["state"]["credential_id"], "cred-1");
         assert_eq!(done["state"]["models"][0]["slug"], "gpt-6.2-sol");
+        assert_eq!(
+            done["state"]["models"][0]["reported"],
+            serde_json::json!({"context_window": 272_000})
+        );
         let waiting = run(
             host.clone(),
             serde_json::json!({"type": "chatgpt_sign_in_status", "request_id": 2, "flow_id": "flow-1", "pasted_url": "http://127.0.0.1:1/auth/callback?code=c"}),

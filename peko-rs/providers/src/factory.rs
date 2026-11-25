@@ -131,6 +131,8 @@ fn build_provider(
         // returns it. The engine's spec gate reads it to refuse
         // requests that would hit a capability the model lacks.
         spec: config.spec,
+        thinking_effort: config.effort.unwrap_or_default(),
+        max_output_tokens: config.max_output_tokens,
     };
 
     Provider::new(adapter, api_key.to_string(), options)
