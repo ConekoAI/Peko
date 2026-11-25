@@ -181,6 +181,8 @@ impl LlmResolver {
             .expect("mock catalog init failed");
 
         let config = ModelConfig {
+            effort: None,
+            effort_levels: Vec::new(),
             id: "mock".to_string(),
             display_name: "Mock Model".to_string(),
             template_id: None,
@@ -323,6 +325,8 @@ impl LlmResolver {
             // Like `create_provider_for_model`: the catalog spec is
             // what the engine's spec gate and image routing read.
             spec: config.spec,
+            thinking_effort: config.effort.unwrap_or_default(),
+            max_output_tokens: config.max_output_tokens,
             ..Default::default()
         };
 

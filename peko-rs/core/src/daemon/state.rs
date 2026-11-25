@@ -3015,6 +3015,8 @@ fn model_summary_from_config(
         // attachment picker, tool toggle, thinking toggle, JSON
         // toggle, etc. without hard-coding per-model branches.
         spec: entry.spec.map(model_spec_to_wire),
+        effort: entry.effort,
+        effort_levels: entry.effort_levels.clone(),
         // Phase 2 of `feature/multi-model-subagents`: forward
         // the user note so the desktop can render it on each
         // catalog card. Parent agents reading `ModelList` see
@@ -3152,6 +3154,8 @@ impl crate::ipc::handlers::provider_add::ModelAddHost for AppState {
         entry.headers = args.headers.into_iter().collect();
         entry.spec = args.spec.map(model_spec_from_wire);
         entry.compat = args.compat;
+        entry.effort = args.effort.filter(|e| e.is_enabled());
+        entry.effort_levels = args.effort_levels;
         entry.note = args.note;
         entry.validate()?;
         if self.resolver.catalog().get(&entry.id).await.is_some() {
@@ -3295,9 +3299,16 @@ impl crate::ipc::handlers::provider_edit::ModelEditHost for AppState {
         if let Some(enabled) = args.enabled {
             entry.enabled = enabled;
         }
+        if let Some(effort) = args.effort {
+            entry.effort = Some(effort).filter(|e| e.is_enabled());
+        }
+        if let Some(levels) = args.effort_levels {
+            entry.effort_levels = levels;
+        }
         if let Some(spec) = args.spec {
             entry.spec = Some(model_spec_from_wire(spec));
         }
+        entry.validate_effort()?;
 
         // `upsert` stamps `updated_at` and persists atomically.
         catalog.upsert(entry.clone()).await?;
@@ -3926,6 +3937,65 @@ mod tests {
             .spec
             .unwrap();
         assert!(spec.image_input && spec.audio_input && spec.video_input);
+    }
+
+    /// A model's effort is set on add, changed and cleared on update,
+    /// and a level it does not take is refused.
+    #[tokio::test]
+    async fn model_effort_is_added_changed_and_cleared() {
+        use crate::ipc::handlers::provider_add::ModelAddHost;
+        use crate::ipc::handlers::provider_edit::ModelEditHost;
+        use crate::ipc::packet::{ModelAddArgs, ModelUpdateArgs};
+        use peko_provider_api::ThinkingEffort;
+        let dir = TempDir::new().unwrap();
+        let state = AppState::build_for_test(
+            dir.path().to_path_buf(),
+            "127.0.0.1".into(),
+            11435,
+            DaemonConfigSnapshot::default(),
+            dir.path().join("data"),
+            dir.path().join("config"),
+            dir.path().join("cache"),
+        )
+        .await
+        .unwrap();
+        // As the desktop sends it.
+        let args: ModelAddArgs = serde_json::from_value(serde_json::json!({
+            "api_format": "anthropic_messages", "base_url": "https://example.com",
+            "model": ["thinker"], "requires_key": false,
+            "effort": "high", "effort_levels": ["low", "high", "max"]
+        }))
+        .unwrap();
+        let summary = state.add_model(args).await.unwrap();
+        assert_eq!(summary.effort, Some(ThinkingEffort::High));
+        let wire = serde_json::to_value(&summary).unwrap();
+        assert_eq!(wire["effort"], "high");
+        assert_eq!(
+            wire["effort_levels"],
+            serde_json::json!(["low", "high", "max"])
+        );
+        let update = |effort| ModelUpdateArgs {
+            id: "thinker".into(),
+            effort: Some(effort),
+            ..Default::default()
+        };
+        assert!(state
+            .update_model(update(ThinkingEffort::XHigh))
+            .await
+            .is_err());
+        let summary = state
+            .update_model(update(ThinkingEffort::Max))
+            .await
+            .unwrap();
+        assert_eq!(summary.effort, Some(ThinkingEffort::Max));
+        let summary = state
+            .update_model(update(ThinkingEffort::None))
+            .await
+            .unwrap();
+        assert_eq!(summary.effort, None);
+        let saved = state.resolver.catalog().get("thinker").await.unwrap();
+        assert_eq!(saved.effort, None);
+        assert_eq!(saved.effort_levels.len(), 3);
     }
 
     #[tokio::test]

@@ -63,6 +63,8 @@ impl RealLlm {
     pub fn catalog_entry(&self) -> ModelConfig {
         let now = chrono::Utc::now();
         ModelConfig {
+            effort: None,
+            effort_levels: Vec::new(),
             id: REAL_LLM_MODEL_ID.to_string(),
             display_name: format!("Real LLM ({})", self.model),
             template_id: None,

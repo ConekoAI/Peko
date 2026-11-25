@@ -191,7 +191,12 @@ pub enum StopReason {
 /// `XHigh` and `Max` map to OpenAI's wire vocabulary (`"xhigh"`,
 /// `"max"`) but are silently clamped on adapters that don't yet
 /// support them.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+///
+/// On the wire (catalog, IPC) a level is its lowercase name: `none`,
+/// `low`, `medium`, `high`, `xhigh`, `max`, `adaptive`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
 pub enum ThinkingEffort {
     #[default]
     None,
@@ -285,6 +290,41 @@ pub struct ProviderCompat {
 }
 
 impl ThinkingEffort {
+    /// The levels a model's effort can be set to, mildest first. `None`
+    /// (send nothing; the provider's own default) and `Adaptive` are
+    /// not levels a provider lists.
+    pub const LEVELS: [Self; 5] = [Self::Low, Self::Medium, Self::High, Self::XHigh, Self::Max];
+
+    /// The wire name (`"low"`, `"xhigh"`, …).
+    #[must_use]
+    pub fn as_wire(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::XHigh => "xhigh",
+            Self::Max => "max",
+            Self::Adaptive => "adaptive",
+        }
+    }
+
+    /// Parse a wire name, ignoring case. A provider's names outside
+    /// this set (`minimal`, …) are `None`: not a level peko sends.
+    #[must_use]
+    pub fn from_wire(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "none" => Some(Self::None),
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            "xhigh" => Some(Self::XHigh),
+            "max" => Some(Self::Max),
+            "adaptive" => Some(Self::Adaptive),
+            _ => None,
+        }
+    }
+
     /// True when the caller asked for any reasoning field on the wire.
     /// `None` is the only "off" variant — every other value triggers
     /// the per-adapter reasoning emission.

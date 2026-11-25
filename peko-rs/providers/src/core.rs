@@ -66,6 +66,12 @@ pub struct ProviderRuntimeOptions {
     /// pre-PR-2 behaviour (no gate), which matches any model
     /// entry written before the spec was plumbed.
     pub spec: Option<crate::spec::ModelSpec>,
+    /// How hard the model thinks on every turn (`ModelConfig::effort`);
+    /// `None` sends no effort.
+    pub thinking_effort: peko_provider_api::ThinkingEffort,
+    /// The model's reply ceiling (`ModelConfig::max_output_tokens`);
+    /// `None` when not known.
+    pub max_output_tokens: Option<u32>,
 }
 
 impl Default for ProviderRuntimeOptions {
@@ -81,6 +87,8 @@ impl Default for ProviderRuntimeOptions {
             cache_retention: CacheRetention::Default,
             retry_jitter: None,
             spec: None,
+            thinking_effort: peko_provider_api::ThinkingEffort::None,
+            max_output_tokens: None,
         }
     }
 }
@@ -303,6 +311,18 @@ impl Provider {
     #[must_use]
     pub fn spec(&self) -> Option<crate::spec::ModelSpec> {
         self.options.spec
+    }
+
+    /// The effort set on the model's catalog entry.
+    #[must_use]
+    pub fn thinking_effort(&self) -> peko_provider_api::ThinkingEffort {
+        self.options.thinking_effort
+    }
+
+    /// The model's reply ceiling from its catalog entry, if known.
+    #[must_use]
+    pub fn max_output_tokens(&self) -> Option<u32> {
+        self.options.max_output_tokens
     }
 
     /// Check if this provider supports native tool calling

@@ -121,6 +121,18 @@ impl StackedMeteredProvider {
         self.inner.context_window()
     }
 
+    /// The effort set on the model (delegates to inner).
+    #[must_use]
+    pub fn thinking_effort(&self) -> peko_provider_api::ThinkingEffort {
+        self.inner.thinking_effort()
+    }
+
+    /// The model's reply ceiling, if known (delegates to inner).
+    #[must_use]
+    pub fn max_output_tokens(&self) -> Option<u32> {
+        self.inner.max_output_tokens()
+    }
+
     /// Whether the inner provider supports native tool calling.
     #[must_use]
     pub fn supports_native_tools(&self) -> bool {

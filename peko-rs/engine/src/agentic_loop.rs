@@ -20,6 +20,40 @@ use crate::{
     SessionView, StackedMeteredProvider, StreamOrchestrator, TurnPromptContext,
 };
 use anyhow::Result;
+
+/// The context window a run assumes for a model whose window neither
+/// its endpoint's model list nor its owner gave. Most current frontier
+/// models take at least this much; the desktop and `peko model add`
+/// fill the real figure whenever the endpoint lists it.
+pub const FALLBACK_CONTEXT_WINDOW_TOKENS: usize = 300_000;
+
+/// The reply allowance a turn asks for: `DEFAULT_MAX_OUTPUT_TOKENS`,
+/// or, when the model thinks at a set effort and its ceiling is known,
+/// that ceiling (never less than the default).
+fn reply_allowance(effort: peko_provider_api::ThinkingEffort, ceiling: Option<u32>) -> u32 {
+    match ceiling {
+        Some(n) if effort.is_enabled() => n.max(DEFAULT_MAX_OUTPUT_TOKENS),
+        _ => DEFAULT_MAX_OUTPUT_TOKENS,
+    }
+}
+
+#[cfg(test)]
+mod reply_allowance_tests {
+    use super::*;
+    use peko_provider_api::ThinkingEffort;
+
+    #[test]
+    fn a_thinking_model_may_use_its_whole_ceiling() {
+        let d = DEFAULT_MAX_OUTPUT_TOKENS;
+        assert_eq!(reply_allowance(ThinkingEffort::None, Some(128_000)), d);
+        assert_eq!(reply_allowance(ThinkingEffort::High, None), d);
+        assert_eq!(
+            reply_allowance(ThinkingEffort::High, Some(128_000)),
+            128_000
+        );
+        assert_eq!(reply_allowance(ThinkingEffort::Low, Some(4096)), d);
+    }
+}
 use futures::StreamExt;
 use peko_message::{ContentBlock, LlmMessage};
 use peko_provider_api::{
@@ -1049,11 +1083,12 @@ impl AgenticLoop {
 
         // Initialize compaction driver. The model's max context
         // length is the single source of truth from `ProviderCatalog`
-        // (resolved via the agent's `LlmResolver`). When the catalog
-        // has no entry, we fall back to a sane default — the same
-        // 128K figure the legacy `ModelContextRegistry` defaulted to.
+        // (resolved via the agent's `LlmResolver`). A model whose
+        // window neither its endpoint nor its owner gave runs on
+        // `FALLBACK_CONTEXT_WINDOW_TOKENS`; a run that overflows a
+        // smaller window is trimmed when the endpoint refuses it
+        // (`stream_with_eviction`).
         // The driver pins the value once at run start.
-        const FALLBACK_CONTEXT_WINDOW_TOKENS: usize = 128_000;
         let context_window = if self.agent.has_llm_resolver() {
             provider
                 .context_window()
@@ -1376,7 +1411,13 @@ impl AgenticLoop {
             // any cache wiring on the wire.
             let supports_cache = provider.supports_prompt_cache_control();
             let options = ChatOptions {
-                max_tokens: Some(DEFAULT_MAX_OUTPUT_TOKENS),
+                // A model that thinks spends its reply allowance on
+                // thinking too: with an effort set, allow the model's
+                // own ceiling when it is known.
+                max_tokens: Some(reply_allowance(
+                    provider.thinking_effort(),
+                    provider.max_output_tokens(),
+                )),
                 cache_retention: if supports_cache {
                     CacheRetention::Default
                 } else {
@@ -1387,13 +1428,11 @@ impl AgenticLoop {
                 } else {
                     None
                 },
-                // F25: caller-supplied reasoning knob. Until we
-                // expose this on the IPC surface (F26+), the engine
-                // loop's default of `None` matches the pre-F25 wire
-                // shape — every adapter gates emission on
-                // `thinking_effort.is_enabled()` so default-None
-                // callers see byte-for-byte identical requests.
-                thinking_effort: peko_provider_api::ThinkingEffort::None,
+                // The effort set on the model's catalog entry. `None`
+                // (unset) sends nothing: every adapter gates emission
+                // on `thinking_effort.is_enabled()`, so the provider's
+                // own default applies.
+                thinking_effort: provider.thinking_effort(),
                 thinking_summary: None,
                 encrypted_reasoning: false,
                 // F26: every new ChatOptions knob is also at its

@@ -37,7 +37,7 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 use crate::spec::ModelSpec;
-use peko_provider_api::ProviderCompat;
+use peko_provider_api::{ProviderCompat, ThinkingEffort};
 
 /// Top-level API format understood by the runtime.
 ///
@@ -154,6 +154,15 @@ pub struct ModelConfig {
     /// unknown; the engine capability gate is inactive until supplied.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spec: Option<ModelSpec>,
+    /// How hard the model thinks on every turn. `None` sends no effort,
+    /// leaving the provider's own default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<ThinkingEffort>,
+    /// The effort levels the provider (or models.dev) said the model
+    /// takes, mildest first, kept so the level can be changed later
+    /// without asking the endpoint again. Empty: not known.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effort_levels: Vec<ThinkingEffort>,
     /// Phase 2 of `feature/multi-model-subagents`: free-text
     /// user note attached to this catalog entry. Surfaces on the
     /// `ModelList` tool and in `peko model show` so a parent
@@ -221,6 +230,8 @@ impl ModelConfig {
             updated_at: Utc::now(),
             compat: None,
             spec: None,
+            effort: None,
+            effort_levels: Vec::new(),
             note: None,
         }
     }
@@ -245,7 +256,31 @@ impl ModelConfig {
                 .context("invalid header name")?;
             reqwest::header::HeaderValue::from_str(value).context("invalid header value")?;
         }
+        self.validate_effort()?;
         validate_note(self.note.clone())?;
+        Ok(())
+    }
+
+    /// The effort, if set, is one the model takes: among its known
+    /// levels, on a model whose spec does not say it never thinks.
+    pub fn validate_effort(&self) -> Result<()> {
+        let Some(effort) = self.effort.filter(|e| e.is_enabled()) else {
+            return Ok(());
+        };
+        if self
+            .spec
+            .is_some_and(|s| s.thinking == crate::spec::ThinkingMode::Disabled)
+        {
+            anyhow::bail!("an effort is set but the model's spec says it does not think");
+        }
+        if !self.effort_levels.is_empty() && !self.effort_levels.contains(&effort) {
+            let levels: Vec<&str> = self.effort_levels.iter().map(|e| e.as_wire()).collect();
+            anyhow::bail!(
+                "effort '{}' is not one the model takes ({})",
+                effort.as_wire(),
+                levels.join(", ")
+            );
+        }
         Ok(())
     }
 }
@@ -485,6 +520,40 @@ impl ModelCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_effort_must_be_one_the_model_takes() {
+        let mut m = ModelConfig::new("m", ApiFormat::AnthropicMessages, "https://x.example", "m");
+        m.effort = Some(ThinkingEffort::High);
+        assert!(m.validate().is_ok(), "unknown levels take any effort");
+        m.effort_levels = vec![ThinkingEffort::Low, ThinkingEffort::Max];
+        let err = m.validate().unwrap_err().to_string();
+        assert!(err.contains("low, max"), "{err}");
+        m.effort = Some(ThinkingEffort::Max);
+        assert!(m.validate().is_ok());
+        m.spec = Some(crate::spec::ModelSpec::text_only());
+        assert!(
+            m.validate().is_err(),
+            "a model that never thinks takes no effort"
+        );
+        m.effort = None;
+        assert!(m.validate().is_ok());
+    }
+
+    #[test]
+    fn an_effort_is_stored_by_its_wire_name() {
+        let mut m = ModelConfig::new("m", ApiFormat::OpenAiResponses, "https://x.example", "m");
+        m.effort = Some(ThinkingEffort::XHigh);
+        m.effort_levels = vec![ThinkingEffort::Low, ThinkingEffort::XHigh];
+        let text = toml::to_string(&m).unwrap();
+        assert!(text.contains("effort = \"xhigh\""), "{text}");
+        assert!(
+            text.contains("effort_levels = [\"low\", \"xhigh\"]"),
+            "{text}"
+        );
+        let back: ModelConfig = toml::from_str(&text).unwrap();
+        assert_eq!(back.effort, Some(ThinkingEffort::XHigh));
+    }
     use tempfile::tempdir;
 
     async fn temp_catalog() -> (tempfile::TempDir, Arc<ModelCatalog>) {
@@ -800,6 +869,8 @@ mod tests {
     async fn upsert_with_note_round_trips() {
         let (_dir, cat) = temp_catalog().await;
         let entry = ModelConfig {
+            effort: None,
+            effort_levels: Vec::new(),
             id: "haiku".to_string(),
             display_name: "Haiku".to_string(),
             template_id: None,
@@ -828,6 +899,8 @@ mod tests {
         let (_dir, cat) = temp_catalog().await;
         let too_long = "x".repeat(NOTE_MAX_CHARS + 1);
         let entry = ModelConfig {
+            effort: None,
+            effort_levels: Vec::new(),
             id: "opus".to_string(),
             display_name: "Opus".to_string(),
             template_id: None,
@@ -858,6 +931,8 @@ mod tests {
         let (_dir, cat) = temp_catalog().await;
         let at_cap: String = "a".repeat(NOTE_MAX_CHARS);
         let entry = ModelConfig {
+            effort: None,
+            effort_levels: Vec::new(),
             id: "edge".to_string(),
             display_name: "Edge".to_string(),
             template_id: None,

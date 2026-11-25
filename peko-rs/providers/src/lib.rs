@@ -26,6 +26,7 @@ pub mod adapters;
 pub mod catalog;
 pub mod chatgpt;
 pub mod core;
+pub mod discovery;
 pub mod factory;
 pub mod mock;
 pub mod provider_view;

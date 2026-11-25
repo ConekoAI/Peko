@@ -759,6 +759,8 @@ mod tests {
     /// keyless endpoint.
     fn judgment_entry(addr: std::net::SocketAddr, credential: Option<&str>) -> ModelConfig {
         ModelConfig {
+            effort: None,
+            effort_levels: Vec::new(),
             id: "jev".to_string(),
             display_name: "Jev".to_string(),
             template_id: None,

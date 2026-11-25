@@ -611,7 +611,7 @@ List configured models, optionally filtered by capability and text.
 | `filter` | vision \| tools \| thinking \| priced \| json_mode | no | — |
 | `contains` | string | no | — |
 
-filter and contains are AND-combined; contains matches id, display_name, and note case-insensitively. Requires a bound model catalog; every run inherits the principal service.
+filter and contains are AND-combined; contains matches id, display_name, and note case-insensitively. Each model's entry includes its `effort` (absent when unset). Requires a bound model catalog; every run inherits the principal service.
 
 ### ModelCall
 

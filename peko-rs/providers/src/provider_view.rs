@@ -56,6 +56,17 @@ pub trait ProviderView: Send + Sync + 'static {
     /// `provider.context_window().map(|n| n as usize)`.
     fn context_window(&self) -> Option<u32>;
 
+    /// How hard the model thinks on every turn (`ModelConfig::effort`).
+    /// `None` sends no effort, leaving the provider's own default.
+    fn thinking_effort(&self) -> peko_provider_api::ThinkingEffort {
+        peko_provider_api::ThinkingEffort::None
+    }
+
+    /// The model's reply ceiling from its catalog entry, if known.
+    fn max_output_tokens(&self) -> Option<u32> {
+        None
+    }
+
     /// Whether the provider emits native tool-calling blocks (vs requiring
     /// `synthesize_stream_from_blocking`). Field access at
     /// `agentic_loop.rs:2100` — `provider.supports_native_tools()`.
@@ -108,6 +119,14 @@ impl ProviderView for Provider {
 
     fn context_window(&self) -> Option<u32> {
         Provider::context_window(self)
+    }
+
+    fn thinking_effort(&self) -> peko_provider_api::ThinkingEffort {
+        Provider::thinking_effort(self)
+    }
+
+    fn max_output_tokens(&self) -> Option<u32> {
+        Provider::max_output_tokens(self)
     }
 
     fn supports_native_tools(&self) -> bool {

@@ -6,6 +6,36 @@ All notable changes to Peko.
 
 ### Added
 
+- **Set how hard a model thinks.** A model now has an effort (`low`,
+  `medium`, `high`, `xhigh`, `max`), sent on every turn in the shape its
+  API takes: Claude's adaptive `output_config.effort`, a thinking budget
+  for other Anthropic-compatible models, `reasoning_effort` /
+  `reasoning.effort` for OpenAI-compatible and Responses models. Left
+  unset, nothing is sent and the provider's own default applies, as
+  before. The levels a model takes are read from its endpoint's model list
+  when it is added and kept with it (`effort_levels`), and an effort
+  outside them is refused. Peko Desktop shows a picker in Add model and
+  Edit; `peko model add --effort high`, `peko model edit <id> --effort
+  low|none`. With an effort set, a turn may use the model's whole output
+  limit (when known) instead of 8,192 tokens, since thinking spends it
+  too. IPC `model_add` / `model_update` / `ModelSummary` gain `effort`
+  and `effort_levels`; catalog entries gain the same keys.
+- **Adding a model fills in what its provider says about it.** Choosing
+  a model meant typing its context window and output limit from the
+  provider's docs, and leaving them out ran every model on a 128K guess.
+  Now the model list an endpoint already serves is read for each model's
+  context window, output limit, inputs (images, audio, video), tools and
+  thinking, with the effort levels it takes (Anthropic, Gemini, OpenRouter,
+  Kimi, the ChatGPT plan and local servers such as vLLM say this; OpenAI
+  API keys, GLM and MiniMax list ids only). Where the list is silent, the
+  public models.dev catalog is asked, on the spot, and what it says is
+  offered as a suggestion to accept or change, never stored unasked.
+  Nothing is bundled, so a model released tomorrow is described tomorrow.
+  `peko model add` fills the limits its endpoint lists and prints the
+  flags for what models.dev suggests. `PEKO_MODEL_SUGGESTIONS=off` turns
+  the suggestions off. IPC `models_discovered` gains `details` and the
+  ChatGPT sign-in's models gain `reported` / `suggested` (both
+  `internal`; older clients read the ids as before).
 - **A peko can use your computer (ADR-123).** Much of what you want done
   lives in desktop apps with no web page or API. A peko working for you
   now has `Computer`: it lists the screens and windows, takes a picture of
@@ -55,6 +85,9 @@ All notable changes to Peko.
 
 ### Changed
 
+- **A model whose context window is unknown is taken to have 300,000
+  tokens**, not 128,000, so a long conversation on a current model is not
+  compacted far too early. Set `context_window` for a smaller model.
 - **Answers over HTTP are not clipped to 60,000 bytes.** The HTTP door
   carried the socket's packet limit, so a long tool result reached a
   service cut short and marked `truncated`, and a larger answer did not
@@ -129,6 +162,15 @@ All notable changes to Peko.
 
 ### Fixed
 
+- **Editing a model reaches conversations already under way.** A
+  conversation kept the model provider it started with until the peko
+  switched to another model or the engine restarted, so a changed key,
+  endpoint, header, limit or effort was ignored there. The next turn now
+  uses the edited entry.
+- **Claude's `xhigh` effort is sent as `xhigh`**, not `max`, and a
+  thinking budget for other Anthropic-compatible models is cut to fit
+  under the reply limit (Anthropic refuses a budget at or above
+  `max_tokens`; `high` asked for 32,000 of 8,192).
 - **`Browser` screenshots reach the model.** The engine attached a tool
   result's picture only for `Read`, so a peko asking its browser for a
   screenshot was told only that one existed. `Browser` and `Computer`

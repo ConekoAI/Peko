@@ -1015,6 +1015,8 @@ mod tests {
             ) -> anyhow::Result<CredentialDeleteOutcome> {
                 Ok(CredentialDeleteOutcome::InUse {
                     dependents: vec![ModelSummary {
+                        effort: None,
+                        effort_levels: Vec::new(),
                         id: "anthropic-sonnet".to_string(),
                         display_name: "Claude Sonnet 4.5".to_string(),
                         template_id: Some("anthropic".to_string()),
@@ -1240,6 +1242,8 @@ mod tests {
                 m.insert(
                     "id-used".to_string(),
                     vec![ModelSummary {
+                        effort: None,
+                        effort_levels: Vec::new(),
                         id: "anthropic-sonnet".to_string(),
                         display_name: "Claude Sonnet 4.5".to_string(),
                         template_id: Some("anthropic".to_string()),

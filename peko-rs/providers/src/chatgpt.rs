@@ -484,11 +484,14 @@ pub async fn revoke(http: &reqwest::Client, session: &PlanSession) -> bool {
 }
 
 /// A model the plan offers.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PlanModel {
     /// The wire model id.
     pub slug: String,
     pub display_name: String,
+    /// What the plan's list says about it (context window, reasoning
+    /// levels, …); suggestions are added by the caller.
+    pub details: crate::discovery::DiscoveredModel,
 }
 
 /// The models the plan offers, as `GET /v1/models` lists them for a
@@ -518,31 +521,15 @@ async fn list_models_at(
 }
 
 fn parse_models(body: &serde_json::Value) -> Vec<PlanModel> {
-    let text =
-        |m: &serde_json::Value, key: &str| m.get(key).and_then(|v| v.as_str()).map(str::to_string);
-    if let Some(models) = body.get("models").and_then(|v| v.as_array()) {
-        return models
-            .iter()
-            .filter(|m| m.get("visibility").and_then(|v| v.as_str()) == Some("list"))
-            .filter_map(|m| {
-                let slug = text(m, "slug")?;
-                Some(PlanModel {
-                    display_name: text(m, "display_name").unwrap_or_else(|| slug.clone()),
-                    slug,
-                })
-            })
-            .collect();
-    }
-    body.get("data")
-        .and_then(|v| v.as_array())
+    crate::discovery::parse_list(body)
         .into_iter()
-        .flatten()
-        .filter_map(|m| {
-            let slug = text(m, "id")?;
-            Some(PlanModel {
-                display_name: slug.clone(),
-                slug,
-            })
+        .map(|details| PlanModel {
+            slug: details.id.clone(),
+            display_name: details
+                .display_name
+                .clone()
+                .unwrap_or_else(|| details.id.clone()),
+            details,
         })
         .collect()
 }
@@ -919,7 +906,8 @@ mod tests {
         let (url, request) = serve_once(
             200,
             serde_json::json!({"models": [
-                {"slug": "gpt-5.5", "display_name": "GPT-5.5", "visibility": "list"},
+                {"slug": "gpt-5.5", "display_name": "GPT-5.5", "visibility": "list",
+                 "context_window": 272000, "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}]},
                 {"slug": "internal", "display_name": "Hidden", "visibility": "hide"}
             ]})
             .to_string(),
@@ -932,12 +920,19 @@ mod tests {
             .await
             .unwrap()
             .contains("authorization: Bearer at-1"));
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].slug, "gpt-5.5");
+        assert_eq!(models[0].display_name, "GPT-5.5");
+        assert_eq!(models[0].details.reported.context_window, Some(272_000));
         assert_eq!(
-            models,
-            vec![PlanModel {
-                slug: "gpt-5.5".into(),
-                display_name: "GPT-5.5".into()
-            }]
+            models[0]
+                .details
+                .reported
+                .thinking
+                .as_ref()
+                .unwrap()
+                .efforts,
+            ["low", "high"]
         );
         let api_style = serde_json::json!({"data": [{"id": "gpt-4o"}]});
         assert_eq!(parse_models(&api_style)[0].slug, "gpt-4o");
