@@ -773,7 +773,8 @@ impl SessionRuntime for SessionManagerRuntime {
         limit: usize,
         subtree: Option<&str>,
     ) -> anyhow::Result<Vec<SessionSearchHit>> {
-        let (ids, sessions_dir, path_by_id) = {
+        let query_lower = query.to_lowercase();
+        let (ids, sessions_dir, path_by_id, title_by_id, mut named) = {
             let mut manager = self.session_manager.write().await;
             let (caller, metas) = self.caller_and_metas(&mut manager).await?;
             // Organizational subtree scope (same semantics as
@@ -831,21 +832,64 @@ impl SessionRuntime for SessionManagerRuntime {
                     ),
                 );
             }
-            (ids, sessions_dir, path_by_id)
+            let title_by_id: std::collections::HashMap<String, String> = metas
+                .iter()
+                .filter_map(|m| Some((m.session_id.to_string(), m.title.clone()?)))
+                .collect();
+            // Sessions the query names (title or slug), most recently
+            // active first: looking a session up by name needs no
+            // transcript to mention it.
+            let mut named: Vec<&peko_session::SessionMetadata> = metas
+                .iter()
+                .filter(|m| {
+                    path_by_id.contains_key(&m.session_id.to_string())
+                        && peko_session::title::names_session(
+                            &query_lower,
+                            m.title.as_deref(),
+                            m.slug.as_deref(),
+                        )
+                })
+                .collect();
+            named.sort_by_key(|m| std::cmp::Reverse(m.updated_at));
+            let named: Vec<SessionSearchHit> = named
+                .into_iter()
+                .take(limit)
+                .map(|m| {
+                    let id = m.session_id.to_string();
+                    SessionSearchHit {
+                        path: path_by_id.get(&id).cloned().unwrap_or_default(),
+                        session_id: id,
+                        title: m.title.clone(),
+                        matched: "name".to_string(),
+                        role: "session".to_string(),
+                        timestamp: chrono::DateTime::from_timestamp_millis(m.updated_at as i64)
+                            .unwrap_or_default()
+                            .to_rfc3339(),
+                        snippet: m
+                            .title
+                            .clone()
+                            .or_else(|| m.slug.clone())
+                            .unwrap_or_default(),
+                    }
+                })
+                .collect();
+            (ids, sessions_dir, path_by_id, title_by_id, named)
         };
 
         let storage = SessionStorage::new(sessions_dir);
-        let hits = storage.search_transcripts(&ids, query, limit).await?;
-        Ok(hits
-            .into_iter()
-            .map(|h| SessionSearchHit {
-                session_id: h.session_id.clone(),
-                path: path_by_id.get(&h.session_id).cloned().unwrap_or_default(),
-                role: h.role,
-                timestamp: h.timestamp.to_rfc3339(),
-                snippet: h.snippet,
-            })
-            .collect())
+        let hits = storage
+            .search_transcripts(&ids, query, limit - named.len())
+            .await?;
+        named.extend(hits.into_iter().map(|h| SessionSearchHit {
+            path: path_by_id.get(&h.session_id).cloned().unwrap_or_default(),
+            title: title_by_id.get(&h.session_id).cloned(),
+            session_id: h.session_id,
+            matched: "text".to_string(),
+            role: h.role,
+            timestamp: h.timestamp.to_rfc3339(),
+            snippet: h.snippet,
+        }));
+        Ok(named)
     }
 
     async fn copy_session(
@@ -1431,6 +1475,16 @@ pub(crate) mod test_support {
     impl Harness {
         /// Set a session's slug directly through the manager (the raw
         /// write path; uniqueness is enforced by the controller).
+        pub(crate) async fn set_title(&self, id: &str, title: &str) {
+            let id = peko_session::SessionId::from(id).to_string();
+            self.manager
+                .read()
+                .await
+                .set_session_title(&id, Some(title.to_string()))
+                .await
+                .unwrap();
+        }
+
         pub(crate) async fn set_slug(&self, id: &str, slug: &str) {
             // Sprint 6: convert the literal to its v5-derived UUID
             // form so it matches the canonical id stored in
@@ -1785,6 +1839,67 @@ mod tests {
         let hits = h.runtime.search_pages("/c", "page 3", 10).await.unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].page_number, 4, "original page 3 reports as 4");
+    }
+
+    #[tokio::test]
+    async fn find_names_sessions_by_title_and_slug_before_message_text() {
+        // Tree: root ── spawn1("a") ── child1("b"), root ── spawn2("c").
+        let h = tree_harness("root:user:alice").await;
+        h.set_title("child1", "Direct device connections").await;
+        h.set_slug("spawn2", "device-notes").await;
+        h.add_user_message("spawn1", "which DEVICE should link first?")
+            .await;
+
+        let hits = h
+            .runtime
+            .search_sessions("Device", None, 50, None)
+            .await
+            .unwrap();
+        let seen: Vec<(&str, &str)> = hits
+            .iter()
+            .map(|hit| (hit.matched.as_str(), hit.path.as_str()))
+            .collect();
+        assert_eq!(seen.len(), 3, "{seen:?}");
+        assert_eq!(seen[2], ("text", "sess:/a"));
+        assert!(seen[..2].contains(&("name", "sess:/a/b")), "{seen:?}");
+        assert!(
+            seen[..2].contains(&("name", "sess:/device-notes")),
+            "{seen:?}"
+        );
+        let titled = hits.iter().find(|hit| hit.path == "sess:/a/b").unwrap();
+        assert_eq!(titled.title.as_deref(), Some("Direct device connections"));
+        assert_eq!(titled.snippet, "Direct device connections");
+        assert_eq!(titled.role, "session");
+
+        // A subtree scope applies to names too, and an ancestor's slug
+        // names only itself, never the sessions under it.
+        let scoped = h
+            .runtime
+            .search_sessions("device", None, 50, Some("sess:/a"))
+            .await
+            .unwrap();
+        assert_eq!(scoped.len(), 2);
+        assert!(scoped.iter().all(|hit| hit.path.starts_with("sess:/a")));
+        let by_slug = h
+            .runtime
+            .search_sessions("a", None, 50, None)
+            .await
+            .unwrap();
+        let named: Vec<&str> = by_slug
+            .iter()
+            .filter(|hit| hit.matched == "name")
+            .map(|hit| hit.path.as_str())
+            .collect();
+        assert_eq!(named, ["sess:/a"]);
+
+        // The limit counts names and messages together.
+        let one = h
+            .runtime
+            .search_sessions("device", None, 1, None)
+            .await
+            .unwrap();
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].matched, "name");
     }
 
     #[tokio::test]

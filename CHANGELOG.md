@@ -4,6 +4,18 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Added
+
+- **Sessions an agent starts have a readable title, and `Session find`
+  looks sessions up by name.** `Agent` takes a `title` for the session a
+  `new` call creates ("Direct device connections" beside the slug
+  `direct-links`); without one the session is named after the first line
+  of its prompt, so no session a peko starts is left unnamed. `Session
+  find` now returns the sessions whose title or slug contains the query
+  first (`matched: "name"`), then the messages that do (`matched:
+  "text"`), and every hit carries the session's `title`. Sessions made
+  before this keep the title they had, or none; `Session move` sets one.
+
 ## [0.6.0] - 2026-11-25
 
 ### Added

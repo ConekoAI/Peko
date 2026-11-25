@@ -390,6 +390,7 @@ fn build_root_execution_config(
         timeout_seconds: request.config.timeout_seconds,
         model_override,
         page_limit: request.config.page_limit,
+        title: request.config.title.clone(),
         // Agent tool `name` → the child session's slug (stamped by
         // `spawn_and_execute`; ignored on the resume path).
         slug: request.name.clone(),

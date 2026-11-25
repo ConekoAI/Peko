@@ -535,6 +535,7 @@ fn agent_and_session_runtime_validation_matches_the_advertised_action_schemas() 
                     matches!(action, None | Some("new" | "branch"))
                         && matches!(call[field].to_string().as_str(), "0" | "1" | "1.0")
                 }
+                "title" => matches!(action, None | Some("new")),
                 _ => false,
             };
             assert_eq!(agent.is_valid(&call), expected, "Agent: {call}");

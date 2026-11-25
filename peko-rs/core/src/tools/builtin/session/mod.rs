@@ -310,7 +310,8 @@ pub struct SessionStatusResult {
     pub parent_session: Option<String>,
 }
 
-/// One match from a transcript search (`Session` tool `find` action).
+/// One match from a session search (`Session` tool `find` action):
+/// a session the query names, or a message that contains it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionSearchHit {
     pub session_id: String,
@@ -318,12 +319,26 @@ pub struct SessionSearchHit {
     /// the field to use for follow-up calls (raw session ids are
     /// refused at the tool boundary).
     pub path: String,
-    /// Role of the matching message ("user" or "assistant").
+    /// The matching session's title, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// What matched: "name" (the session's title or slug) or "text" (a
+    /// message). Name matches come first.
+    #[serde(default = "matched_text")]
+    pub matched: String,
+    /// Role of the matching message ("user" or "assistant"); "session"
+    /// for a name match.
     pub role: String,
-    /// RFC 3339 timestamp of the matching message.
+    /// RFC 3339 timestamp of the matching message; of the session's
+    /// last activity for a name match.
     pub timestamp: String,
-    /// ~160 chars of message text centered on the match.
+    /// ~160 chars of message text centered on the match; the title (or
+    /// the slug, for a session with no title) for a name match.
     pub snippet: String,
+}
+
+fn matched_text() -> String {
+    "text".to_string()
 }
 
 /// Result of the `branch` action.
@@ -721,6 +736,8 @@ mod tests {
         let hit = SessionSearchHit {
             session_id: "s1".into(),
             path: "sess:/a/s1".into(),
+            title: None,
+            matched: "text".into(),
             role: "user".into(),
             timestamp: "2024-01-01T00:00:00Z".into(),
             snippet: "…the needle is here…".into(),
@@ -729,6 +746,8 @@ mod tests {
         assert_eq!(json["session_id"], "s1");
         assert_eq!(json["path"], "sess:/a/s1");
         assert_eq!(json["role"], "user");
+        assert_eq!(json["matched"], "text");
+        assert!(json.get("title").is_none());
         let back: SessionSearchHit = serde_json::from_value(json).unwrap();
         assert_eq!(back.snippet, hit.snippet);
     }

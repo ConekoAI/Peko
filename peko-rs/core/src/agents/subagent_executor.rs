@@ -96,6 +96,10 @@ pub struct ExecutionConfig {
     /// session is created (the same index entry
     /// `stamp_spawn_parent_linkage` patches).
     pub slug: Option<String>,
+    /// The readable title for the session this run creates (Agent tool
+    /// `title` param). `None` names it after the first line of its
+    /// task. A session that already exists keeps the title it has.
+    pub title: Option<String>,
     /// Retention cap on the session's closed compaction pages
     /// (ADR-051 FIFO page limit, Agent tool `page_limit` param;
     /// `Some(0)` clears the cap, `None` leaves it unchanged).
@@ -195,6 +199,7 @@ impl Default for ExecutionConfig {
             timeout_seconds: 300, // 5 minutes default
             model_override: None,
             slug: None,
+            title: None,
             agent: None,
             force_compact: false,
             conversation: false,
@@ -1061,6 +1066,21 @@ impl SubagentExecutor {
                 .read()
                 .await
                 .set_session_slug(&child_session_id, Some(slug.clone()))
+                .await?;
+        }
+
+        // A new session is named when it is made: the title its creator
+        // gave, else the first line of its task.
+        let title = config
+            .title
+            .as_deref()
+            .and_then(peko_session::title::clean_title)
+            .or_else(|| peko_session::title::title_from_task(task));
+        if title.is_some() {
+            self.session_manager
+                .read()
+                .await
+                .set_session_title(&child_session_id, title)
                 .await?;
         }
 
@@ -1958,6 +1978,28 @@ impl SubagentExecutor {
             );
             (child_session_key, child_session_id, child_base)
         };
+
+        // A copy with no title of its own (its source had none) is named
+        // after the task it was made for.
+        {
+            let manager = self.session_manager.read().await;
+            let untitled = manager
+                .get_session_metadata(&child_session_id)
+                .await
+                .is_ok_and(|meta| meta.title.is_none());
+            let title = config
+                .title
+                .as_deref()
+                .and_then(peko_session::title::clean_title)
+                .or_else(|| {
+                    untitled
+                        .then(|| peko_session::title::title_from_task(task))
+                        .flatten()
+                });
+            if title.is_some() {
+                manager.set_session_title(&child_session_id, title).await?;
+            }
+        }
 
         // Retention (page_limit): applies to the final session whether
         // it was reseeded (overwrite) or freshly minted. On the
