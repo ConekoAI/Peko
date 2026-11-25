@@ -431,14 +431,16 @@ pub(crate) async fn posted_from_here(
         if since.is_some_and(|mark| !strictly_after(&id, mark)) {
             return false;
         }
-        // A board change (ADR-101) is not the turn speaking. A reaction
-        // (ADR-126 D5) is: a turn that reacted posts no final text.
+        // A board change (ADR-101) is not the turn speaking, and nor is a
+        // reaction (ADR-126 D5): a turn that reacted still posts its final
+        // text when it has any.
         let ChannelEvent::Posted {
             author,
             via,
             board: None,
             ask: None,
             answers: None,
+            react: None,
             ..
         } = ev
         else {
@@ -446,39 +448,6 @@ pub(crate) async fn posted_from_here(
         };
         let mine = author == principal.0
             || author == my_address
-            || author
-                .parse::<peko_subject::ActorRef>()
-                .is_ok_and(|a| port.key_of(&a) == my_key);
-        mine && via.as_deref().map(peko_session::path::strip_scheme_prefix) == Some(own_path)
-    })
-}
-
-/// ADR-126 D5: whether this session (`own_path`) reacted in `channel`
-/// after line `since`. A turn that reacted posts no final text of its own.
-pub(crate) async fn reacted_from_here(
-    port: &Arc<dyn ChannelPort>,
-    principal: &peko_subject::PrincipalId,
-    channel: &peko_channel::ChannelId,
-    since: Option<&str>,
-    own_path: Option<&str>,
-) -> bool {
-    let Some(own_path) = own_path.map(peko_session::path::strip_scheme_prefix) else {
-        return false;
-    };
-    let checkpoint = since.map_or_else(Checkpoint::default, |s| Checkpoint(s.to_string()));
-    let Ok(events) = port.peek_with_ids(channel, &checkpoint).await else {
-        return false;
-    };
-    let me = peko_subject::ActorRef::from(principal);
-    let my_key = port.key_of(&me);
-    events.into_iter().any(|(id, ev)| {
-        if since.is_some_and(|mark| !strictly_after(&id, mark)) || ev.reaction().is_none() {
-            return false;
-        }
-        let ChannelEvent::Posted { author, via, .. } = ev else {
-            return false;
-        };
-        let mine = author == principal.0
             || author
                 .parse::<peko_subject::ActorRef>()
                 .is_ok_and(|a| port.key_of(&a) == my_key);
@@ -1766,6 +1735,73 @@ mod tests {
         .unwrap();
         assert!(here().await);
         assert!(!posted_from_here(&port, &me, &dm, tip.as_deref(), None).await);
+    }
+
+    /// ADR-126 D5: a reaction is not the turn speaking. A turn that
+    /// reacted and wrote an answer posts it; one that reacted and wrote
+    /// nothing posts nothing.
+    #[tokio::test]
+    async fn a_turn_that_reacted_posts_its_answer_and_nothing_when_it_has_none() {
+        let (_dir, port) = store();
+        let dm = bound_dm(&port, "dm-react", "/principal-here").await;
+        let me = PrincipalId(ME.id.to_string());
+        let line = port
+            .post_attributed(
+                &dm,
+                &me_subject(),
+                "user:local:bo",
+                PostMsg::root("ship it?"),
+            )
+            .await
+            .unwrap();
+        let target = port
+            .peek_with_ids(&dm, &Checkpoint::default())
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|(id, _)| *id == line)
+            .and_then(|(_, ev)| match ev {
+                ChannelEvent::Posted { msg_id, .. } => msg_id,
+                _ => None,
+            })
+            .unwrap();
+        let tip = channel_tip(&port, &dm).await;
+        port.post_attributed(
+            &dm,
+            &me_subject(),
+            ME.id,
+            PostMsg::reaction(target, "👍", false).with_via("sess:/principal-here"),
+        )
+        .await
+        .unwrap();
+        assert!(
+            !posted_from_here(&port, &me, &dm, tip.as_deref(), Some("/principal-here")).await,
+            "a reaction is not the turn speaking"
+        );
+        let mine = |port: Arc<dyn ChannelPort>| {
+            let dm = dm.clone();
+            async move {
+                port.peek(&dm, &Checkpoint::default())
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .filter(|ev| ev.is_message())
+                    .filter_map(|ev| match ev {
+                        ChannelEvent::Posted { author, text, .. } if author.contains(ME.id) => {
+                            Some(text)
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            }
+        };
+        crate::principal::peer_dm::post_peer_dm_reply(&port, &me, &dm, "").await;
+        assert!(
+            mine(port.clone()).await.is_empty(),
+            "no final text: nothing posted"
+        );
+        crate::principal::peer_dm::post_peer_dm_reply(&port, &me, &dm, "Shipped as v2.").await;
+        assert_eq!(mine(port.clone()).await, ["Shipped as v2."]);
     }
 
     fn peer_id() -> peko_session::id::SessionId {

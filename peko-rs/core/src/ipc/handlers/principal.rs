@@ -3181,12 +3181,6 @@ async fn run_principal_send(
             peko_tools_core::Origin::Ingress { channel: None },
         )
         .await;
-    // ADR-126 D5: where the conversation stood, so a turn that reacted
-    // posts no final text.
-    let tip_at_start = match (channel_port.as_ref(), dm_channel.as_ref()) {
-        (Some(port), Some(dm)) => crate::principal::channel_digest::channel_tip(port, dm).await,
-        _ => None,
-    };
     let child_turn_handle = tokio::spawn(async move {
         let _permit_held = permit_for_task;
         let result = turns_for_task
@@ -3384,28 +3378,13 @@ async fn run_principal_send(
                     dm_channel.as_ref(),
                     &session_id,
                 ));
-            // ADR-126 D5: a turn that reacted has said what it meant to.
-            let reacted = match (channel_port.as_ref(), dm_channel.as_ref()) {
-                (Some(port), Some(dm)) => {
-                    let own_path = turns.session_path(&session_id).await;
-                    crate::principal::channel_digest::reacted_from_here(
-                        port,
-                        &principal.id,
-                        dm,
-                        tip_at_start.as_deref(),
-                        own_path.as_deref(),
-                    )
-                    .await
-                }
-                _ => false,
-            };
             // Phase 11: the reply's durable home is the peer's DM
             // channel (principal-authored).
             let extras = post_dm_reply(
                 channel_port.as_ref(),
                 &principal,
                 dm_channel.as_ref(),
-                if reacted { "" } else { &content },
+                &content,
             )
             .await;
             // Peer-recall artifact: the peer's latest session is the

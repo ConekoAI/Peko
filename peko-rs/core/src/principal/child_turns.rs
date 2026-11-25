@@ -938,7 +938,7 @@ impl PeerChildTurns {
     }
 
     /// `session_id`'s slug path, as the `via` of its posts carries it.
-    pub(crate) async fn session_path(&self, session_id: &str) -> Option<String> {
+    async fn session_path(&self, session_id: &str) -> Option<String> {
         let id = peko_session::id::SessionId::parse(session_id)?;
         let metas = self
             .session_manager

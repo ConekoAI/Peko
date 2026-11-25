@@ -373,8 +373,8 @@ Send with `to` (the old `channel` input is a compatibility alias; do not supply 
   grapheme, at most 64 bytes), refuses a reaction to a reaction and a 21st
   different emoji on one message, and writes the post's readable text itself. A
   reaction is not a message: it wakes no one, nudges no keepalive, counts toward
-  no chain, and is never unread. A conversation turn that reacted posts no final
-  text (its words go out with `ChannelSend`). Returns `{success, id, channel,
+  no chain, and is never unread. A conversation turn that reacted still posts its
+  final text when it has any; with none (empty or `NO_REPLY`), nothing. Returns `{success, id, channel,
   reaction, removed}`.
 
 Principal sends return canonical `to`, real `channel` (also `dm_channel` for old
