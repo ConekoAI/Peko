@@ -83,6 +83,7 @@ pub mod session_core_impl;
 pub mod spawn;
 pub mod sync;
 pub mod test_config;
+pub mod title;
 pub mod todos;
 pub mod unified;
 

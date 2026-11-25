@@ -1549,6 +1549,54 @@ async fn new_with_fresh_name_spawns_new_session() {
     assert_eq!(fresh.slug.as_deref(), Some("about-user"));
 }
 
+/// A new session is named when it is made: the title its creator gave,
+/// else the first line of its task.
+#[tokio::test]
+async fn a_new_session_takes_its_given_title_or_its_tasks_first_line() {
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
+    let executor = SubagentExecutor::with_registry(
+        registry.clone(),
+        session_manager.clone(),
+        agent_name,
+        peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
+    );
+
+    for (slug, title, expected) in [
+        (
+            "direct-links",
+            Some("  Direct device\nconnections "),
+            "Direct device connections",
+        ),
+        ("export-fix", None, "Fix the nightly export"),
+    ] {
+        let run_id = executor
+            .spawn_and_execute(
+                "## Fix the nightly export\n\nThe second shard fails; find out why.",
+                "root-sess",
+                ExecutionConfig {
+                    slug: Some(slug.to_string()),
+                    title: title.map(str::to_string),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let child_id = run_child_session_id(&registry, &run_id)
+            .await
+            .expect("run has a child session id");
+        let meta = session_manager
+            .read()
+            .await
+            .get_session_metadata(&child_id)
+            .await
+            .unwrap();
+        assert_eq!(meta.title.as_deref(), Some(expected), "{slug}");
+    }
+}
+
 #[tokio::test]
 async fn new_with_name_colliding_non_spawn_errors() {
     let (session_manager, registry, agent_name) = create_test_components().await;

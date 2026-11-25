@@ -65,7 +65,7 @@ impl SessionTool {
 - status: one session's metadata and token usage, and (`this_run`) whom this run acts for and what it may reach: files, tools, MCP servers, whether requests go to the owner.
 - list: sessions, optionally under `path` and filtered by `peer`, `agent_name`, or `active_minutes`.
 - history: a session's messages.
-- find: case-insensitive search of transcripts for `query`.
+- find: case-insensitive search for `query`: sessions whose title or slug contains it come first (`matched: "name"`), then messages that do (`matched: "text"`).
 - copy: duplicate `path` to `target` (`<parent path>/<new slug>`, like `cp`). The copy is not running; to work on it use Agent `branch` with `source` set to it.
 - move: reparent or rename with `target` (like `mv`; children move along), set the `title`, or set `page_limit`, the closed compaction pages kept (0 = all; older pages are deleted at once, for good).
 - remove: delete a session; `recursive: true` deletes its descendants too.
@@ -84,7 +84,7 @@ move and remove refuse your trunk, the session you run in, and any session with 
                 "action": {
                     "type": "string",
                     "enum": ["status", "list", "history", "find", "copy", "move", "remove", "list_pages", "read_page", "search_pages"],
-                    "description": "status/list/history read sessions; find searches transcripts; copy/move/remove manage storage; list_pages/read_page/search_pages read compaction pages"
+                    "description": "status/list/history read sessions; find searches session names and transcripts; copy/move/remove manage storage; list_pages/read_page/search_pages read compaction pages"
                 },
                 "path": {
                     "type": "string",

@@ -230,10 +230,11 @@ Run work in a new, resumed, compacted, or branched session.
 | `source` | string | no | — |
 | `overwrite` | boolean | no | — |
 | `page_limit` | integer | no | ≥ 0, ≤ 10000 |
+| `title` | string | no | new only; 1–80 characters |
 | `as_owner` | boolean | no | new only (ADR-100); from the owner's turn in a shared conversation, or from a turn another peko started in a group (ADR-120 D5) |
 | `item` | string | no | with `as_owner`, in a group: the board item the task serves (ADR-100 D6) |
 
-A run that called `Ask` (ADR-114 D4) returns `needs_input: true` and its `questions` beside its `output`, on the foreground result and on the background completion; continue it with `new` on the same `path` and the answers as `prompt`. All four actions require nonempty prompt and path. role names the template the run follows (a RoleCatalog id); omitted, it is `worker`, the seeded role for a delegated task. new is create-or-resume; new/branch accept a single relative slug or an absolute session address, while resume/compact use absolute addresses such as sess:/worker. source and overwrite are branch-only; source defaults to the calling session and overwrite defaults false. page_limit is new/branch-only, 0–10000 (0 clears the cap), omission preserves an existing cap (new sessions are unlimited); exceeding it permanently deletes the oldest closed pages. model is new/resume/branch-only and refused for compact. All live runs share the principal’s concurrency pool (default 20); delegation depth is unrestricted.
+A run that called `Ask` (ADR-114 D4) returns `needs_input: true` and its `questions` beside its `output`, on the foreground result and on the background completion; continue it with `new` on the same `path` and the answers as `prompt`. All four actions require nonempty prompt and path. role names the template the run follows (a RoleCatalog id); omitted, it is `worker`, the seeded role for a delegated task. new is create-or-resume; new/branch accept a single relative slug or an absolute session address, while resume/compact use absolute addresses such as sess:/worker. source and overwrite are branch-only; source defaults to the calling session and overwrite defaults false. page_limit is new/branch-only, 0–10000 (0 clears the cap), omission preserves an existing cap (new sessions are unlimited); exceeding it permanently deletes the oldest closed pages. model is new/resume/branch-only and refused for compact. title is new-only and names the session the call creates, in a few words, for Session `list` and `find`; it is stored as one line of at most 80 characters, and a session that already exists keeps the title it has. A session created without one is named after the first line of its prompt (at most 60 characters); a branch with no title of its own is named the same way. All live runs share the principal’s concurrency pool (default 20); delegation depth is unrestricted.
 
 `as_owner: true` (ADR-100) hands the task to the owner. Only a run the owner's own post started in a conversation others share may use it (its stamp carries `owner_request`), and only with action new, a bare-slug `path`, and a `prompt` of at most 4,000 characters: the whole brief, since the run sees nothing else. The dispatcher refuses it to every other run. It never goes to the policy reviewer: it waits as an `owner_task` approval, which the owner approves once (never *always*). On approval the brief runs as the owner (owner trust, internal compartment, origin `approval`) at `sess:/<slug>` at the top of the owner's tree, outside the conversation's reach, and its report wakes the session that asked. In a group it first checks the board item it serves (`item`, else the one item the peko is working on): when someone else has done or is doing that work, or a twin waiting on its own approval was added first, it does not run, and the owner's reply, the peko's inbox and the item's note say why; otherwise the item turns `doing` (ADR-100 D6).
 
@@ -298,13 +299,15 @@ action is required. Both Agent and Session reject unknown fields, explicit nulls
 | status | Metadata and usage; `this_run` says whom the calling run acts for (`acting_for`, `name`, `trust`, `conversation`) and what it reaches (`everything` for the owner; for a visitor, its files, own folder, tools, MCP servers and whether requests go to the owner) | — | path, timezone |
 | list | List/filter sessions | — | path, peer, agent_name, active_minutes, limit=50 |
 | history | Messages | — | path, limit=100, include_tools=true |
-| find | Transcript search | query | path, peer, limit=50 |
+| find | Search session names, then transcripts | query | path, peer, limit=50 |
 | copy | Copy to a new address | path, target | title |
 | move | Reparent/rename/update retention | path and at least one of target/title/page_limit | page_limit=0 means unlimited; maximum 10000 |
 | remove | Delete a session | path | recursive=false |
 | list_pages | Compaction page catalog | — | path |
 | read_page | Render one page | page (1-based) | path, offset=0, limit=200 |
 | search_pages | Search all pages | query | path, max_results=20 |
+
+find is a case-insensitive substring search. Sessions whose title or own slug contains the query come first, most recently active first, as hits with `matched: "name"`, `role: "session"`, and the title (or slug) as `snippet`; messages that contain it follow with `matched: "text"`. Every hit carries the session's `path` and, when it has one, its `title`; `limit` counts both kinds together. An ancestor's slug does not name the sessions under it.
 
 A move with target plus title/page_limit applies subsequent updates at the destination and returns that effective path. Invalid arguments reject before any storage mutation.
 

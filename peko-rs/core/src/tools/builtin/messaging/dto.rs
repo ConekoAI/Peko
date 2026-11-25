@@ -67,6 +67,9 @@ pub struct ExecutionConfig {
     /// (ADR-051 FIFO page limit). `None` = unlimited. Applied by the
     /// executor to the session it creates or reseeds.
     pub page_limit: Option<u32>,
+    /// The readable title for the session the run creates. `None`
+    /// names it after the first line of its task.
+    pub title: Option<String>,
     /// The calling run's stamp (ADR-078), taken from its `ToolContext`.
     pub acting_for: Option<peko_tools_core::ActingFor>,
 }
@@ -77,6 +80,7 @@ impl Default for ExecutionConfig {
             timeout_seconds: 300,
             model_override: None,
             page_limit: None,
+            title: None,
             acting_for: None,
         }
     }

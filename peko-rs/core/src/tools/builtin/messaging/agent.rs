@@ -87,6 +87,11 @@ pub struct AgentArgs {
     /// Surviving page numbers never renumber.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page_limit: Option<u64>,
+    /// Readable title (`new` only) for the session the call creates,
+    /// shown by Session `list` and matched by `find`. Omitted: the
+    /// first line of the prompt. A session that exists keeps its title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     /// ADR-100 (`new` only): hand the task to the owner. The dispatcher
     /// files it for the owner's approval; the approved brief runs as the
     /// owner without this flag. The tool itself never runs a call that
@@ -171,6 +176,11 @@ fn validate_action_args(action: AgentAction, args: &AgentArgs) -> anyhow::Result
     if !matches!(action, AgentAction::New | AgentAction::Branch) && args.page_limit.is_some() {
         return Err(anyhow::anyhow!(
             "'page_limit' is only valid with actions \"new\" and \"branch\""
+        ));
+    }
+    if action != AgentAction::New && args.title.is_some() {
+        return Err(anyhow::anyhow!(
+            "'title' is only valid with action \"new\"; Session move retitles a session"
         ));
     }
     if let Some(limit) = args.page_limit {
@@ -314,7 +324,7 @@ impl AgentTool {
         r#"Run model work in a session. Actions: "new" (the default) starts a sub-agent or continues one you spawned; "resume" re-attaches to a session you spawned; "compact" summarizes a session's older messages, then runs `prompt` on it; "branch" runs `prompt` on a copy of a session's context. Every action needs `prompt` and `path`. `role` is a RoleCatalog id; omit it for `worker`, the role for one delegated task.
 
 `path` is a slug path like `sess:/user-bob/writer-1` (Session `list` gives them; yours is in the runtime context). For new and branch a bare slug (`writer-1`, 1-64 chars, no `/`) means a session under yours. Raw session ids are refused.
-- new: continues the addressed session if you spawned it, else creates it, so repeating one call (e.g. from cron) keeps one session. Only a bare slug or a one-segment absolute path can create one.
+- new: continues the addressed session if you spawned it, else creates it, so repeating one call (e.g. from cron) keeps one session. Only a bare slug or a one-segment absolute path can create one. `title` names the new session in a few words for Session `list` and `find`; without it the session is named after the prompt's first line.
 - resume: an existing spawned session at an absolute path.
 - compact: any session except yours and your ancestors (those compact on their own). It keeps the session's model, so `model` is refused.
 - as_owner: true (new only): hand the task to your owner when they asked for it in a conversation others share, or another peko asked you for it in a group, and it needs your owner's full access (the shell, their files). `prompt` is then the whole brief (at most 4000 characters): what to do, where, and what to report back, since the run sees nothing else. Your owner approves it on their computer; then it runs as them and its report reaches this conversation. In a group, name the board item it serves in `item`: if by then someone else has done or is doing that work, it doesn't run, and you hear why.
@@ -372,6 +382,12 @@ Refused: your own session or an ancestor, a session with an active run, and (res
                     "type": "string",
                     "description": "with as_owner, in a group: the board item the task serves"
                 },
+                "title": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80,
+                    "description": "new: a few words naming the session it creates, e.g. 'Direct device connections' (default: the prompt's first line)"
+                },
                 "page_limit": {
                     "type": "integer",
                     "minimum": 0,
@@ -388,6 +404,7 @@ Refused: your own session or an ancestor, a session with an active run, and (res
                     "role",
                     "path",
                     "model",
+                    "title",
                     "page_limit",
                     "as_owner",
                     "item",
@@ -484,6 +501,7 @@ Refused: your own session or an ancestor, a session with an active run, and (res
         resume_session: Option<String>,
         caller_session_key: Option<String>,
         page_limit: Option<u32>,
+        title: Option<String>,
         ctx: Option<&ToolContext>,
     ) -> anyhow::Result<serde_json::Value> {
         // 0 = no time limit: the run continues past the framework's
@@ -548,6 +566,7 @@ Refused: your own session or an ancestor, a session with an active run, and (res
                     timeout_seconds,
                     model_override: model.clone(),
                     page_limit,
+                    title,
                     acting_for: ctx.and_then(|ctx| ctx.acting_for.clone()),
                 },
                 timeout_seconds,
@@ -960,6 +979,7 @@ impl Tool for AgentTool {
             resume_session,
             caller_session_key,
             args.page_limit.map(|v| v as u32),
+            args.title.clone(),
             None,
         )
         .await
@@ -1018,6 +1038,7 @@ impl Tool for AgentTool {
             resume_session,
             caller_session_key,
             args.page_limit.map(|v| v as u32),
+            args.title.clone(),
             Some(ctx),
         )
         .await
@@ -2247,6 +2268,7 @@ mod tests {
                 None, // resume_session
                 Some("caller:sess".to_string()),
                 None, // page_limit
+                None, // title
                 None,
             )
             .await
@@ -2286,6 +2308,7 @@ mod tests {
                 None,
                 Some("caller:sess".to_string()),
                 None, // page_limit
+                None, // title
                 None,
             )
             .await
