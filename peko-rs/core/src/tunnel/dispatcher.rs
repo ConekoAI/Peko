@@ -3162,6 +3162,24 @@ impl TunnelDispatcher {
                 );
                 return Ok(());
             }
+            // ADR-125 D8: a registered peko speaks only from the computer
+            // its host statement names. PekoHub checks this on frames it
+            // relays; a direct link does not pass PekoHub, so the receiver
+            // checks it for every frame.
+            if self
+                .host
+                .tunnel_channel_port()
+                .peko_hosted_elsewhere(&payload.creator_did, &source_runtime_id)
+                .await
+            {
+                warn!(
+                    request_id,
+                    creator_did = %payload.creator_did,
+                    source_runtime_id,
+                    "inbound TunnelChannelInvite: dropping an invite from a runtime that does not host this peko"
+                );
+                return Ok(());
+            }
         } else if is_human_dm_invite(
             &payload.creator,
             &payload.creator_did,

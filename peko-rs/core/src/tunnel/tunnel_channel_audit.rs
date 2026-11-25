@@ -18,7 +18,10 @@
 //!   appended to the local mirror (`events.jsonl`).
 //!
 //! Both carry: `{ event_kind, source_runtime_id, source_principal_did,
-//! channel_id, request_id }` plus a free-form `event_payload` preview
+//! channel_id, request_id }` plus a free-form `event_payload` preview.
+//! The received event also carries `path` (ADR-125: `direct` or `relay`);
+//! a forwarded event is queued once for every recipient, so the path of
+//! each copy is in the router's `tunnel_channel.routed` line instead,
 //! so audit consumers see the kind discriminant and a snippet of the
 //! event body without having to walk the full `ChannelEvent` JSON.
 
@@ -89,6 +92,8 @@ pub fn emit_received_inbound(
     info!(
         event_kind = "tunnel_channel.received_inbound",
         request_id = %request_id,
+        // ADR-125 D9: `direct` (a link) or `relay` (PekoHub).
+        path = %super::link::audit::received_path(request_id),
         source_runtime_id = %source_runtime_id,
         source_principal_did = %source_principal_did,
         channel_id = %channel_id,

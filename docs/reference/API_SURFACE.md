@@ -140,6 +140,29 @@ This document defines the public API surface for Peko, including the new Unified
   listens on its own loopback port, so the browser must run on the engine's
   computer or the client hands over `pasted_url`.
 
+## Direct links (ADR-125)
+
+`tunnel::link`: `Router` (`Router::new(RouterConfig) -> (Router,
+hub_rx)`, `handle`, `set_handler`, `start`, `stop`, `receive_from_hub`,
+`hub_state`, `path_to`, `status`, `apply`, `retry`, `network_changed`,
+`admitted`), which owns the queue every `TunnelHandle` sends into, seals
+with the `Sealer` and sends each frame on a link or through PekoHub;
+`TunnelClient::with_router(router, hub_rx, sealer)` gives the PekoHub
+connection's write loop the router's PekoHub queue. `Path`,
+`NetworkStatus`, `NetworkPeer`, `NetworkListening` (wire types of
+`network_status_result`). `link::hello` (`sign_hello`, `verify_hello` →
+`HelloRefusal`), `link::addresses` (`sign_addresses`, `verify_addresses`,
+`is_private`, `own_addresses`, `dialable`, `MAX_TOLD`), `link::order`
+(`Seq`, `Sequencer`, `Reorder`, `HOLD_FOR`), `link::tls` (`LinkIdentity`,
+`client_config`, `export_binding`), `link::audit` (`link.up` /
+`link.down` / `link.refused`, `tunnel_channel.routed`, the path a frame
+was received by). `Sealer::outbound_routed` → `Outgoing { bytes, ty, to,
+sealed }`, `Sealer::inbound_meta` → `(Inbound, InboundMeta { ty, source,
+seq })`, `Sealer::known_runtimes`. `common::types::config::{Connection,
+DirectWith, DEFAULT_DIRECT_LISTEN}` and the new `NetworkConfig` fields;
+`DeviceLists::find_computer`; `TunnelChannelPort::peko_hosted_elsewhere`;
+`AppState::{link_router, current_network_config, runtime_config_file}`.
+
 ## Sealed envelopes (ADR-110)
 
 `tunnel::seal` holds the sealing: `AgreementKey::derive(&SigningKey)`,

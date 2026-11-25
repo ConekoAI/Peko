@@ -268,6 +268,11 @@ tokio-util = { version = "0.7", features = ["rt", "io"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
 webpki-roots = "1"
+# ADR-125: each engine's own certificate for direct links (it proves
+# nothing; the signed `link_hello` does), and the OS's interface
+# addresses and the changes to them.
+rcgen = { version = "0.14", default-features = false, features = ["pem", "ring"] }
+if-watch = { version = "3.2", features = ["tokio"] }
 
 # Windows system calls
 # `Win32_System_Pipes`           : CreateNamedPipeW (ADR-038, named-pipe transport)
@@ -373,8 +378,6 @@ tokio-test = "0.4"
 tempfile = "3.10"
 serial_test = "3.0"
 rsa = "0.9"
-# Self-signed certificates for the tunnel TLS handshake tests (tunnel::tls).
-rcgen = { version = "0.14", default-features = false, features = ["pem", "ring"] }
 
 
 # Integration tests under tests/scenarios/ are nested in a subdir

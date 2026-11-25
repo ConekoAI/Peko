@@ -69,6 +69,7 @@ pub async fn handle_tunnel(
                         hub_url,
                         account,
                         account_name,
+                        connection,
                         ..
                     }) => {
                         if json_flag || json {
@@ -80,6 +81,7 @@ pub async fn handle_tunnel(
                                 "credential_path": cred_path.to_string_lossy().to_string(),
                                 "daemon_running": daemon_running,
                                 "connected": connected,
+                                "connection": connection.map(|c| c.as_str()),
                             });
                             println!("{}", serde_json::to_string_pretty(&output)?);
                         } else {
@@ -101,6 +103,20 @@ pub async fn handle_tunnel(
                             }
                             if let Some(hub) = &hub_url {
                                 println!("  Hub:        {hub}");
+                            }
+                            // ADR-125 D10.
+                            if let Some(connection) = connection {
+                                println!(
+                                    "  Connects:   {}  (peko network status)",
+                                    match connection {
+                                        peko_core::common::types::config::Connection::Pekohub =>
+                                            "PekoHub only",
+                                        peko_core::common::types::config::Connection::Automatic =>
+                                            "Automatic",
+                                        peko_core::common::types::config::Connection::Direct =>
+                                            "Direct only",
+                                    }
+                                );
                             }
                             if let Some(account) = &account {
                                 match &account_name {
@@ -264,6 +280,7 @@ mod tests {
             account_name: Some("Alice".to_string()),
             person_name: Some("Alice".to_string()),
             person_handle: Some("alice".to_string()),
+            connection: None,
         };
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
@@ -278,7 +295,9 @@ mod tests {
                 account_name,
                 person_name,
                 person_handle,
+                connection,
             } => {
+                assert_eq!(connection, None);
                 assert_eq!(person_handle.as_deref(), Some("alice"));
                 assert_eq!(request_id, 702);
                 assert_eq!(person_name.as_deref(), Some("Alice"));
@@ -314,6 +333,7 @@ mod tests {
             account_name: None,
             person_name: None,
             person_handle: None,
+            connection: None,
         };
         assert_eq!(resp.request_id(), 3);
     }

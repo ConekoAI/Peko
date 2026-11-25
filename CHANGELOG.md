@@ -6,6 +6,37 @@ All notable changes to Peko.
 
 ### Added
 
+- **Computers on the same network talk directly (ADR-125).** Two of your
+  computers on one network (a LAN, a VPN, Tailscale) can now link
+  directly instead of going through PekoHub, for privacy and speed:
+  `[network] connection = "automatic"` (`peko network mode automatic`, or
+  Peko Desktop's Settings → Network) uses a link whenever one is up and
+  PekoHub otherwise, choosing again every time the network changes;
+  `"direct"` never uses PekoHub for a conversation (messages wait until
+  the other computer is on the same network; paired phones and public web
+  chat stop). The default, `"pekohub"`, is today's behaviour and opens no
+  port. A link is a WebSocket over TLS 1.3 on `direct_listen` (default
+  `0.0.0.0:11438`); each side proves its runtime key with a hello signed
+  over the TLS session's exported keys, and only computers on your device
+  list (`direct_with = "mine"`) or that this one seals to (`"people"`)
+  are admitted. Frames on a link are sealed exactly as through PekoHub.
+  Computers tell each other their private addresses in a new sealed frame,
+  `tunnel_direct_addresses` (PekoHub must relay it: deploy PekoHub first),
+  remembered in `runtime/links.json`; `direct_addresses` / `direct_peers`
+  override and add to them. Changing networks goes unnoticed: the engine
+  hears interface changes, checks each link within 3 s, reconnects to
+  PekoHub at once, asks unanswered requests again on the other path, and
+  orders channel events across a switch with a per-computer `seq`; a new
+  link carries frames after 10 s of answered heartbeats. New IPC requests
+  `network_status`, `network_settings_set` (stable) and
+  `network_link_retry` (internal); `device_list_result` gains `path` per
+  computer and `tunnel_status` gains `connection`; `peko network`
+  (`status`, `mode`, `with`, `peer add|remove`, `retry`) and the path in
+  `peko device list` / `peko tunnel status`. Audit lines `link.up`,
+  `link.down`, `link.refused`, `tunnel_channel.routed`, and `path` on
+  `tunnel_channel.received_inbound`. A peko's channel invite is now taken
+  only from the computer the directory names as its host (ADR-125 D8),
+  whichever path it came by.
 - **You choose your name, and your handle tells you apart (ADR-124).**
   Apps called the person at this computer "You", and before signing in to
   PekoHub nothing named them at all. Now they go by the name they choose:

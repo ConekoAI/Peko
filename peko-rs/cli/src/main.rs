@@ -66,8 +66,8 @@ mod release_version_tests {
 
 use crate::commands::{
     audit, auth, browser, channel, code, computer, config, credential, daemon, device, from_cli,
-    init_logging, log, model, principal, quota, runtime, secret, send, stop, system, tunnel, undo,
-    update, vault, version, Cli, Commands, GlobalPaths,
+    init_logging, log, model, network, principal, quota, runtime, secret, send, stop, system,
+    tunnel, undo, update, vault, version, Cli, Commands, GlobalPaths,
 };
 
 // `peko-rs/cli/` is a binary-only crate (no `src/lib.rs`), so the
@@ -172,6 +172,7 @@ async fn run_command(command: Commands, paths: &GlobalPaths, json: bool) -> anyh
         Commands::Runtime(cmd) => runtime::handle_runtime(cmd, paths, json).await,
         Commands::Tunnel(cmd) => tunnel::handle_tunnel(cmd, paths, json).await,
         Commands::Device(cmd) => device::handle_device(cmd, paths, json).await,
+        Commands::Network(cmd) => network::handle_network(cmd, paths, json).await,
         Commands::Secret(cmd) => secret::handle_secret(cmd, paths, json).await,
         Commands::Browser(cmd) => browser::handle_browser(cmd, paths, json).await,
         Commands::Computer(cmd) => computer::handle_computer(cmd, paths, json).await,

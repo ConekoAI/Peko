@@ -117,7 +117,121 @@ pub struct NetworkConfig {
     /// address nor one of these are refused.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub http_hosts: Vec<String>,
+    /// ADR-125 D2: how this computer reaches its other computers and
+    /// people's: through PekoHub only (the default), directly when it can
+    /// (`automatic`), or directly only (`direct`).
+    #[serde(skip_serializing_if = "Connection::is_pekohub")]
+    pub connection: Connection,
+    /// ADR-125 D4: which computers it links with.
+    #[serde(skip_serializing_if = "DirectWith::is_mine")]
+    pub direct_with: DirectWith,
+    /// ADR-125 D2: where it listens for links (`0.0.0.0:11438` unless set).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub direct_listen: Option<String>,
+    /// ADR-125 D5: what it tells other computers to dial, instead of its
+    /// interfaces' private addresses (`host:port`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub direct_addresses: Vec<String>,
+    /// ADR-125 D5: addresses it dials without being told (`host:port`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub direct_peers: Vec<String>,
 }
+
+/// ADR-125 D2: how this computer connects to other computers.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum Connection {
+    /// Everything through PekoHub; the engine neither listens nor dials.
+    #[default]
+    Pekohub,
+    /// A direct link whenever one is up, PekoHub otherwise.
+    Automatic,
+    /// Direct links only; nothing of a conversation crosses PekoHub.
+    Direct,
+}
+
+impl Connection {
+    /// Whether it is the default, `pekohub`.
+    #[must_use]
+    pub fn is_pekohub(&self) -> bool {
+        *self == Self::Pekohub
+    }
+
+    /// Whether links are made at all.
+    #[must_use]
+    pub fn links(&self) -> bool {
+        *self != Self::Pekohub
+    }
+
+    /// Its name in the settings file and on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pekohub => "pekohub",
+            Self::Automatic => "automatic",
+            Self::Direct => "direct",
+        }
+    }
+}
+
+impl std::str::FromStr for Connection {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "pekohub" => Ok(Self::Pekohub),
+            "automatic" => Ok(Self::Automatic),
+            "direct" => Ok(Self::Direct),
+            other => Err(format!(
+                "connection must be pekohub, automatic or direct, not {other:?}"
+            )),
+        }
+    }
+}
+
+/// ADR-125 D4: which computers this one links with.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum DirectWith {
+    /// The computers on the owner's own device list.
+    #[default]
+    Mine,
+    /// Also every computer of another person, or hosting another person's
+    /// peko, that this computer seals to.
+    People,
+}
+
+impl DirectWith {
+    /// Whether it is the default, `mine`.
+    #[must_use]
+    pub fn is_mine(&self) -> bool {
+        *self == Self::Mine
+    }
+
+    /// Its name in the settings file and on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Mine => "mine",
+            Self::People => "people",
+        }
+    }
+}
+
+impl std::str::FromStr for DirectWith {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "mine" => Ok(Self::Mine),
+            "people" => Ok(Self::People),
+            other => Err(format!("direct_with must be mine or people, not {other:?}")),
+        }
+    }
+}
+
+/// ADR-125 D2: where the engine listens for links unless told otherwise.
+pub const DEFAULT_DIRECT_LISTEN: &str = "0.0.0.0:11438";
 
 // ADR-058 post-review cleanup: `DirectNetworkConfig` and the
 // `network.direct` field were deleted — the direct cross-runtime

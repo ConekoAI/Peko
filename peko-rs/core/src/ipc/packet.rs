@@ -1413,6 +1413,43 @@ pub enum RequestPacket {
     #[serde(rename = "device_list")]
     DeviceList { request_id: u64 },
 
+    /// ADR-125 D9: how this computer connects to its other computers and
+    /// people's, and the path to each (`direct`, `relay`, `waiting`,
+    /// `offline`). Local callers only. Answered with `NetworkStatusResult`.
+    #[serde(rename = "network_status")]
+    NetworkStatus { request_id: u64 },
+
+    /// ADR-125 D9: set any of the `[network]` link settings; writes
+    /// `runtime.toml` and applies them at once (starts or stops the
+    /// listener, closes links no longer admitted, tells peers whether
+    /// this computer takes relayed frames). An absent field is left as it
+    /// is; an empty `direct_listen` goes back to the default. Local
+    /// callers only. Answered with `NetworkStatusResult`.
+    #[serde(rename = "network_settings_set")]
+    NetworkSettingsSet {
+        request_id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        connection: Option<crate::common::types::config::Connection>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        direct_with: Option<crate::common::types::config::DirectWith>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        direct_listen: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        direct_addresses: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        direct_peers: Option<Vec<String>>,
+    },
+
+    /// ADR-125 D9: dial a computer's known addresses now (every one's,
+    /// without `runtime_id`), without waiting for the backoff. Local
+    /// callers only. Answered with `Done`.
+    #[serde(rename = "network_link_retry")]
+    NetworkLinkRetry {
+        request_id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        runtime_id: Option<String>,
+    },
+
     /// ADR-112: the code of an identity as this computer holds it, to
     /// compare with its owner's: `account`, `user:hub:<id>`,
     /// `peko:hub:<id>`, or one of your pekos by name or id. Local callers
@@ -1583,6 +1620,9 @@ impl RequestPacket {
             | Self::DeviceAdd { request_id }
             | Self::DeviceJoin { request_id, .. }
             | Self::DeviceList { request_id }
+            | Self::NetworkStatus { request_id }
+            | Self::NetworkSettingsSet { request_id, .. }
+            | Self::NetworkLinkRetry { request_id, .. }
             | Self::IdentityCode { request_id, .. }
             | Self::DeviceRemove { request_id, .. }
             | Self::SecurityDecide { request_id, .. }
@@ -1961,6 +2001,11 @@ pub struct DeviceInfo {
     /// something.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_seen: Option<String>,
+    /// ADR-125 D9: how another computer is reached now (`direct`,
+    /// `relay`, `waiting`, `offline`). Absent for phones, this computer,
+    /// and from older engines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<crate::tunnel::link::Path>,
 }
 
 /// Something about the account that waits for the owner (ADR-111 D6).
@@ -2408,6 +2453,14 @@ pub enum ResponsePacket {
         view: DevicesView,
     },
 
+    /// Response to `NetworkStatus` and `NetworkSettingsSet` (ADR-125 D9).
+    #[serde(rename = "network_status_result")]
+    NetworkStatusResult {
+        request_id: u64,
+        #[serde(flatten)]
+        status: crate::tunnel::link::NetworkStatus,
+    },
+
     /// Response to `IdentityCode` (ADR-112).
     #[serde(rename = "identity_code_result")]
     IdentityCodeResult {
@@ -2817,6 +2870,10 @@ pub enum ResponsePacket {
         /// Their PekoHub handle, while signed in (ADR-124).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         person_handle: Option<String>,
+        /// ADR-125: how this computer connects (`pekohub`, `automatic`,
+        /// `direct`). Absent from older daemons.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        connection: Option<crate::common::types::config::Connection>,
     },
 
     /// Comprehensive daemon status payload (issue #8). Includes tunnel
@@ -4125,6 +4182,7 @@ impl ResponsePacket {
             | Self::ChannelUndeliveredResult { request_id, .. }
             | Self::DeviceCodeShown { request_id, .. }
             | Self::DeviceListResult { request_id, .. }
+            | Self::NetworkStatusResult { request_id, .. }
             | Self::IdentityCodeResult { request_id, .. }
             | Self::ChannelReadMarked { request_id, .. }
             | Self::ChannelReadStateResult { request_id, .. } => *request_id,
@@ -4244,6 +4302,7 @@ impl ResponsePacket {
             Self::ChannelUndeliveredResult { .. } => "ChannelUndeliveredResult",
             Self::DeviceCodeShown { .. } => "DeviceCodeShown",
             Self::DeviceListResult { .. } => "DeviceListResult",
+            Self::NetworkStatusResult { .. } => "NetworkStatusResult",
             Self::IdentityCodeResult { .. } => "IdentityCodeResult",
             Self::ChannelReadMarked { .. } => "ChannelReadMarked",
             Self::ChannelReadStateResult { .. } => "ChannelReadStateResult",

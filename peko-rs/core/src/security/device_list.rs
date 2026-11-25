@@ -749,6 +749,21 @@ impl DeviceLists {
         self.lists.lock().unwrap().get(account).cloned()
     }
 
+    /// The account a computer is on, among the lists held, and its name
+    /// there (ADR-125 D9).
+    #[must_use]
+    pub fn find_computer(&self, runtime: &str) -> Option<(String, Option<String>)> {
+        self.lists
+            .lock()
+            .unwrap()
+            .iter()
+            .find_map(|(account, list)| {
+                list.computers()
+                    .find(|d| d.id == runtime)
+                    .map(|d| (account.clone(), d.name.clone()))
+            })
+    }
+
     /// This computer's own account's latest list while it is not on it.
     #[must_use]
     pub fn unanchored(&self) -> Option<DeviceList> {

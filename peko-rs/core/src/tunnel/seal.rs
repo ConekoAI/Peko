@@ -35,6 +35,7 @@ use serde_json::{Map, Value};
 use tracing::{debug, warn};
 
 use super::did_key::did_key_to_verifying_key;
+use super::link::order::{is_ordered_type, Seq, Sequencer, SEQ_FIELD};
 use super::protocol::{RuntimeKeyEntry, TunnelMessage};
 use super::tunnel_channel_signature::{jws_sign, jws_verify};
 use crate::security::device_list::{DeviceLists, Head};
@@ -84,6 +85,7 @@ pub const SEALED_TYPES: &[&str] = &[
     "tunnel_peko_approval_decided",
     "tunnel_peko_browser_request",
     "tunnel_peko_browser",
+    "tunnel_direct_addresses",
     "tunnel_read_mark",
     "tunnel_group_invitation",
     "tunnel_group_join",
@@ -320,6 +322,9 @@ pub struct Opened {
     pub sender: Option<String>,
     /// Where the sender's account's device list ends.
     pub devices: Option<SenderDevices>,
+    /// The frame's place in its sender's count to this computer
+    /// (ADR-125 D6), on channel events and invites.
+    pub seq: Option<Seq>,
 }
 
 /// Seal `frame` to `recipient` (an X25519 key): the header stays, the
@@ -393,6 +398,10 @@ pub fn open_frame(
             found.devices = serde_json::from_value(value).ok();
             continue;
         }
+        if name == SEQ_FIELD {
+            found.seq = serde_json::from_value(value).ok();
+            continue;
+        }
         if frame.contains_key(&name) {
             return Err(format!("sealed body repeats header field {name:?}"));
         }
@@ -459,6 +468,30 @@ pub enum Inbound {
     Ignore,
 }
 
+/// One frame [`Sealer::outbound_routed`] made, and where it goes.
+#[derive(Debug, Clone)]
+pub struct Outgoing {
+    pub bytes: Vec<u8>,
+    /// Its `type`.
+    pub ty: String,
+    /// The computer it is sealed to (`recipientRuntimeId`); `None` for a
+    /// frame to PekoHub itself or to a phone.
+    pub to: Option<String>,
+    /// Whether it is sealed.
+    pub sealed: bool,
+}
+
+/// What [`Sealer::inbound_meta`] read of a frame besides the message.
+#[derive(Debug, Default, Clone)]
+pub struct InboundMeta {
+    /// Its `type`.
+    pub ty: String,
+    /// Its header's `sourceRuntimeId`.
+    pub source: Option<String>,
+    /// Its `seq`, when it carried one (ADR-125 D6).
+    pub seq: Option<Seq>,
+}
+
 /// Seals what this runtime sends and opens what it receives (ADR-110).
 pub struct Sealer {
     runtime_id: String,
@@ -473,6 +506,8 @@ pub struct Sealer {
     fetched: Mutex<HashMap<String, Instant>>,
     /// When a newer head of each account was last asked about.
     heads_asked: Mutex<HashMap<String, Instant>>,
+    /// ADR-125 D6: numbers channel events and invites per computer.
+    sequencer: Sequencer,
 }
 
 impl std::fmt::Debug for Sealer {
@@ -515,6 +550,7 @@ impl Sealer {
             pending: Mutex::new(Pending::default()),
             fetched: Mutex::new(HashMap::new()),
             heads_asked: Mutex::new(HashMap::new()),
+            sequencer: Sequencer::new(),
         }
     }
 
@@ -538,6 +574,20 @@ impl Sealer {
     #[must_use]
     pub fn known_key_of(&self, runtime: &str) -> Option<String> {
         self.known_key(runtime)
+    }
+
+    /// Every other runtime whose key statement this computer holds: the
+    /// computers it seals to (ADR-125 D4).
+    #[must_use]
+    pub fn known_runtimes(&self) -> Vec<String> {
+        self.file
+            .lock()
+            .unwrap()
+            .keys
+            .keys()
+            .filter(|r| **r != self.runtime_id)
+            .cloned()
+            .collect()
     }
 
     fn learn(&self, statement: &str) -> Option<KeyStatement> {
@@ -577,6 +627,16 @@ impl Sealer {
     /// it is waiting on. A message of a sealed type is never written
     /// unsealed (D5).
     pub async fn outbound(&self, msg: TunnelMessage) -> Vec<Vec<u8>> {
+        self.outbound_routed(msg)
+            .await
+            .into_iter()
+            .map(|f| f.bytes)
+            .collect()
+    }
+
+    /// [`Self::outbound`], saying of each frame which computer it is
+    /// sealed to, so a router can choose its path (ADR-125 D6).
+    pub async fn outbound_routed(&self, msg: TunnelMessage) -> Vec<Outgoing> {
         let value = match serde_json::to_value(&msg) {
             Ok(Value::Object(map)) => map,
             Ok(_) | Err(_) => return Vec::new(),
@@ -588,7 +648,14 @@ impl Sealer {
             .to_string();
         if !is_sealed_type(&ty) {
             return serde_json::to_vec(&value)
-                .map(|b| vec![b])
+                .map(|bytes| {
+                    vec![Outgoing {
+                        bytes,
+                        ty,
+                        to: None,
+                        sealed: false,
+                    }]
+                })
                 .unwrap_or_default();
         }
         self.sweep();
@@ -655,15 +722,42 @@ impl Sealer {
 
     fn sealed_bytes(
         &self,
-        frame: Map<String, Value>,
+        mut frame: Map<String, Value>,
         key: &str,
         with_sender: bool,
         devices: Option<&SenderDevices>,
-    ) -> Vec<Vec<u8>> {
+    ) -> Vec<Outgoing> {
         let sender = with_sender.then_some(self.statement.as_str());
+        let ty = frame
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let to = frame
+            .get("recipientRuntimeId")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        if let (true, Some(to), Some(request_id)) = (
+            is_ordered_type(&ty),
+            to.as_deref(),
+            frame.get("requestId").and_then(Value::as_str),
+        ) {
+            let seq = self.sequencer.stamp(to, request_id);
+            frame.insert(
+                SEQ_FIELD.into(),
+                serde_json::to_value(seq).expect("a seq serializes"),
+            );
+        }
         match seal_frame(frame, key, sender, devices) {
             Ok(sealed) => serde_json::to_vec(&sealed)
-                .map(|b| vec![b])
+                .map(|bytes| {
+                    vec![Outgoing {
+                        bytes,
+                        ty,
+                        to,
+                        sealed: true,
+                    }]
+                })
                 .unwrap_or_default(),
             Err(e) => {
                 warn!("could not seal an envelope: {e}; not sent");
@@ -672,7 +766,7 @@ impl Sealer {
         }
     }
 
-    fn park(&self, want: Want, msg: TunnelMessage) -> Vec<Vec<u8>> {
+    fn park(&self, want: Want, msg: TunnelMessage) -> Vec<Outgoing> {
         let mut pending = self.pending.lock().unwrap();
         pending
             .waiting
@@ -713,7 +807,21 @@ impl Sealer {
                 }
             }
         };
-        request.to_bytes().map(|b| vec![b]).unwrap_or_default()
+        let ty = match &request {
+            TunnelMessage::RuntimeKeysRequest { .. } => "runtime_keys_request",
+            _ => "device_list_request",
+        };
+        request
+            .to_bytes()
+            .map(|bytes| {
+                vec![Outgoing {
+                    bytes,
+                    ty: ty.into(),
+                    to: None,
+                    sealed: false,
+                }]
+            })
+            .unwrap_or_default()
     }
 
     fn sweep(&self) {
@@ -780,15 +888,39 @@ impl Sealer {
     /// the Hub sent, and refuse anything of a sealed type that is not
     /// sealed to this computer (D5).
     pub async fn inbound(&self, bytes: &[u8]) -> Inbound {
+        self.inbound_meta(bytes).await.0
+    }
+
+    /// [`Self::inbound`], with the frame's type, source and `seq`
+    /// (ADR-125 D6).
+    pub async fn inbound_meta(&self, bytes: &[u8]) -> (Inbound, InboundMeta) {
         let Ok(Value::Object(frame)) = serde_json::from_slice::<Value>(bytes) else {
             warn!("ignoring a tunnel frame that is not a JSON object");
-            return Inbound::Ignore;
+            return (Inbound::Ignore, InboundMeta::default());
         };
         let ty = frame
             .get("type")
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
+        let mut meta = InboundMeta {
+            ty: ty.clone(),
+            source: frame
+                .get("sourceRuntimeId")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            seq: None,
+        };
+        let inbound = self.inbound_frame(frame, ty, &mut meta).await;
+        (inbound, meta)
+    }
+
+    async fn inbound_frame(
+        &self,
+        frame: Map<String, Value>,
+        ty: String,
+        meta: &mut InboundMeta,
+    ) -> Inbound {
         if ty == "runtime_keys" {
             return match serde_json::from_value::<TunnelMessage>(Value::Object(frame)) {
                 Ok(TunnelMessage::RuntimeKeys {
@@ -827,6 +959,7 @@ impl Sealer {
                 return Inbound::Ignore;
             }
         };
+        meta.seq = found.seq.clone();
         if let (Some(statement), Some(source)) = (found.sender, source) {
             if let Some(s) = self.learn(&statement) {
                 if s.runtime_id != source {

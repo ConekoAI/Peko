@@ -352,6 +352,49 @@ impl DaemonClient {
             .await
     }
 
+    /// How this computer connects, and the path to each computer
+    /// (ADR-125 D9).
+    pub async fn network_status(&self) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        self.device_request(RequestPacket::NetworkStatus { request_id })
+            .await
+    }
+
+    /// Change the `[network]` link settings and apply them (ADR-125 D9).
+    /// `None` leaves a setting as it is.
+    pub async fn network_settings_set(
+        &self,
+        connection: Option<crate::common::types::config::Connection>,
+        direct_with: Option<crate::common::types::config::DirectWith>,
+        direct_listen: Option<String>,
+        direct_addresses: Option<Vec<String>>,
+        direct_peers: Option<Vec<String>>,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        self.device_request(RequestPacket::NetworkSettingsSet {
+            request_id,
+            connection,
+            direct_with,
+            direct_listen,
+            direct_addresses,
+            direct_peers,
+        })
+        .await
+    }
+
+    /// Dial a computer's known addresses now (ADR-125 D9).
+    pub async fn network_link_retry(
+        &self,
+        runtime_id: Option<String>,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        self.device_request(RequestPacket::NetworkLinkRetry {
+            request_id,
+            runtime_id,
+        })
+        .await
+    }
+
     /// The code of an identity as this computer holds it (ADR-112).
     pub async fn identity_code(&self, of: &str) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();

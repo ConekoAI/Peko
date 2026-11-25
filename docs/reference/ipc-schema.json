@@ -3831,6 +3831,113 @@
           "type": "object"
         },
         {
+          "description": "ADR-125 D9: how this computer connects to its other computers and\npeople's, and the path to each (`direct`, `relay`, `waiting`,\n`offline`). Local callers only. Answered with `NetworkStatusResult`.",
+          "properties": {
+            "request_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "network_status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "ADR-125 D9: set any of the `[network]` link settings; writes\n`runtime.toml` and applies them at once (starts or stops the\nlistener, closes links no longer admitted, tells peers whether\nthis computer takes relayed frames). An absent field is left as it\nis; an empty `direct_listen` goes back to the default. Local\ncallers only. Answered with `NetworkStatusResult`.",
+          "properties": {
+            "connection": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Connection"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "direct_addresses": {
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "direct_listen": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "direct_peers": {
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "direct_with": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/DirectWith"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "request_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "network_settings_set",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "ADR-125 D9: dial a computer's known addresses now (every one's,\nwithout `runtime_id`), without waiting for the backoff. Local\ncallers only. Answered with `Done`.",
+          "properties": {
+            "request_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "runtime_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "network_link_retry",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id"
+          ],
+          "type": "object"
+        },
+        {
           "description": "ADR-112: the code of an identity as this computer holds it, to\ncompare with its owner's: `account`, `user:hub:<id>`,\n`peko:hub:<id>`, or one of your pekos by name or id. Local callers\nonly. Answered with `IdentityCodeResult` (`code` absent when this\ncomputer holds no identity for it yet).",
           "properties": {
             "of": {
@@ -4503,6 +4610,26 @@
       ],
       "type": "object"
     },
+    "Connection": {
+      "description": "ADR-125 D2: how this computer connects to other computers.",
+      "oneOf": [
+        {
+          "const": "pekohub",
+          "description": "Everything through PekoHub; the engine neither listens nor dials.",
+          "type": "string"
+        },
+        {
+          "const": "automatic",
+          "description": "A direct link whenever one is up, PekoHub otherwise.",
+          "type": "string"
+        },
+        {
+          "const": "direct",
+          "description": "Direct links only; nothing of a conversation crosses PekoHub.",
+          "type": "string"
+        }
+      ]
+    },
     "ConversationKind": {
       "description": "What a channel is (ADR-082 D1): a two-member pair conversation or a\ngroup with a mutable roster. Set at creation, never changed, and\ncarried on the signed cross-runtime invite.",
       "oneOf": [
@@ -4677,6 +4804,17 @@
             "null"
           ]
         },
+        "path": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Path"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "ADR-125 D9: how another computer is reached now (`direct`,\n`relay`, `waiting`, `offline`). Absent for phones, this computer,\nand from older engines."
+        },
         "this": {
           "description": "Whether it is this computer.",
           "type": "boolean"
@@ -4690,6 +4828,21 @@
         "this"
       ],
       "type": "object"
+    },
+    "DirectWith": {
+      "description": "ADR-125 D4: which computers this one links with.",
+      "oneOf": [
+        {
+          "const": "mine",
+          "description": "The computers on the owner's own device list.",
+          "type": "string"
+        },
+        {
+          "const": "people",
+          "description": "Also every computer of another person, or hosting another person's\npeko, that this computer seals to.",
+          "type": "string"
+        }
+      ]
     },
     "DiscoveredModelWire": {
       "description": "A model an endpoint lists (`ModelsDiscovered`).",
@@ -5748,6 +5901,110 @@
         "id"
       ],
       "type": "object"
+    },
+    "NetworkListening": {
+      "description": "Where the engine listens for links (D9).",
+      "properties": {
+        "address": {
+          "description": "The address it listens on, while it does.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "addresses": {
+          "default": [],
+          "description": "What it tells other computers to dial.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "error": {
+          "description": "Why it does not listen, when it could not.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "NetworkPeer": {
+      "description": "One computer this one links with, or could (D9).",
+      "properties": {
+        "account": {
+          "description": "`user:hub:<id>` of the account it is on, when known.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "address": {
+          "description": "The address of its link, while there is one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_error": {
+          "description": "Why the last attempt to link with it failed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Its name on its device list, when known.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "$ref": "#/$defs/Path"
+        },
+        "runtime_id": {
+          "type": "string"
+        },
+        "since": {
+          "description": "RFC 3339: since when its link is up.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "runtime_id",
+        "path"
+      ],
+      "type": "object"
+    },
+    "Path": {
+      "description": "How frames to a computer travel now (D9).",
+      "oneOf": [
+        {
+          "const": "direct",
+          "description": "On a link.",
+          "type": "string"
+        },
+        {
+          "const": "relay",
+          "description": "Through PekoHub.",
+          "type": "string"
+        },
+        {
+          "const": "waiting",
+          "description": "No link, and the relay is not used to it (`direct` here, or it\nsaid it takes no relayed frames): frames wait for a link.",
+          "type": "string"
+        },
+        {
+          "const": "offline",
+          "description": "No link and no PekoHub connection.",
+          "type": "string"
+        }
+      ]
     },
     "PekoDmSummary": {
       "description": "One of this runtime's person's DMs with a peko on another runtime\n(ADR-090, ADR-095 D5).",
@@ -9894,6 +10151,116 @@
           "x-stability": "stable"
         },
         {
+          "description": "ADR-125 D9: how this computer connects to its other computers and\npeople's, and the path to each (`direct`, `relay`, `waiting`,\n`offline`). Local callers only. Answered with `NetworkStatusResult`.",
+          "properties": {
+            "request_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "network_status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id"
+          ],
+          "type": "object",
+          "x-stability": "stable"
+        },
+        {
+          "description": "ADR-125 D9: set any of the `[network]` link settings; writes\n`runtime.toml` and applies them at once (starts or stops the\nlistener, closes links no longer admitted, tells peers whether\nthis computer takes relayed frames). An absent field is left as it\nis; an empty `direct_listen` goes back to the default. Local\ncallers only. Answered with `NetworkStatusResult`.",
+          "properties": {
+            "connection": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Connection"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "direct_addresses": {
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "direct_listen": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "direct_peers": {
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "direct_with": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/DirectWith"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "request_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "network_settings_set",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id"
+          ],
+          "type": "object",
+          "x-stability": "stable"
+        },
+        {
+          "description": "ADR-125 D9: dial a computer's known addresses now (every one's,\nwithout `runtime_id`), without waiting for the backoff. Local\ncallers only. Answered with `Done`.",
+          "properties": {
+            "request_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "runtime_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "network_link_retry",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id"
+          ],
+          "type": "object",
+          "x-stability": "internal"
+        },
+        {
           "description": "ADR-112: the code of an identity as this computer holds it, to\ncompare with its owner's: `account`, `user:hub:<id>`,\n`peko:hub:<id>`, or one of your pekos by name or id. Local callers\nonly. Answered with `IdentityCodeResult` (`code` absent when this\ncomputer holds no identity for it yet).",
           "properties": {
             "of": {
@@ -11181,6 +11548,66 @@
           "x-stability": "stable"
         },
         {
+          "description": "Response to `NetworkStatus` and `NetworkSettingsSet` (ADR-125 D9).",
+          "properties": {
+            "connection": {
+              "$ref": "#/$defs/Connection"
+            },
+            "direct_addresses": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "direct_listen": {
+              "description": "The settings as written (for an editor of them): `direct_listen`\n(absent: the default), `direct_addresses`, `direct_peers`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "direct_peers": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "direct_with": {
+              "$ref": "#/$defs/DirectWith"
+            },
+            "listening": {
+              "$ref": "#/$defs/NetworkListening"
+            },
+            "peers": {
+              "items": {
+                "$ref": "#/$defs/NetworkPeer"
+              },
+              "type": "array"
+            },
+            "request_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "network_status_result",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "connection",
+            "direct_with",
+            "listening",
+            "peers"
+          ],
+          "type": "object",
+          "x-stability": "stable"
+        },
+        {
           "description": "Response to `IdentityCode` (ADR-112).",
           "properties": {
             "code": {
@@ -12293,6 +12720,17 @@
             },
             "connected": {
               "type": "boolean"
+            },
+            "connection": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Connection"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "ADR-125: how this computer connects (`pekohub`, `automatic`,\n`direct`). Absent from older daemons."
             },
             "daemon_running": {
               "type": "boolean"
