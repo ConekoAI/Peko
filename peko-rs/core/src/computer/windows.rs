@@ -107,6 +107,10 @@ use super::{
 
 const WHEEL_DELTA: i32 = 120;
 
+/// A virtual key Windows leaves unassigned (0xE8): pressing it means
+/// nothing to any app, but it is input this process sent.
+const VK_UNASSIGNED: VIRTUAL_KEY = VIRTUAL_KEY(0xE8);
+
 /// Run `f` per-monitor DPI aware (v2) on this thread, then put the
 /// thread's awareness back.
 fn dpi_aware<T>(f: impl FnOnce() -> T) -> T {
@@ -778,13 +782,19 @@ impl Platform for WindowsPlatform {
             if IsIconic(h).as_bool() {
                 let _ = ShowWindow(h, SW_RESTORE);
             }
-            // Windows gives the foreground to the process that sent the
-            // last input: a tap of Alt makes that this one.
-            let _ = send(&[
-                key_input(VK_MENU, 0, KEYBD_EVENT_FLAGS(0)),
-                key_input(VK_MENU, 0, KEYEVENTF_KEYUP),
-            ]);
-            let _ = SetForegroundWindow(h);
+            // Minimizing a window leaves it the foreground one: restored,
+            // it needs nothing more.
+            if GetForegroundWindow() != h {
+                // Windows gives the foreground to the process that sent
+                // the last input: a tap of an unassigned key makes that
+                // this one. Not Alt: a lone Alt tap puts the window in
+                // front in menu mode, which swallows the next key typed.
+                let _ = send(&[
+                    key_input(VK_UNASSIGNED, 0, KEYBD_EVENT_FLAGS(0)),
+                    key_input(VK_UNASSIGNED, 0, KEYEVENTF_KEYUP),
+                ]);
+                let _ = SetForegroundWindow(h);
+            }
             let _ = BringWindowToTop(h);
         });
         Ok(())
@@ -1044,6 +1054,10 @@ fn hook_thread(started: &mpsc::Sender<Result<(), String>>) {
 mod tests {
     use super::*;
 
+    /// The real-screen tests share one pointer, keyboard and foreground:
+    /// one at a time.
+    static SCREEN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn keys_map_to_windows_codes_not_mac_ones() {
         let chord = super::super::keys::parse("cmd+a", false).unwrap();
@@ -1077,6 +1091,9 @@ mod tests {
         if std::env::var("PEKO_TEST_COMPUTER").ok().as_deref() != Some("1") {
             return;
         }
+        let _screen = SCREEN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let win = WindowsPlatform::new();
         assert!(win.unavailable().is_none());
         let screens = win.screens().unwrap();
@@ -1101,6 +1118,9 @@ mod tests {
         if std::env::var("PEKO_TEST_COMPUTER").ok().as_deref() != Some("1") {
             return;
         }
+        let _screen = SCREEN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let picture = || {
             std::thread::spawn(|| {
                 let win = WindowsPlatform::new();
@@ -1145,6 +1165,115 @@ mod tests {
         unsafe { DefWindowProcW(h, m, w, l) }
     }
 
+    static TYPED: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+    /// A window that keeps the characters it is sent.
+    unsafe extern "system" fn typing_window(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+        use windows::Win32::UI::WindowsAndMessaging::{DefWindowProcW, WM_CHAR};
+        if m == WM_CHAR {
+            if let Some(c) = char::from_u32(w.0 as u32) {
+                TYPED.lock().unwrap().push(c);
+            }
+            return LRESULT(0);
+        }
+        unsafe { DefWindowProcW(h, m, w, l) }
+    }
+
+    /// Bringing back a minimized window that is still the foreground one
+    /// (minimizing leaves it so) and typing: every character arrives. The
+    /// Alt tap that won the foreground put the window in menu mode, and
+    /// it swallowed the first character ("three" arrived as "hree").
+    /// Real screen, by hand with `PEKO_TEST_COMPUTER=1` (it types).
+    #[test]
+    fn typing_after_bringing_back_a_minimized_window_loses_nothing() {
+        use windows::core::w;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, DispatchMessageW, PeekMessageW, RegisterClassW,
+            TranslateMessage, PM_REMOVE, SW_MINIMIZE, WINDOW_EX_STYLE, WNDCLASSW,
+            WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+        };
+        if std::env::var("PEKO_TEST_COMPUTER").ok().as_deref() != Some("1") {
+            return;
+        }
+        let _screen = SCREEN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (made, window) = mpsc::channel::<u64>();
+        let (finish, finished) = mpsc::channel::<()>();
+        let ui = std::thread::spawn(move || {
+            dpi_aware(|| unsafe {
+                let instance = GetModuleHandleW(None).unwrap();
+                let class = w!("PekoTypingTest");
+                RegisterClassW(&WNDCLASSW {
+                    lpfnWndProc: Some(typing_window),
+                    hInstance: instance.into(),
+                    lpszClassName: class,
+                    ..WNDCLASSW::default()
+                });
+                let h = CreateWindowExW(
+                    WINDOW_EX_STYLE(0),
+                    class,
+                    w!("Peko typing test"),
+                    WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                    240,
+                    240,
+                    500,
+                    300,
+                    None,
+                    None,
+                    Some(instance.into()),
+                    None,
+                )
+                .unwrap();
+                made.send(hwnd_id(h)).unwrap();
+                let mut msg = MSG::default();
+                while finished.try_recv().is_err() {
+                    while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                        let _ = TranslateMessage(&msg);
+                        DispatchMessageW(&msg);
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                let _ = DestroyWindow(h);
+            });
+        });
+        let id = window.recv().unwrap();
+        let win = WindowsPlatform::new();
+        let info = || {
+            win.windows()
+                .unwrap()
+                .into_iter()
+                .find(|w| w.id == id)
+                .expect("the test window is listed")
+        };
+        win.raise(&info()).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(
+            win.front().unwrap().window,
+            Some(id),
+            "the window came forward"
+        );
+        unsafe {
+            let _ = ShowWindow(hwnd(id), SW_MINIMIZE);
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(info().minimized);
+        win.raise(&info()).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(
+            win.front().unwrap().window,
+            Some(id),
+            "the window came back"
+        );
+        TYPED.lock().unwrap().clear();
+        win.post(&InputEvent::Text("three".into())).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        let typed = TYPED.lock().unwrap().clone();
+        finish.send(()).unwrap();
+        ui.join().unwrap();
+        assert_eq!(typed, "three");
+    }
+
     /// A drag on an app's drag region (Peko Desktop's own title bar is
     /// one) moves the window as far as it was dragged, with the events
     /// `act` sends for a drag. Sent all at once, the button was up before
@@ -1161,6 +1290,9 @@ mod tests {
         if std::env::var("PEKO_TEST_COMPUTER").ok().as_deref() != Some("1") {
             return;
         }
+        let _screen = SCREEN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (made, window) = mpsc::channel::<u64>();
         let (finish, finished) = mpsc::channel::<()>();
         let ui = std::thread::spawn(move || {
