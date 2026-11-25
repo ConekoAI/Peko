@@ -48,6 +48,7 @@ pub mod policy_gate;
 pub mod provision;
 pub(crate) mod quiet_reply;
 pub(crate) mod quiet_tick;
+pub(crate) mod reactions_prompt;
 pub(crate) mod reply_options;
 pub mod router;
 pub mod routers;

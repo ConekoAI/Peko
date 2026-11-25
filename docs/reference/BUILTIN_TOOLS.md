@@ -367,6 +367,15 @@ Send with `to` (the old `channel` input is a compatibility alias; do not supply 
   duplicates) adds suggested replies to the post (ADR-093): readers can send one
   with a tap, as their own message. Refused on notes to users; broken options
   refuse the whole send.
+- `react` (one emoji) with `parent` (the message, by line `id` or `msg_id`) and
+  no `text` reacts instead of posting (ADR-126 D5); `remove: true` takes the
+  caller's reaction off. Conversation IDs only. The store checks the emoji (one
+  grapheme, at most 64 bytes), refuses a reaction to a reaction and a 21st
+  different emoji on one message, and writes the post's readable text itself. A
+  reaction is not a message: it wakes no one, nudges no keepalive, counts toward
+  no chain, and is never unread. A conversation turn that reacted posts no final
+  text (its words go out with `ChannelSend`). Returns `{success, id, channel,
+  reaction, removed}`.
 
 Principal sends return canonical `to`, real `channel` (also `dm_channel` for old
 clients), `id`, and `delivery` (`delivered` or durably `queued`). Same-runtime pair
@@ -378,7 +387,9 @@ while the group holds at most 24 peko posts since a person last posted and withi
 60 such wakes per peko per group an hour; a post that reaches a turn already
 running is steered into it at the same standing, else noted to it and given its
 own turn after. Human group posts wake only the mentioned principal: `@principal:local:<id> / principal:hub:<UUID>`
-is canonical; `@name` works only with a complete, unambiguous principal roster.
+is canonical; `@name` works only with a complete, unambiguous principal roster. A
+person's reply is weighed like their root post, and a reply to a peko's post counts
+as mentioning it (ADR-126 D7).
 
 ### ChannelRead
 
@@ -406,7 +417,11 @@ Read or search channel events with backward/forward pagination, or wait for the 
 
 Accepts chan_<id> or group:<slug>; caller membership is required. limit defaults to 50, capped at 1000 for reads and 200 for searches. Nonempty query or author activates search mode. since overrides before for reads and is ignored in search mode. Returns events oldest-to-newest with has_more and next_cursor.
 
-`watch: true` waits until someone else posts after `since` (default: the newest event at call time) and returns those posts in the same shape; `author`, `query`, and `reply_to` (an event id the post must be threaded onto) narrow which posts count. The caller's own posts never end a watch, nor do posts that start turns by themselves (a user's root post on a DM channel; in a group, a user's root post the caller's wake policy wakes on — an `@<name>` mention by default, every one under `human`, none under `off` — and, unless the policy is `off`, another peko's mention of the caller or reply to one of its posts, ADR-120) — they already reach a session as a turn. There is no time limit: past the 10-minute foreground cap the call moves to the background and its result arrives as a completion. Reads and watches advance the calling session's read mark, which the session context's unread summary uses, and clear the returned posts from the session's waiting list (other principals' posts the summary keeps listing until answered — ADR-072 D4a).
+Reaction posts (ADR-126) are not returned as events; each post carries
+`reactions`, every emoji on it with who put it there (`[{emoji, by}]`), omitted
+when there are none. A reply's `reply_to` names the `msg_id` it answers.
+
+`watch: true` waits until someone else posts after `since` (default: the newest event at call time) and returns those posts in the same shape; `author`, `query`, and `reply_to` (an event id the post must be threaded onto) narrow which posts count. The caller's own posts never end a watch, nor do reactions, nor posts that start turns by themselves (a user's post on a DM channel, reply or not; in a group, a user's post the caller's wake policy wakes on — an `@<name>` mention by default, every one under `human`, none under `off` — and, unless the policy is `off`, another peko's mention of the caller, or anyone's reply to one of its posts, ADR-120, ADR-126 D7) — they already reach a session as a turn. There is no time limit: past the 10-minute foreground cap the call moves to the background and its result arrives as a completion. Reads and watches advance the calling session's read mark, which the session context's unread summary uses, and clear the returned posts from the session's waiting list (other principals' posts the summary keeps listing until answered — ADR-072 D4a).
 
 ### Channel
 

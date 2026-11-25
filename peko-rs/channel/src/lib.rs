@@ -77,6 +77,7 @@ pub mod cost;
 pub mod cursors;
 pub mod fs;
 pub mod port;
+pub mod reactions;
 pub mod read_marks;
 pub mod responder;
 pub mod store;
@@ -100,6 +101,7 @@ pub use port::{
     NoopChannelPort, PostMsg, RemoteMember, Result, SearchPage, TailPage, Tier, MAX_ANSWER_CHARS,
     MAX_OPTIONS, MAX_OPTION_CHARS, MAX_QUESTIONS, MAX_QUESTION_CHARS, MIN_OPTIONS,
 };
+pub use reactions::{Reaction, Reactions, StandingReaction};
 pub use read_marks::ChannelReadMarks;
 pub use responder::{mentions, ChannelResponder, NoopChannelResponder, RespondCtx};
 pub use store::{
@@ -111,4 +113,6 @@ pub use subscription::{ChannelSubscriber, SubscriptionConfig};
 
 // Wire types live in `peko-protocol`; re-exported here for ergonomic
 // callers so `peko_channel::ChannelId` reads naturally.
-pub use peko_protocol::channel::{ChannelEvent, ChannelId, ChannelMembership, ConversationKind};
+pub use peko_protocol::channel::{
+    ChannelEvent, ChannelId, ChannelMembership, ConversationKind, ReactOp,
+};

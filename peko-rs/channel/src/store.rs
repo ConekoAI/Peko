@@ -2873,6 +2873,7 @@ impl ChannelStore {
             .await?
             .iter()
             .rev()
+            .filter(|ev| ev.is_message())
             .find(|ev| {
                 chrono::DateTime::parse_from_rfc3339(ev.at())
                     .is_ok_and(|posted| posted.with_timezone(&chrono::Utc) <= at)
@@ -2912,8 +2913,9 @@ impl ChannelStore {
             .map_or(0, |i| i + 1);
         let unread = posts[after..]
             .iter()
+            // ADR-126 D2: a reaction is not unread.
             .filter(|ev| match ev {
-                ChannelEvent::Posted { author, .. } => !own.contains(author),
+                ChannelEvent::Posted { author, .. } => ev.is_message() && !own.contains(author),
                 _ => false,
             })
             .count();
@@ -2949,7 +2951,12 @@ impl ChannelStore {
 
     /// `channel`'s newest post by time, if it has one.
     pub async fn newest_post(&self, channel: &ChannelId) -> Result<Option<ChannelEvent>> {
-        Ok(self.posts_by_time(channel).await?.pop())
+        // ADR-126 D2: a reaction is not a conversation's newest message.
+        Ok(self
+            .posts_by_time(channel)
+            .await?
+            .into_iter()
+            .rfind(ChannelEvent::is_message))
     }
 
     /// Posts waiting on `session_key` on `channel`. See [`crate::attention`].
@@ -4154,11 +4161,35 @@ impl ChannelStore {
             }
         };
 
+        // ADR-126: a reaction is checked against the conversation's
+        // reactions, threaded onto the post it reacts to, and its text is
+        // written from it.
+        let mut parent = msg.parent.clone();
+        let (react, text) = match msg.react.as_ref() {
+            None => (None, text),
+            Some(op) => {
+                if parent.is_some()
+                    || board.is_some()
+                    || ask.is_some()
+                    || answers.is_some()
+                    || !options.is_empty()
+                    || !msg.attachments.is_empty()
+                {
+                    return Err(ChannelError::Adapter(
+                        "invalid reaction: a reaction carries nothing else".to_string(),
+                    ));
+                }
+                let (op, line, text) = self.prepare_reaction(channel, &author, op).await?;
+                parent = Some(line);
+                (Some(op), text)
+            }
+        };
+
         // Validate parent (if any) references an existing line in the
         // log. Line numbers are global across rotated pages and never
         // reset, so the check is a (cache-backed) line count, not a
         // log walk: `parent_idx < total lines` iff the parent exists.
-        if let Some(parent_line) = msg.parent.as_ref() {
+        if let Some(parent_line) = parent.as_ref() {
             let parent_idx: u64 = parent_line.parse().map_err(|_| {
                 ChannelError::Adapter(format!(
                     "invalid parent TaskId {parent_line}: not a numeric line offset"
@@ -4175,21 +4206,28 @@ impl ChannelStore {
         // A reply names its parent by stable id too, so a runtime whose
         // mirror numbers lines differently can still tell what it
         // answers.
-        let reply_to = match msg.parent.as_ref() {
-            Some(parent_line) => {
-                self.event_at(tier, channel, parent_line)
-                    .await?
-                    .and_then(|parent| match parent {
-                        ChannelEvent::Posted { msg_id, .. } => msg_id,
-                        _ => None,
-                    })
-            }
+        //
+        // ADR-126: a reaction keeps `reply_to` empty — it names its post
+        // in `react.to` — so a runtime that predates reactions does not
+        // read it as a reply to that post's author. A reaction cannot be
+        // replied to (D2).
+        let reply_to = match parent.as_ref() {
+            Some(_) if react.is_some() => None,
+            Some(parent_line) => match self.event_at(tier, channel, parent_line).await? {
+                Some(held @ ChannelEvent::Posted { .. }) if !held.is_message() => {
+                    return Err(ChannelError::Adapter(
+                        "a reaction cannot be replied to".to_string(),
+                    ))
+                }
+                Some(ChannelEvent::Posted { msg_id, .. }) => msg_id,
+                _ => None,
+            },
             None => None,
         };
         let ev = ChannelEvent::Posted {
             channel: channel.clone(),
             author,
-            parent: msg.parent.clone(),
+            parent,
             text,
             at: Utc::now().to_rfc3339(),
             via: msg.via.clone(),
@@ -4201,11 +4239,67 @@ impl ChannelStore {
             board,
             ask,
             answers,
+            react,
         };
         let line = self
             .append_event(tier, channel, &ev, EventOrigin::Local)
             .await?;
         Ok((line.to_string(), ev))
+    }
+
+    /// ADR-126 D1: check `author`'s reaction on `channel` and return it
+    /// (emoji trimmed), the line of the post it reacts to, and the post's
+    /// readable line.
+    async fn prepare_reaction(
+        &self,
+        channel: &ChannelId,
+        author: &str,
+        op: &peko_protocol::channel::ReactOp,
+    ) -> Result<(peko_protocol::channel::ReactOp, TaskId, String)> {
+        let refuse = |e: String| ChannelError::Adapter(format!("invalid reaction: {e}"));
+        let emoji = op.emoji.trim().to_string();
+        if !crate::reactions::valid_emoji(&emoji) {
+            return Err(refuse(format!("{:?} is not one emoji", op.emoji)));
+        }
+        let to = op.to.trim().to_string();
+        let Some((line, target)) = ChannelPort::find_post(self, channel, &to).await? else {
+            return Err(refuse(format!("no message {to} in this conversation")));
+        };
+        if !target.is_message() {
+            return Err(refuse("a reaction cannot be reacted to".to_string()));
+        }
+        let reactions = ChannelPort::reactions(self, channel).await?;
+        if !op.remove
+            && !reactions.on(&to).iter().any(|r| r.emoji == emoji)
+            && reactions.emoji_count(&to) >= crate::reactions::MAX_EMOJI_PER_MESSAGE
+        {
+            return Err(refuse(format!(
+                "a message holds at most {} different emoji",
+                crate::reactions::MAX_EMOJI_PER_MESSAGE
+            )));
+        }
+        let (target_author, target_text) = match &target {
+            ChannelEvent::Posted { author, text, .. } => (author.clone(), text.clone()),
+            _ => (String::new(), String::new()),
+        };
+        let who = self.display_name(author).await;
+        let whom = self.display_name(&target_author).await;
+        let op = peko_protocol::channel::ReactOp {
+            to,
+            emoji,
+            remove: op.remove,
+        };
+        let text = crate::reactions::describe(&op, &who, &whom, &target_text);
+        Ok((op, line, text))
+    }
+
+    /// An author's name as this runtime knows it, else the address.
+    async fn display_name(&self, address: &str) -> String {
+        match address.parse::<ActorRef>() {
+            Ok(actor) => self.actor_info(&actor).await.name,
+            Err(_) => None,
+        }
+        .unwrap_or_else(|| address.to_string())
     }
 
     /// ADR-101: check `author`'s board change on `channel` and return it
@@ -5795,6 +5889,7 @@ mod tests {
             board: None,
             ask: None,
             answers: None,
+            react: None,
         };
         let mut line = serde_json::to_vec(&foreign).unwrap();
         line.push(b'\n');
@@ -5919,6 +6014,36 @@ mod tests {
             9,
             "creator + 8 concurrently invited users must all be present"
         );
+    }
+
+    /// ADR-126 D2: a reaction is not unread and is not a conversation's
+    /// newest message.
+    #[tokio::test]
+    async fn reactions_are_not_unread_nor_the_newest_message() {
+        let store = ChannelStore::new(tmp_cfg("person-read-react"));
+        let peko = pid("prin_alice");
+        let me = ActorRef::User("local".into());
+        let channel = store
+            .create(&peko, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+        store.invite(&channel, &peko, &me).await.unwrap();
+        let (_, mine) = store
+            .post_with_event(&channel, &me, PostMsg::root("ship it?"))
+            .await
+            .unwrap();
+        let mine = posted_msg_id(&mine).unwrap().to_string();
+        store
+            .post_with_event(
+                &channel,
+                &ActorRef::from(&peko),
+                PostMsg::reaction(&mine, "👍", false),
+            )
+            .await
+            .unwrap();
+        assert_eq!(store.person_read(&channel).await.unwrap().unread, 0);
+        let newest = store.newest_post(&channel).await.unwrap().unwrap();
+        assert_eq!(posted_msg_id(&newest), Some(mine.as_str()));
     }
 
     /// ADR-108 D5: the person's read mark moves forward only, counts
@@ -6565,6 +6690,7 @@ mod tests {
             board: None,
             ask: None,
             answers: None,
+            react: None,
         }
     }
 
@@ -7467,6 +7593,7 @@ mod tests {
             board: None,
             ask: None,
             answers: None,
+            react: None,
         };
         let line = store
             .append_remote_event(&channel, &remote_event)
@@ -7514,6 +7641,7 @@ mod tests {
             board: None,
             ask: None,
             answers: None,
+            react: None,
         };
         let first = store
             .append_remote_event(&channel, &echo(Some("msg_same")))
@@ -7592,6 +7720,7 @@ mod tests {
             board: None,
             ask: None,
             answers: None,
+            react: None,
         };
         let flood: Vec<String> = (0..50).map(|i| format!("option {i}")).collect();
         store
@@ -7624,6 +7753,108 @@ mod tests {
         );
         let plain = serde_json::to_string(&remote(Vec::new())).unwrap();
         assert!(!plain.contains("options"), "{plain}");
+    }
+
+    /// ADR-126 D1, D2: a reaction is checked, threaded onto the post it
+    /// reacts to without naming it in `reply_to`, written as a readable
+    /// line, and folded; a reaction can be neither reacted nor replied to.
+    #[tokio::test]
+    async fn reactions_are_checked_threaded_and_folded() {
+        let store = ChannelStore::new(tmp_cfg("post-react"));
+        let creator = pid("prin_alice");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+        let alice = ActorRef::from(&creator);
+        let maya = "user:local:maya";
+        let err = |r: Result<(TaskId, ChannelEvent)>| match r {
+            Err(ChannelError::Adapter(e)) => e,
+            other => panic!("expected a refusal, got {other:?}"),
+        };
+        let (line, posted) = store
+            .post_with_event(&channel, &alice, PostMsg::root("the tests pass now @maya"))
+            .await
+            .unwrap();
+        let target = posted_msg_id(&posted).unwrap().to_string();
+
+        let refused = store
+            .post_attributed_with_event(
+                &channel,
+                &alice,
+                maya,
+                PostMsg::reaction(&target, "ok", false),
+            )
+            .await;
+        assert!(err(refused).contains("not one emoji"));
+        let refused = store
+            .post_attributed_with_event(
+                &channel,
+                &alice,
+                maya,
+                PostMsg::reaction("msg_nope", "👍", false),
+            )
+            .await;
+        assert!(err(refused).contains("no message"));
+
+        let (_, reacted) = store
+            .post_attributed_with_event(
+                &channel,
+                &alice,
+                maya,
+                PostMsg::reaction(&target, " 👍 ", false),
+            )
+            .await
+            .unwrap();
+        let ChannelEvent::Posted {
+            parent,
+            reply_to,
+            text,
+            react: Some(op),
+            msg_id: Some(reaction_id),
+            ..
+        } = &reacted
+        else {
+            panic!("a reaction post");
+        };
+        assert_eq!(parent.as_deref(), Some(line.as_str()));
+        assert_eq!(*reply_to, None);
+        assert_eq!(op.emoji, "👍");
+        assert!(text.contains("reacted 👍"), "{text}");
+        assert!(!text.contains('@'), "{text}");
+        assert!(!reacted.is_message());
+
+        let refused = store
+            .post_with_event(
+                &channel,
+                &alice,
+                PostMsg::reaction(reaction_id, "😂", false),
+            )
+            .await;
+        assert!(err(refused).contains("cannot be reacted to"));
+        let reaction_line = store
+            .post_line(&channel, reaction_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let refused = store
+            .post_with_event(&channel, &alice, PostMsg::reply(reaction_line, "lol"))
+            .await;
+        assert!(err(refused).contains("cannot be replied to"));
+
+        let folded = ChannelPort::reactions(&store, &channel).await.unwrap();
+        assert_eq!(folded.on(&target)[0].by, vec![maya.to_string()]);
+        store
+            .post_attributed_with_event(
+                &channel,
+                &alice,
+                maya,
+                PostMsg::reaction(&target, "👍", true),
+            )
+            .await
+            .unwrap();
+        let folded = ChannelPort::reactions(&store, &channel).await.unwrap();
+        assert!(folded.on(&target).is_empty());
     }
 
     /// ADR-114 D1, D9: a peko's post asks questions and a person's post
@@ -7817,6 +8048,7 @@ mod tests {
                 board: None,
                 ask,
                 answers,
+                react: None,
             };
         let mut short = good.clone();
         short.picks.pop();
@@ -7898,6 +8130,7 @@ mod tests {
             board: None,
             ask: None,
             answers: None,
+            react: None,
         };
         store
             .append_remote_event(&channel, &remote_event)
@@ -7921,6 +8154,7 @@ mod tests {
             board: None,
             ask: None,
             answers: None,
+            react: None,
         };
         let mut line = serde_json::to_vec(&legacy).unwrap();
         line.push(b'\n');
@@ -8014,6 +8248,7 @@ mod tests {
             board: None,
             ask: None,
             answers: None,
+            react: None,
         };
         store
             .append_remote_event(&channel, &remote_event)
@@ -8047,6 +8282,7 @@ mod tests {
             board: None,
             ask: None,
             answers: None,
+            react: None,
         };
         let result = store.append_remote_event(&bogus, &ev).await;
         assert!(
@@ -8267,6 +8503,7 @@ mod tests {
             board: None,
             ask: None,
             answers: None,
+            react: None,
         };
         store
             .append_remote_event(&channel, &remote_event)

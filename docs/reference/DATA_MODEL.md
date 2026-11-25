@@ -2867,6 +2867,54 @@ optional `answers` (the message text must not be empty; `channel_post`
 refuses it with `parent`). The phone `post` device verb takes the same
 `answers` argument (ADR-108 verb table unchanged).
 
+### 5¾.2⅞⁻⁻⁻⁻ `posted` event `react`, and replies people make (2026-11-25, ADR-126)
+
+A post may carry an emoji reaction on another post of the same conversation,
+DM or group:
+
+```json
+{"kind":"posted","author":"user:hub:6f1c…","parent":"41","text":"maya reacted 👍 to rex: “the tests pass now”","msg_id":"msg_9b2e…","react":{"to":"msg_3f9a…","emoji":"👍"}}
+{"kind":"posted", "…": "…", "react":{"to":"msg_3f9a…","emoji":"👍","remove":true}}
+```
+
+`emoji` is one Unicode emoji (one grapheme, at most 64 bytes); `remove` is
+omitted when false. Who reacted is the post's author. The reactions on a
+message are the fold of these ops (`peko_channel::reactions`): per (actor
+key, emoji, message) the latest op by `at`, ties by `msg_id`, wins; at most
+20 different emoji stand on one message; an op naming a reaction post is
+ignored; one naming a post the copy lacks applies when it arrives. The writing
+store checks the emoji and its target, refuses a reaction to a reaction and a
+reply to a reaction, writes `text` (no `@`), and threads the post onto its
+target's line in `parent` while leaving `reply_to` empty. So a runtime that
+predates this reads it as a reply that starts nothing (it wakes no group, and
+DM ingress there takes root posts only). History pages and snapshots keep
+`react` (`portable_post`).
+
+A reaction post is not a message (`ChannelEvent::is_message`): it is never
+unread nor a conversation's newest message, starts no turn, nudges no
+keepalive, counts toward no peko chain, is left out of the channel digest, of
+`ChannelRead` events, of `principal_log` rows and of a phone's `read` events,
+and is never pushed.
+
+Replies: a person's reply now starts a DM turn on every path, and in a group is
+weighed like their root post, a reply to a peko's post counting as mentioning
+it (ADR-126 D7). The turn reads it as `{author} (replying to {name}: “up to 280
+characters”): {text}` in a group and `(replying to …) {text}` in a DM, quoted
+from the reader's own log ("a message that isn't loaded" when it lacks it).
+
+IPC: `principal_send` / `principal_send_stream` gain optional `reply_to` (a
+DM post's `msg_id`); `channel_post` gains optional `reply_to` (in place of the
+line-number `parent`) and `react` (`{to, emoji, remove?}`; `text` is then
+ignored); `PrincipalLogMessage` gains `reply_to` and `reactions`
+(`[{emoji, by: [address]}]`, omitted when empty); `channel_peek_result` gains
+`reactions` (a map from `msg_id` to the same list, for the page's posts;
+reaction posts stay in `events`). Device verbs (ADR-108): `react { channel, to,
+emoji, remove? }` answers `{ channel, to, reactions }`; `read` leaves reaction
+posts out and gives each post its `reactions`; a watching phone gets
+`{kind: "reactions", channel, to, reactions}` instead of a reaction's event.
+Per session, the reactions prompt section keeps a read mark
+`reactions:<session key>` in the channel's `read_marks.json`.
+
 ### 5¾.2⅞⁻⁻⁻ `posted` event `board` (2026-11-09, ADR-101)
 
 A post in a group may carry one change to the group's board:
@@ -4186,6 +4234,7 @@ Quick-reference table of all primitive types used across formats.
 
 | Version | Date | Changes |
 |---------|------|---------|
+| Unreleased | 2026-11-25 | ADR-126: `posted` events gain optional `react` (§5¾.2⅞⁻⁻⁻⁻); `PrincipalLogMessage` gains `reply_to` and `reactions`; `channel_peek_result` gains `reactions`; `principal_send(_stream)` gain `reply_to`; `channel_post` gains `reply_to` and `react`; device verb `react`; `read_marks.json` keys `reactions:<session key>`. |
 | 0.5.0 | 2026-11-23 | ADR-114: `posted` events gain optional `ask` and `answers` (§5¾.2⅞⁻⁻ `ask`); `PrincipalLogMessage` gains `msg_id`, `ask`, `answers`; `principal_sent_done` gains `ask`; `principal_send(_stream)`, `channel_post`, and the phone `post` verb take `answers`. |
 | 0.1.0 | 2026-11-09 | IPC `channel_undelivered { channel }` → `channel_undelivered_result { channel, msg_ids }`: posts of a conversation still in the outbox for a member on another runtime, by `msg_id`, oldest first (members only). |
 | 0.1.0 | 2026-11-09 | ADR-101: `posted` events gain optional `board` (§5¾.2⅞⁻⁻⁻); channels keep `board_check_ins.json`; IPC `channel_board` / `channel_board_result`; group `meta.json` `history` retired (every member reads the whole group). |

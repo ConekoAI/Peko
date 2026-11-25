@@ -77,9 +77,32 @@ pub enum ChannelCommands {
         sender: String,
         /// Message text.
         text: String,
-        /// Reply to this message id.
-        #[arg(long)]
+        /// Reply to this message, by its line id (`peko channel peek`).
+        #[arg(long, conflicts_with = "reply_to")]
         parent: Option<String>,
+        /// Reply to this message, by its `msg_id`.
+        #[arg(long = "reply-to", value_name = "MSG_ID")]
+        reply_to: Option<String>,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// React to a message with an emoji, or take your reaction off
+    /// (ADR-126). A reaction wakes no one.
+    React {
+        /// Channel id.
+        channel: String,
+        /// The message's `msg_id`.
+        msg_id: String,
+        /// One emoji.
+        emoji: String,
+        /// Take the reaction off instead.
+        #[arg(long)]
+        remove: bool,
+        /// React as one of your pekos instead of yourself.
+        #[arg(long = "as", value_name = "PEKO")]
+        as_peko: Option<String>,
         /// Output as JSON.
         #[arg(long)]
         json: bool,
@@ -355,6 +378,7 @@ impl ChannelCommands {
             ChannelCommands::Create { json, .. }
             | ChannelCommands::Invite { json, .. }
             | ChannelCommands::Post { json, .. }
+            | ChannelCommands::React { json, .. }
             | ChannelCommands::Peek { json, .. }
             | ChannelCommands::Members { json, .. }
             | ChannelCommands::Ls { json, .. }
@@ -480,11 +504,62 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
             }
             Ok(())
         }
+        ChannelCommands::React {
+            channel,
+            msg_id,
+            emoji,
+            remove,
+            as_peko,
+            ..
+        } => {
+            let client = DaemonClient::connect()
+                .await
+                .context("Reacting needs the engine: start it with `peko engine start`")?;
+            let resp = client
+                .request_response(RequestPacket::ChannelPost {
+                    request_id: 0,
+                    channel: channel.clone(),
+                    sender_name: as_peko,
+                    text: String::new(),
+                    parent: None,
+                    attachments: Vec::new(),
+                    model: None,
+                    answers: None,
+                    reply_to: None,
+                    react: Some(peko_protocol::channel::ReactOp {
+                        to: msg_id.clone(),
+                        emoji: emoji.clone(),
+                        remove,
+                    }),
+                })
+                .await?;
+            match resp {
+                ResponsePacket::ChannelPosted { task_id, .. } => {
+                    if json {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "channel": channel, "to": msg_id, "emoji": emoji,
+                                "removed": remove, "task_id": task_id,
+                            })
+                        );
+                    } else if remove {
+                        println!("removed {emoji} from {msg_id}");
+                    } else {
+                        println!("reacted {emoji} to {msg_id}");
+                    }
+                    Ok(())
+                }
+                ResponsePacket::Error { message, .. } => anyhow::bail!("{message}"),
+                other => anyhow::bail!("unexpected reply: {other:?}"),
+            }
+        }
         ChannelCommands::Post {
             channel,
             sender,
             text,
             parent,
+            reply_to,
             ..
         } => {
             // ADR-057: `me` posts as the caller's own derived identity
@@ -515,10 +590,17 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                 attachments: Vec::new(),
                 model: None,
                 answers: None,
+                reply_to: reply_to.clone(),
+                react: None,
             };
             let task_id =
                 run_daemon_or(paths, packet, "channel_post_failed", move |port, paths| {
                     Box::pin(async move {
+                        if reply_to.is_some() {
+                            anyhow::bail!(
+                                "--reply-to needs the engine running (`peko engine start`)"
+                            );
+                        }
                         let router = ChannelCliRouter::new(port);
                         let ch = parse_channel_id(&channel)?;
                         // In-process fallback (no daemon): `me`
@@ -839,6 +921,8 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                         attachments,
                         model: None,
                         answers: None,
+                        reply_to: None,
+                        react: None,
                     })
                     .await?;
                     true

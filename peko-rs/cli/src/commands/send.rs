@@ -78,6 +78,11 @@ pub struct SendArgs {
     /// a copy in its workspace; a vision model also sees images.
     #[arg(long = "attach", value_name = "PATH")]
     pub attach: Vec<String>,
+
+    /// Reply to a message: its `msg_id` (from `peko log` or `peko channel
+    /// peek`). The peko reads the start of that message with yours.
+    #[arg(long = "reply-to", value_name = "MSG_ID")]
+    pub reply_to: Option<String>,
 }
 
 /// Handle the send command
@@ -126,7 +131,14 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths) -> Result<()> {
         }
         let channel = format!("group:{slug}");
         let attachments = absolute_attachments(&args.attach)?;
-        return post_to_group(paths, &channel, &message, attachments).await;
+        return post_to_group(
+            paths,
+            &channel,
+            &message,
+            attachments,
+            args.reply_to.clone(),
+        )
+        .await;
     }
 
     info!("Sending message to peko '{}'", args.principal);
@@ -159,6 +171,7 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths) -> Result<()> {
             args.model.clone(),
             attachments,
             send_as,
+            args.reply_to.clone(),
         )
         .await?;
 
@@ -202,8 +215,10 @@ async fn post_to_group(
     channel: &str,
     message: &str,
     attachments: Vec<String>,
+    reply_to: Option<String>,
 ) -> Result<()> {
     let attached = !attachments.is_empty();
+    let replying = reply_to.is_some();
     let packet = RequestPacket::ChannelPost {
         request_id: 0,
         channel: channel.to_string(),
@@ -213,6 +228,8 @@ async fn post_to_group(
         attachments,
         model: None,
         answers: None,
+        reply_to,
+        react: None,
     };
     if let Ok(client) = DaemonClient::connect().await {
         if let Ok(resp) = client.request_response(packet).await {
@@ -234,8 +251,8 @@ async fn post_to_group(
     }
 
     // ADR-094: files go through the daemon, which keeps their copies.
-    if attached {
-        anyhow::bail!("attachments need the engine running (`peko engine start`)");
+    if attached || replying {
+        anyhow::bail!("attachments and replies need the engine running (`peko engine start`)");
     }
     let ch = ChannelId::parse(channel).with_context(|| format!("invalid ChannelId: {channel}"))?;
     let port: Arc<dyn peko_channel::ChannelPort> = Arc::new(ChannelStore::new(ChannelConfig {
@@ -785,6 +802,7 @@ mod tests {
             send_as: None,
             name: None,
             attach: Vec::new(),
+            reply_to: None,
         }
     }
 

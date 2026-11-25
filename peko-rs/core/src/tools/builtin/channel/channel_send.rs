@@ -38,7 +38,7 @@ use std::sync::{Arc, Weak};
 use anyhow::Result;
 use async_trait::async_trait;
 use peko_auth::ActorRef;
-use peko_channel::{ChannelError, ChannelPort, PostMsg};
+use peko_channel::{ChannelError, ChannelEvent, ChannelPort, Checkpoint, PostMsg};
 use peko_protocol::channel::{ChannelId as ProtoChannelId, ChannelKind as ProtoChannelKind};
 use peko_session::events::MessageSource;
 use peko_subject::{PrincipalDID, PrincipalId};
@@ -664,6 +664,7 @@ impl Tool for ChannelSendTool {
 - `principal:local:<id>` / `principal:hub:<id>`: on your DM channel with that principal (`dm_channel` in the result). Its answer, if any, is a post there: read it later with ChannelRead, or wait for it with ChannelRead `watch: true`.
 - `user:…` / `visitor:…` (local or hub): a note to that user's conversation. It shows in their next turn, and their answer arrives in their conversation with you.
 - `dm_<hash>` / `chan_<id>` / `group:<slug>`: a post to a channel you are a member of; `parent` threads it. In a group, a post that mentions a peko (`@<name>`) or replies to one of its posts reaches it: it starts its turn, or reaches the turn it is in. Its answer reaches you the same way, so don't watch for it.
+- React instead of posting: `react` (one emoji) with `parent` (the message) and no `text`; `remove: true` takes your reaction off. A reaction wakes no one and is not a message: use it to acknowledge when nothing needs saying, never in place of an answer someone waits for. A turn that reacted posts no final text, so send anything else you need to say with ChannelSend.
 Each post carries your session path as `via`. To run work in your own principal's sessions, use Agent instead.
 
 Result: to a principal `{success, kind: "principal", id, dm_channel, delivery, note}`, where `delivery` is `delivered`, or `queued` until the target's runtime confirms it (it may be offline; the message is resent until it arrives); to a user `{success, kind: "user", response}`; to a channel `{success, id, channel}`, the `id` ChannelRead reports, usable as `parent`. A send that cannot go out (not a member, unknown channel or principal) is an error."#
@@ -677,7 +678,15 @@ Result: to a principal `{success, kind: "principal", id, dm_channel, delivery, n
                 "to": { "type": "string", "description": "Actor address (principal:local:<id>, principal:hub:<id>, user:local:<id>, user:hub:<id>, visitor:local:<id>, visitor:hub:<id>) or conversation ID (dm_<hash>, chan_<id>, group:<slug>). Resolve unfamiliar principals with Contacts (it takes names such as ada or @frank/ada)." },
                 "text": {
                     "type": "string",
-                    "description": "Message body."
+                    "description": "Message body. Omit with `react`."
+                },
+                "react": {
+                    "type": "string",
+                    "description": "Channel posts only: one emoji to react to the message `parent` with, instead of posting text."
+                },
+                "remove": {
+                    "type": "boolean",
+                    "description": "With `react`: take that reaction of yours off the message."
                 },
                 "parent": {
                     "type": "string",
@@ -695,7 +704,7 @@ Result: to a principal `{success, kind: "principal", id, dm_channel, delivery, n
                     "description": "Not for notes to users: 2–4 short suggested replies (one line, up to 60 characters each) the reader can send with a tap instead of typing, e.g. [\"Ship it\", \"Hold off\"]. Only when the answer is likely one of a few short choices; never to ask for permission."
                 }
             },
-            "required": ["to", "text"]
+            "required": ["to"]
         })
     }
 
@@ -758,6 +767,15 @@ Result: to a principal `{success, kind: "principal", id, dm_channel, delivery, n
         } else {
             channel_id
         };
+        // ADR-126 D5: a reaction instead of a post.
+        if let Some(emoji) = params.get("react").filter(|v| !v.is_null()) {
+            let emoji = emoji
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("ChannelSend: 'react' must be one emoji"))?;
+            return self
+                .execute_react(&channel_id, channel_str, emoji, &params, ctx)
+                .await;
+        }
         let text = params
             .get("text")
             .and_then(|v| v.as_str())
@@ -858,6 +876,104 @@ pub(crate) fn parse_options(params: &serde_json::Value) -> anyhow::Result<Vec<St
 }
 
 impl ChannelSendTool {
+    /// ADR-126 D5: put `emoji` on (or, with `remove`, take it off) the
+    /// message `parent` names, as the calling principal.
+    async fn execute_react(
+        &self,
+        channel_id: &ProtoChannelId,
+        channel_str: &str,
+        emoji: &str,
+        params: &serde_json::Value,
+        ctx: &peko_tools_core::exec::ToolContext,
+    ) -> anyhow::Result<serde_json::Value> {
+        anyhow::ensure!(
+            matches!(
+                channel_id.kind(),
+                ProtoChannelKind::Bare | ProtoChannelKind::Group
+            ),
+            "ChannelSend: react in a conversation, by its channel ID, not an actor address"
+        );
+        anyhow::ensure!(
+            params
+                .get("text")
+                .and_then(|v| v.as_str())
+                .is_none_or(|t| t.trim().is_empty()),
+            "ChannelSend: a reaction takes no 'text'; post the words separately"
+        );
+        anyhow::ensure!(
+            params.get("options").is_none_or(serde_json::Value::is_null),
+            "ChannelSend: a reaction takes no 'options'"
+        );
+        let parent = params
+            .get("parent")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("ChannelSend: 'react' needs 'parent', the message"))?;
+        let remove = params
+            .get("remove")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let principal_str = ctx
+            .principal_id
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("ChannelSend requires a principal context"))?;
+        let to = self.msg_id_of(channel_id, parent).await?;
+        let mut msg = PostMsg::reaction(to, emoji, remove);
+        msg.via = via_for_ctx(ctx).await;
+        let sender = ActorRef::from(&PrincipalId(principal_str));
+        match self.port.post(channel_id, &sender, msg).await {
+            Ok(task_id) => Ok(json!({
+                "success": true,
+                "id": task_id,
+                "channel": channel_id.as_str(),
+                "to": channel_str,
+                "reaction": emoji.trim(),
+                "removed": remove,
+            })),
+            Err(ChannelError::NotMember) => {
+                anyhow::bail!(
+                    "ChannelSend to {channel_str} failed: caller is not a member of this channel"
+                )
+            }
+            Err(ChannelError::NotFound(_)) => {
+                anyhow::bail!("ChannelSend to {channel_str} failed: channel not found")
+            }
+            Err(e) => anyhow::bail!("ChannelSend react: {e}"),
+        }
+    }
+
+    /// The `msg_id` of the post `reference` names: its `msg_id`, or its
+    /// line `id` from ChannelRead.
+    async fn msg_id_of(
+        &self,
+        channel_id: &ProtoChannelId,
+        reference: &str,
+    ) -> anyhow::Result<String> {
+        let reference = reference.trim();
+        if reference.parse::<u64>().is_err() {
+            return Ok(reference.to_string());
+        }
+        let events = self
+            .port
+            .peek_with_ids(channel_id, &Checkpoint(reference.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("ChannelSend: {e}"))?;
+        match events.into_iter().find(|(id, _)| id == reference) {
+            Some((
+                _,
+                ChannelEvent::Posted {
+                    msg_id: Some(msg_id),
+                    ..
+                },
+            )) => Ok(msg_id),
+            _ => anyhow::bail!(
+                "ChannelSend: {reference} is not a message in {}; use a post's `id` or `msg_id` \
+                 from ChannelRead",
+                channel_id.as_str()
+            ),
+        }
+    }
+
     /// Bare / Group branch: fire-and-forget post. `principal_str`
     /// comes from `ToolContext::principal_id`; membership is enforced
     /// inside [`ChannelPort::post`] (the F37 funnel does not
@@ -1724,5 +1840,69 @@ mod tests {
             assert_eq!(out["to"], "user:bob");
             assert!(out["error"].as_str().unwrap().contains(expected), "{out}");
         }
+    }
+
+    /// ADR-126 D5: `react` with `parent` puts the caller's emoji on the
+    /// message, `remove` takes it off; text, actor addresses and a
+    /// missing parent are refused.
+    #[tokio::test]
+    async fn react_puts_an_emoji_on_a_message_and_takes_it_off() {
+        let fx = Fixture::new();
+        let channel = fx.channel_of(&fx.alice, None).await;
+        let root = fx
+            .send(json!({ "to": channel.as_str(), "text": "lunch at noon?" }))
+            .await
+            .unwrap();
+        let root_id = root["id"].as_str().unwrap().to_string();
+
+        let got = fx
+            .send(json!({ "to": channel.as_str(), "react": "👍", "parent": root_id }))
+            .await
+            .unwrap();
+        assert_eq!(got["success"], true, "{got}");
+        let msg_id = match fx
+            .port
+            .peek_with_ids(&channel, &Checkpoint::zero())
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|(id, _)| *id == root_id)
+        {
+            Some((
+                _,
+                ChannelEvent::Posted {
+                    msg_id: Some(id), ..
+                },
+            )) => id,
+            other => panic!("{other:?}"),
+        };
+        let folded = ChannelPort::reactions(fx.port.as_ref(), &channel)
+            .await
+            .unwrap();
+        assert_eq!(folded.on(&msg_id).len(), 1);
+
+        let refused = fx
+            .send(json!({ "to": channel.as_str(), "react": "👍", "parent": msg_id, "text": "yes" }))
+            .await
+            .unwrap_err();
+        assert!(refused.to_string().contains("takes no 'text'"), "{refused}");
+        let refused = fx
+            .send(json!({ "to": channel.as_str(), "react": "👍" }))
+            .await
+            .unwrap_err();
+        assert!(refused.to_string().contains("needs 'parent'"), "{refused}");
+        let refused = fx
+            .send(json!({ "to": channel.as_str(), "react": "yes", "parent": msg_id }))
+            .await
+            .unwrap_err();
+        assert!(refused.to_string().contains("not one emoji"), "{refused}");
+
+        fx.send(json!({ "to": channel.as_str(), "react": "👍", "parent": msg_id, "remove": true }))
+            .await
+            .unwrap();
+        let folded = ChannelPort::reactions(fx.port.as_ref(), &channel)
+            .await
+            .unwrap();
+        assert!(folded.on(&msg_id).is_empty());
     }
 }

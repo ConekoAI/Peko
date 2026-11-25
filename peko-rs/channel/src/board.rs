@@ -771,6 +771,7 @@ mod tests {
             board: Some(op),
             ask: None,
             answers: None,
+            react: None,
         }
     }
 

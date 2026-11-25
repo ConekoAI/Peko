@@ -1778,6 +1778,13 @@
                 "null"
               ]
             },
+            "reply_to": {
+              "description": "ADR-126 D6: the `msg_id` of the post in the DM this message\nreplies to. The turn reads the start of that message with it.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "request_id": {
               "format": "uint64",
               "minimum": 0,
@@ -1838,6 +1845,13 @@
             "override_model": {
               "default": null,
               "description": "Per-message configured model override (e.g. `peko send --model ...`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "reply_to": {
+              "description": "ADR-126 D6: the `msg_id` of the post in the DM this message\nreplies to. The turn reads the start of that message with it.",
               "type": [
                 "string",
                 "null"
@@ -2944,6 +2958,24 @@
               ]
             },
             "parent": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "react": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ReactOp"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "ADR-126 D1: an emoji reaction on the post `react.to` instead\nof a message; `text` and `parent` are ignored with it."
+            },
+            "reply_to": {
+              "description": "ADR-126 D6: the `msg_id` of the post this replies to, in place\nof the line-number `parent`.",
               "type": [
                 "string",
                 "null"
@@ -4348,6 +4380,17 @@
                 "string",
                 "null"
               ]
+            },
+            "react": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ReactOp"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "ADR-126 D1: an emoji reaction on another post. A post carrying\none is not a message ([`ChannelEvent::is_message`]): it wakes no\none, is not unread, and is left out of digests and reads. Its\n`text` is a readable line the runtime wrote from it, and it is\nwritten as a reply (`parent` set, `reply_to` empty), so a\nruntime that predates this treats it as a reply that starts\nnothing. Omitted when absent."
             },
             "reply_to": {
               "description": "The `msg_id` of the message this post replies to — the\ncross-runtime form of `parent`. Set by the posting store from\nthe parent line's own `msg_id`; `None` for root posts and for\nreplies to messages without an id.",
@@ -6354,6 +6397,20 @@
           },
           "type": "array"
         },
+        "reactions": {
+          "description": "ADR-126 D1: the emoji on the message, each with who put it there.\nReactions are never rows of their own.",
+          "items": {
+            "$ref": "#/$defs/Reaction"
+          },
+          "type": "array"
+        },
+        "replyTo": {
+          "description": "ADR-126 D6: the `msg_id` of the message this one replies to. A\nclient quotes it above the reply, except right after it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "schemaVersion": {
           "format": "uint8",
           "maximum": 255,
@@ -6651,6 +6708,48 @@
         "input_tokens",
         "output_tokens",
         "request_count"
+      ],
+      "type": "object"
+    },
+    "ReactOp": {
+      "description": "An emoji reaction (ADR-126 D1), carried by the post that makes it.\nWho reacted is the post's verified author, never anything in the op.\nThe reactions on a message are the fold of every op in the log\n(`peko_channel::reactions`).",
+      "properties": {
+        "emoji": {
+          "description": "One Unicode emoji (a single grapheme cluster, at most 64 bytes).",
+          "type": "string"
+        },
+        "remove": {
+          "description": "Takes the author's reaction off instead of putting it on.",
+          "type": "boolean"
+        },
+        "to": {
+          "description": "The `msg_id` of the post reacted to.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "to",
+        "emoji"
+      ],
+      "type": "object"
+    },
+    "Reaction": {
+      "description": "One emoji on a message, with who put it there (oldest first).",
+      "properties": {
+        "by": {
+          "description": "The reactors' addresses, as written on their posts.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "emoji": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "emoji",
+        "by"
       ],
       "type": "object"
     },
@@ -8029,6 +8128,13 @@
                 "null"
               ]
             },
+            "reply_to": {
+              "description": "ADR-126 D6: the `msg_id` of the post in the DM this message\nreplies to. The turn reads the start of that message with it.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "request_id": {
               "format": "uint64",
               "minimum": 0,
@@ -8090,6 +8196,13 @@
             "override_model": {
               "default": null,
               "description": "Per-message configured model override (e.g. `peko send --model ...`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "reply_to": {
+              "description": "ADR-126 D6: the `msg_id` of the post in the DM this message\nreplies to. The turn reads the start of that message with it.",
               "type": [
                 "string",
                 "null"
@@ -9231,6 +9344,24 @@
               ]
             },
             "parent": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "react": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ReactOp"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "ADR-126 D1: an emoji reaction on the post `react.to` instead\nof a message; `text` and `parent` are ignored with it."
+            },
+            "reply_to": {
+              "description": "ADR-126 D6: the `msg_id` of the post this replies to, in place\nof the line-number `parent`.",
               "type": [
                 "string",
                 "null"
@@ -10694,6 +10825,16 @@
               "default": false,
               "description": "ADR-095 D1: this computer's copy of the person's DM with a\nremote peko doesn't reach the conversation's first post yet,\nso older posts may be read from the peko's copy\n(`channel_history_older`). False for every other channel and\nonce the copy is complete.",
               "type": "boolean"
+            },
+            "reactions": {
+              "additionalProperties": {
+                "items": {
+                  "$ref": "#/$defs/Reaction"
+                },
+                "type": "array"
+              },
+              "description": "ADR-126 D1: the reactions on the returned posts, by `msg_id`\n(posts with none are left out). Reaction posts stay in\n`events`, so a cursor still advances past them; a client shows\nthem on their message, not as messages\n(`ChannelEvent::is_message`).",
+              "type": "object"
             },
             "request_id": {
               "format": "uint64",
@@ -13243,6 +13384,17 @@
         {
           "description": "Response to a `PrincipalLog` request. Returns one bounded page of\nthe peer's DM-channel conversation for `(principal_did, peer)` —\n`messages` ordered oldest-to-newest, `next_cursor` opaque\nfor paging older pages, and `has_more` true when more pages\nexist. Pre-launch clean cutover: no `session_id`, no\n`HistoryEvent`s, no session-internal vocabulary. Errors emit\n`Error { code, message }` with `code` in\n`\"not_found\" | \"forbidden\" | \"bad_cursor\" | \"internal_error\"`.",
           "properties": {
+            "channel": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ChannelId"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "ADR-126: the DM channel this thread is, for a client that\nreacts on it (`channel_post` `react`). Absent from older daemons."
+            },
             "has_more": {
               "type": "boolean"
             },

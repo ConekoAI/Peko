@@ -1346,6 +1346,7 @@ impl PrincipalManager {
         message: &str,
         attachments: &[peko_protocol::channel::Attachment],
         answers: Option<&peko_protocol::channel::Answers>,
+        reply_to: Option<&str>,
         mode: IngressMode,
     ) -> Result<IngressOutcome, IngressError> {
         let turns = self
@@ -1373,10 +1374,22 @@ impl PrincipalManager {
                 message,
                 attachments.to_vec(),
                 answers.cloned(),
+                reply_to,
             )
             .await
             .map_err(|e| IngressError::Post(anyhow::anyhow!("{e:#}")))?;
         }
+        // ADR-126 D6: a reply's turn reads the message it answers.
+        let quoted;
+        let message = match (&self.channel_port, &ingress.dm_channel, reply_to) {
+            (Some(port), Some(dm), Some(_)) => {
+                quoted =
+                    crate::principal::peer_dm::dm_turn_text(port.as_ref(), dm, reply_to, message)
+                        .await;
+                quoted.as_str()
+            }
+            _ => message,
+        };
 
         // ADR-123 D2: the owner writing where their hand paused a run on
         // the computer lets it continue, as a channel post does.
@@ -1748,6 +1761,7 @@ impl PrincipalManager {
                 &ctx.message,
                 &[],
                 None,
+                None,
                 IngressMode::Interactive,
             )
             .await
@@ -1830,6 +1844,7 @@ impl PrincipalManager {
         message: &str,
         files: &[peko_protocol::channel::Attachment],
         model: Option<String>,
+        reply_to: Option<&str>,
         stoppable: Option<&RunRegistrar>,
     ) -> anyhow::Result<()> {
         let principal = self
@@ -1858,6 +1873,11 @@ impl PrincipalManager {
             files,
         )
         .await;
+        // ADR-126 D6: a reply's turn reads the start of the message it
+        // answers.
+        let message =
+            crate::principal::peer_dm::dm_turn_text(port.as_ref(), channel, reply_to, &message)
+                .await;
         let message = message.as_str();
         let peer = port.actor_info(author).await.subject();
         let (owner, agent_name) = {

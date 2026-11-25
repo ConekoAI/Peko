@@ -158,7 +158,10 @@ pub(crate) async fn take(
     let me = ActorRef::from(principal);
     let my_address = port.actor_info(&me).await.address;
     let others_posted = since.iter().any(|event| match event {
-        ChannelEvent::Posted { author, .. } => *author != principal.0 && *author != my_address,
+        // ADR-126 D2: a reaction is not someone speaking.
+        ChannelEvent::Posted { author, .. } if event.is_message() => {
+            *author != principal.0 && *author != my_address
+        }
         _ => false,
     });
     if others_posted {

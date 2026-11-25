@@ -356,6 +356,7 @@ fn samples() -> Vec<TunnelMessage> {
             board: None,
             ask: None,
             answers: None,
+            react: None,
         }),
         // ADR-114: a peko's questions, and a person's answers to them.
         channel_envelope(ChannelEvent::Posted {
@@ -387,6 +388,7 @@ fn samples() -> Vec<TunnelMessage> {
                 ],
             }),
             answers: None,
+            react: None,
         }),
         channel_envelope(ChannelEvent::Posted {
             channel: channel.clone(),
@@ -415,6 +417,7 @@ fn samples() -> Vec<TunnelMessage> {
                     },
                 ],
             }),
+            react: None,
         }),
         channel_envelope(ChannelEvent::MemberJoined {
             channel: channel.clone(),
@@ -490,6 +493,7 @@ fn samples() -> Vec<TunnelMessage> {
                 board: None,
                 ask: None,
                 answers: None,
+                react: None,
             }],
             has_more: true,
             signature: "runtime-signature".into(),

@@ -597,6 +597,10 @@ pub enum RequestPacket {
         /// empty.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         answers: Option<peko_protocol::channel::Answers>,
+        /// ADR-126 D6: the `msg_id` of the post in the DM this message
+        /// replies to. The turn reads the start of that message with it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_to: Option<String>,
     },
 
     /// Streaming principal send. The daemon emits a sequence of
@@ -630,6 +634,10 @@ pub enum RequestPacket {
         /// empty.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         answers: Option<peko_protocol::channel::Answers>,
+        /// ADR-126 D6: the `msg_id` of the post in the DM this message
+        /// replies to. The turn reads the start of that message with it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_to: Option<String>,
     },
 
     /// Soft-stop the run bound to a (principal, peer) thread.
@@ -1082,6 +1090,14 @@ pub enum RequestPacket {
         /// `answers.to` (a root post: `parent` is refused with it).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         answers: Option<peko_protocol::channel::Answers>,
+        /// ADR-126 D6: the `msg_id` of the post this replies to, in place
+        /// of the line-number `parent`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_to: Option<String>,
+        /// ADR-126 D1: an emoji reaction on the post `react.to` instead
+        /// of a message; `text` and `parent` are ignored with it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        react: Option<peko_protocol::channel::ReactOp>,
     },
 
     /// List events for `channel` since `since` (None = from start).
@@ -1906,6 +1922,14 @@ pub struct PrincipalLogMessage {
     /// `text` reads the same answers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answers: Option<peko_protocol::channel::Answers>,
+    /// ADR-126 D6: the `msg_id` of the message this one replies to. A
+    /// client quotes it above the reply, except right after it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<String>,
+    /// ADR-126 D1: the emoji on the message, each with who put it there.
+    /// Reactions are never rows of their own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reactions: Vec<peko_channel::Reaction>,
 }
 
 impl PrincipalLogMessage {
@@ -1928,6 +1952,8 @@ impl PrincipalLogMessage {
             msg_id: None,
             ask: None,
             answers: None,
+            reply_to: None,
+            reactions: Vec::new(),
         }
     }
 }
@@ -2189,6 +2215,13 @@ pub enum ResponsePacket {
         /// `None` when the scan reached the top of the log.
         #[serde(default)]
         resume_before: Option<String>,
+        /// ADR-126 D1: the reactions on the returned posts, by `msg_id`
+        /// (posts with none are left out). Reaction posts stay in
+        /// `events`, so a cursor still advances past them; a client shows
+        /// them on their message, not as messages
+        /// (`ChannelEvent::is_message`).
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        reactions: std::collections::BTreeMap<String, Vec<peko_channel::Reaction>>,
     },
 
     /// PR-2b: one event in a `ChannelEventsWatch` stream. The daemon
@@ -3068,6 +3101,10 @@ pub enum ResponsePacket {
         /// restart, and from older daemons.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         run_failure: Option<RunFailureInfo>,
+        /// ADR-126: the DM channel this thread is, for a client that
+        /// reacts on it (`channel_post` `react`). Absent from older daemons.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        channel: Option<peko_protocol::channel::ChannelId>,
     },
 
     /// A peko's first turn so far (ADR-104 D4).
@@ -4357,6 +4394,7 @@ mod tests {
             attachments: Vec::new(),
             send_as: None,
             answers: None,
+            reply_to: None,
         };
 
         let bytes = req.to_bytes().unwrap();
@@ -6193,6 +6231,7 @@ mod tests {
             attachments: Vec::new(),
             send_as: None,
             answers: None,
+            reply_to: None,
         };
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
@@ -6226,6 +6265,7 @@ mod tests {
             attachments: Vec::new(),
             send_as: None,
             answers: None,
+            reply_to: None,
         };
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
@@ -6590,6 +6630,7 @@ mod tests {
                 message: "error sending request".to_string(),
                 next_attempt_at: Some("2026-10-31T10:43:00+00:00".to_string()),
             }),
+            channel: None,
         };
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
@@ -6602,6 +6643,7 @@ mod tests {
                 next_cursor,
                 has_more,
                 run_failure,
+                ..
             } => {
                 assert_eq!(run_failure.unwrap().kind, "provider_unreachable");
                 assert_eq!(request_id, 6200);
@@ -6814,6 +6856,7 @@ mod tests {
             attachments: Vec::new(),
             send_as: None,
             answers: None,
+            reply_to: None,
         };
         assert_eq!(req_send.request_id(), 1);
 

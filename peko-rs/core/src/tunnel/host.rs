@@ -151,7 +151,8 @@ pub trait TunnelHost: Send + Sync {
     ///
     /// ADR-097 D2: `model` is the model the post asks for; the turn uses
     /// it only when it acts for the peko's owner and the model is enabled
-    /// here.
+    /// here. ADR-126 D7: a reply starts a turn too; `reply_to` is the post
+    /// it answers, which the turn quotes.
     async fn human_dm_post(
         &self,
         channel: peko_protocol::channel::ChannelId,
@@ -159,6 +160,7 @@ pub trait TunnelHost: Send + Sync {
         text: String,
         attachments: Vec<peko_protocol::channel::Attachment>,
         model: Option<String>,
+        reply_to: Option<String>,
     );
 
     /// ADR-108: a phone's message that PekoHub relayed

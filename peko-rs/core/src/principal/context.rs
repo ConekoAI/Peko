@@ -653,6 +653,12 @@ async fn install_principal_tool_bag(
             crate::principal::board_prompt::BoardSessionContextHandler,
         ));
 
+        // ADR-126 D3: a conversation turn reads the reactions on its
+        // peko's posts there.
+        core.register_prompt_section(Arc::new(
+            crate::principal::reactions_prompt::ReactionsSessionContextHandler,
+        ));
+
         core.mark_tool_bag_installed();
     }
 
