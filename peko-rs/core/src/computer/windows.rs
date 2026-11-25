@@ -57,6 +57,7 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
 use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
+use windows::Win32::System::Com::CoIncrementMTAUsage;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Power::{
     SetThreadExecutionState, ES_CONTINUOUS, ES_DISPLAY_REQUIRED, ES_SYSTEM_REQUIRED,
@@ -423,6 +424,28 @@ fn text_inputs(text: &str) -> Vec<INPUT> {
     inputs
 }
 
+/// Keep the process's multithreaded apartment alive for good.
+///
+/// Pictures are taken on the engine's blocking threads, which come and
+/// go. When the last thread in the MTA exits, COM tears the apartment
+/// down and may unload the WinRT libraries, but the `windows` crate keeps
+/// the activation factories it got in a process-wide cache: the next
+/// picture called through a dangling factory and the engine crashed
+/// (access violation in `GraphicsCaptureSession::IsSupported`). Holding
+/// one MTA usage makes the apartment outlive every thread.
+fn keep_mta() -> Result<()> {
+    static HELD: OnceLock<Result<(), String>> = OnceLock::new();
+    HELD.get_or_init(|| {
+        // The cookie is never handed back: the hold lasts as long as the
+        // process.
+        unsafe { CoIncrementMTAUsage() }
+            .map(|_cookie| ())
+            .map_err(|e| format!("COM refused to keep its apartment: {e}"))
+    })
+    .clone()
+    .map_err(|e| anyhow!(e))
+}
+
 // ─── The platform ──────────────────────────────────────────────────────
 
 pub struct WindowsPlatform;
@@ -505,6 +528,7 @@ impl WindowsPlatform {
     }
 
     fn capture_wgc(target: Target) -> Result<Image> {
+        keep_mta()?;
         let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
         anyhow::ensure!(
             GraphicsCaptureSession::IsSupported().unwrap_or(false),
@@ -1042,5 +1066,32 @@ mod tests {
             assert!(image.width > 10);
         }
         assert!(win.front().is_ok());
+    }
+
+    /// The engine takes pictures on blocking threads that exit when idle.
+    /// A picture on a thread that has exited, then one on a new thread,
+    /// crashed the process (access violation) until the MTA was held.
+    /// Real screen, by hand with `PEKO_TEST_COMPUTER=1`.
+    #[test]
+    fn pictures_from_threads_that_come_and_go() {
+        if std::env::var("PEKO_TEST_COMPUTER").ok().as_deref() != Some("1") {
+            return;
+        }
+        let picture = || {
+            std::thread::spawn(|| {
+                let win = WindowsPlatform::new();
+                let main = win.screens().unwrap().into_iter().find(|s| s.main).unwrap();
+                // Windows.Graphics.Capture itself, not the GDI fallback.
+                WindowsPlatform::capture_wgc(Target::Screen(main.id))
+                    .unwrap()
+                    .width
+            })
+            .join()
+            .expect("the picture's thread")
+        };
+        for _ in 0..3 {
+            assert!(picture() > 100);
+            std::thread::sleep(Duration::from_millis(200));
+        }
     }
 }
