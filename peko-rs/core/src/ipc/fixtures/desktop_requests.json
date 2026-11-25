@@ -33,6 +33,7 @@
   {"type": "channel_open_remote_dm", "protocol_version": 1, "request_id": 1, "hub_id": "6f1c2a52-58b6-4b8e-9d1c-6a3f0b6f1a01", "token": "access-token"},
   {"type": "runtime_register", "protocol_version": 1, "request_id": 1, "hub": "https://api.pekohub.ai", "token": "access-token"},
   {"type": "runtime_unregister", "protocol_version": 1, "request_id": 1, "token": "access-token", "discard_unsent": false},
+  {"type": "person_name_set", "protocol_version": 1, "request_id": 1, "name": "Maya Lin"},
   {"type": "channel_history_older", "protocol_version": 1, "request_id": 1, "channel": "dm_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "before": "msg-1"},
   {"type": "channel_invitations", "protocol_version": 1, "request_id": 1},
   {"type": "channel_invitation_answer", "protocol_version": 1, "request_id": 1, "channel": "chan_abcdefgh", "accept": true},
