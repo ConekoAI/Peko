@@ -2025,6 +2025,52 @@ mod tests {
         assert_eq!(events[0]["answers"]["picks"][0]["chosen"][0], "Lisbon");
     }
 
+    /// ADR-126 D8: the phone reacts as the person; `read` gives each post
+    /// its reactions and leaves reaction posts out; a reaction is not
+    /// unread.
+    #[tokio::test]
+    async fn a_phone_reacts_and_reads_reactions_on_posts() {
+        let mut rig = Rig::new().await;
+        let (group, peko) = rig.group().await;
+        let first = rig.peer_posts(&group, &peko, "Shall we book Lisbon?").await;
+        let reacted = rig
+            .ask(
+                "react",
+                json!({ "channel": group.as_str(), "to": first, "emoji": "👍" }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(reacted["reactions"][0]["emoji"], "👍");
+        let refused = rig
+            .ask(
+                "react",
+                json!({ "channel": group.as_str(), "to": first, "emoji": "yes" }),
+            )
+            .await
+            .unwrap_err();
+        assert!(refused.starts_with("[bad_request]"), "{refused}");
+
+        let page = rig
+            .ask("read", json!({ "channel": group.as_str() }))
+            .await
+            .unwrap();
+        let events = page["events"].as_array().unwrap();
+        assert_eq!(events.len(), 1, "the reaction is not an event: {page}");
+        assert_eq!(events[0]["reactions"][0]["emoji"], "👍");
+
+        rig.ask(
+            "react",
+            json!({ "channel": group.as_str(), "to": first, "emoji": "👍", "remove": true }),
+        )
+        .await
+        .unwrap();
+        let page = rig
+            .ask("read", json!({ "channel": group.as_str() }))
+            .await
+            .unwrap();
+        assert!(page["events"][0].get("reactions").is_none(), "{page}");
+    }
+
     #[tokio::test]
     async fn a_paired_phone_reads_posts_and_marks_read_as_the_person() {
         let mut rig = Rig::new().await;
