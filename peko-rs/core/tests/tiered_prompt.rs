@@ -825,14 +825,20 @@ async fn d5_agents_md_project_context() {
 /// the section is re-injected with an explicit
 /// `_Updated — replaces the previous "memory" section._` notice.
 ///
-/// Note on scope: `RuntimeContextState` is per-run (a fresh
-/// `RuntimeContextState::default()` per `run_inner`), so a change
-/// between two separate `peko send`s re-injects the section PLAIN on
-/// the new run's first iteration — the notice semantics only fire
-/// within one run. This test therefore rewrites MEMORY.md mid-run via
-/// a scripted Bash call: iteration 1 injects `memory-v1`, the tool call
-/// swaps the file, iteration 2 detects the change and re-injects with
-/// the update notice.
+/// Note on scope: `RuntimeContextState` covers the session's history,
+/// not one run. Each run starts from
+/// `RuntimeContextState::from_history`, which reads the
+/// `<runtime-context>` messages earlier turns left there, so a change
+/// between two separate `peko send`s also re-injects with the notice,
+/// and an unchanged section is not sent again (compaction resets it).
+/// The cross-run cases are covered by the engine's renderer tests
+/// (`later_run_*`) and by
+/// `loop_second_run_on_a_session_resends_only_changed_runtime_context`
+/// in `core/src/engine/agentic_loop_compat.rs`. This test keeps the
+/// within-run case: it rewrites MEMORY.md mid-run via a scripted Bash
+/// call; iteration 1 injects `memory-v1`, the tool call swaps the file,
+/// iteration 2 detects the change and re-injects with the update
+/// notice.
 #[tokio::test]
 #[ignore = "requires MOCK_LLM_URL and peko daemon"]
 #[serial]

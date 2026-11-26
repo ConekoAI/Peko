@@ -376,11 +376,20 @@ impl PromptRenderer {
             return None;
         }
         Some(format!(
-            "<runtime-context>\n{}\n</runtime-context>",
-            sections.join("\n\n")
+            "{RUNTIME_CONTEXT_OPEN}{}{RUNTIME_CONTEXT_CLOSE}",
+            sections.join(SECTION_JOINER)
         ))
     }
 }
+
+/// The envelope around every tail runtime-context message. A run
+/// recognizes the earlier copies in its history by it
+/// ([`RuntimeContextState::from_history`]); steering and ingress text
+/// cannot carry it (`neutralize_runtime_tags`).
+const RUNTIME_CONTEXT_OPEN: &str = "<runtime-context>\n";
+const RUNTIME_CONTEXT_CLOSE: &str = "\n</runtime-context>";
+/// What joins the sections inside the envelope.
+const SECTION_JOINER: &str = "\n\n";
 
 /// The on-change sections tracked by [`RuntimeContextState`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -449,19 +458,49 @@ impl SectionSlot {
     fn notice_on_update(self) -> bool {
         !matches!(self, SectionSlot::CurrentTime)
     }
+
+    /// The fixed text every non-empty render of this section starts
+    /// with. [`RuntimeContextState::from_history`] finds a section's
+    /// earlier copies in the history by it; a test holds each
+    /// `format_*` function to its head.
+    fn head(self) -> &'static str {
+        match self {
+            SectionSlot::Identity => "## Principal identity\n",
+            SectionSlot::CurrentTime => "Current time: ",
+            SectionSlot::Memory => "## Your long-term memory (MEMORY.md)\n",
+            SectionSlot::Conventions => "## Conventions (kb/CONVENTIONS.md)\n",
+            SectionSlot::KbIndex => "## Knowledge base index (kb/index.md)\n",
+            SectionSlot::BindingNote => "## Group conventions (",
+            SectionSlot::RoleNote => "## Your standing notes (",
+            SectionSlot::ProjectContext => "## Project instructions (",
+            SectionSlot::SessionContext => "## Session context\n",
+            SectionSlot::Plans => "## Open plans\n",
+            SectionSlot::Roles => "## Available Roles\n",
+            SectionSlot::Skills => "## Skills (mandatory)\n",
+            SectionSlot::Workflows => "## Workflows\n",
+        }
+    }
 }
 
 /// Per-section last-injected values for the tail runtime-context
 /// message.
 ///
-/// Lives on the agentic loop as per-run state (one per `run_inner`
-/// invocation) and is passed to
+/// Lives on the agentic loop, one per run, and is passed to
 /// [`PromptRenderer::render_runtime_context`] every iteration. A
 /// section is re-injected only when its rendered text differs from the
 /// value recorded here, so large rarely-changing sections (memory,
 /// agents/skills catalogs) ride the tail once and are not re-injected
-/// until they actually change. `None` = never injected this run, so
-/// iteration 1 injects every non-empty section.
+/// until they actually change.
+///
+/// The state describes the history the run sends, not just this run.
+/// A run starts from [`RuntimeContextState::from_history`], which keeps
+/// the `<runtime-context>` messages already in that history, so a
+/// section an earlier turn of the session sent is not sent again while
+/// its text is the same. A section with no copy there (a new session,
+/// one compacted since, or a fresh subagent history) is sent as on a
+/// first render. The loop replaces the state with
+/// [`RuntimeContextState::default`] when compaction rewrites the
+/// history, so the next render sends everything again.
 ///
 /// ADR-052 D2 (codex-style diff semantics): a re-injection after a
 /// text change carries an "_Updated — replaces the previous …_"
@@ -487,9 +526,70 @@ pub struct RuntimeContextState {
     /// prompt-section name. A missing key means "never injected this
     /// run" — the same `None` case as the fixed slots above.
     custom_sections: HashMap<String, String>,
+    /// The bodies of the `<runtime-context>` messages already in the
+    /// run's history, oldest first. A section's first render in this
+    /// run is compared with its latest copy here
+    /// ([`latest_carried_copy`]) instead of being treated as never
+    /// sent. Empty for a fresh state.
+    carried: Vec<String>,
 }
 
+/// A cell value meaning "the history carries a non-empty copy of this
+/// section, and it is not the current render". No render equals it
+/// (every non-empty render starts with its section's head), so the
+/// next compare re-injects with the update notice, or retracts when
+/// the section is now empty.
+const CARRIED_OTHER: &str = "\u{0}";
+
 impl RuntimeContextState {
+    /// The state for a run whose history is `messages`: every
+    /// `<runtime-context>` message there counts as sent. A history with
+    /// none behaves like [`RuntimeContextState::default`].
+    ///
+    /// The source is the message list the run sends to the provider,
+    /// so the state cannot describe a copy the provider no longer
+    /// sees: a compacted, cleared, or repaired history is whatever
+    /// `messages` holds. Each tail message is one user-role text block
+    /// (consecutive user messages merged by `repair_history` keep
+    /// their blocks).
+    #[must_use]
+    pub fn from_history(messages: &[peko_message::LlmMessage]) -> Self {
+        let carried = messages
+            .iter()
+            .filter(|message| message.role == peko_message::MessageRole::User)
+            .flat_map(|message| message.content.iter())
+            .filter_map(|block| match block {
+                peko_message::ContentBlock::Text { text } => text
+                    .strip_prefix(RUNTIME_CONTEXT_OPEN)
+                    .and_then(|body| body.strip_suffix(RUNTIME_CONTEXT_CLOSE))
+                    .map(str::to_string),
+                _ => None,
+            })
+            .collect();
+        Self {
+            carried,
+            ..Self::default()
+        }
+    }
+
+    fn cell_mut(&mut self, slot: SectionSlot) -> &mut Option<String> {
+        match slot {
+            SectionSlot::Identity => &mut self.identity,
+            SectionSlot::CurrentTime => &mut self.current_time,
+            SectionSlot::Memory => &mut self.memory,
+            SectionSlot::Conventions => &mut self.conventions,
+            SectionSlot::KbIndex => &mut self.kb_index,
+            SectionSlot::BindingNote => &mut self.binding_note,
+            SectionSlot::RoleNote => &mut self.role_note,
+            SectionSlot::ProjectContext => &mut self.project_context,
+            SectionSlot::SessionContext => &mut self.session_context,
+            SectionSlot::Plans => &mut self.plans,
+            SectionSlot::Roles => &mut self.roles,
+            SectionSlot::Skills => &mut self.skills,
+            SectionSlot::Workflows => &mut self.workflows,
+        }
+    }
+
     /// Compare-and-record one fixed-slot section. Returns the text to
     /// inject, or `None` when unchanged. The recorded value is always
     /// the raw render (never the notice-decorated text), so the next
@@ -508,22 +608,17 @@ impl RuntimeContextState {
     ///   dedupes away).
     /// - Non-empty text after an empty/absent record: plain injection
     ///   (a retraction already told the model the section was gone).
+    ///
+    /// A section's first render in a run whose history already carries
+    /// it starts from that copy: unchanged injects nothing, changed
+    /// carries the update notice (the earlier copy is still in front of
+    /// the model), and empty retracts once.
     fn take_changed(&mut self, slot: SectionSlot, rendered: String) -> Option<String> {
-        let cell = match slot {
-            SectionSlot::Identity => &mut self.identity,
-            SectionSlot::CurrentTime => &mut self.current_time,
-            SectionSlot::Memory => &mut self.memory,
-            SectionSlot::Conventions => &mut self.conventions,
-            SectionSlot::KbIndex => &mut self.kb_index,
-            SectionSlot::BindingNote => &mut self.binding_note,
-            SectionSlot::RoleNote => &mut self.role_note,
-            SectionSlot::ProjectContext => &mut self.project_context,
-            SectionSlot::SessionContext => &mut self.session_context,
-            SectionSlot::Plans => &mut self.plans,
-            SectionSlot::Roles => &mut self.roles,
-            SectionSlot::Skills => &mut self.skills,
-            SectionSlot::Workflows => &mut self.workflows,
-        };
+        if self.cell_mut(slot).is_none() && !self.carried.is_empty() {
+            let seeded = latest_carried_copy(&self.carried, slot.head(), slot.label(), &rendered);
+            *self.cell_mut(slot) = seeded;
+        }
+        let cell = self.cell_mut(slot);
         take_changed_cell(cell, rendered, slot.label(), slot.notice_on_update())
     }
 
@@ -535,6 +630,10 @@ impl RuntimeContextState {
         // the shared helper expects, decide, then write it back. A
         // missing key maps to `None` (never injected).
         let mut cell = self.custom_sections.get(section).cloned();
+        if cell.is_none() && !self.carried.is_empty() {
+            let head = format!("## {section}\n\n");
+            cell = latest_carried_copy(&self.carried, &head, section, &rendered);
+        }
         let decision = take_changed_cell(&mut cell, rendered, section, true);
         match cell {
             Some(value) => {
@@ -546,6 +645,64 @@ impl RuntimeContextState {
         }
         decision
     }
+}
+
+/// The cell value a section starts from when the run's history already
+/// carries copies of it: the newest carried message that holds the
+/// section decides. `Some(rendered)` when that copy is the current
+/// render, `Some("")` when it is the section's retraction,
+/// `Some(CARRIED_OTHER)` for any other text, and `None` when no carried
+/// message holds the section.
+///
+/// A copy is found where a section starts: at the start of the body or
+/// right after a section joiner. A match needs the whole render there,
+/// followed by the end of the body or a joiner (the update notice
+/// follows a joiner too). A section body that itself contains another
+/// section's head on its own paragraph can at worst make a section look
+/// changed, which sends it again.
+fn latest_carried_copy(
+    carried: &[String],
+    head: &str,
+    label: &str,
+    rendered: &str,
+) -> Option<String> {
+    let retraction = format!("_The \"{label}\" section no longer applies._");
+    fn ends_here(rest: &str) -> bool {
+        rest.is_empty() || rest.starts_with(SECTION_JOINER)
+    }
+    for body in carried.iter().rev() {
+        let mut found: Option<String> = None;
+        for start in section_starts(body) {
+            let segment = &body[start..];
+            if !rendered.is_empty() && segment.strip_prefix(rendered).is_some_and(ends_here) {
+                return Some(rendered.to_string());
+            }
+            if found.is_some() {
+                continue;
+            }
+            if segment
+                .strip_prefix(retraction.as_str())
+                .is_some_and(ends_here)
+            {
+                found = Some(String::new());
+            } else if segment.starts_with(head) {
+                found = Some(CARRIED_OTHER.to_string());
+            }
+        }
+        if found.is_some() {
+            return found;
+        }
+    }
+    None
+}
+
+/// Byte offsets in `body` where a section may start: 0 and every
+/// offset right after two newlines. A section ending in a newline is
+/// followed by three, so both offsets after it count.
+fn section_starts(body: &str) -> impl Iterator<Item = usize> + '_ {
+    let bytes = body.as_bytes();
+    std::iter::once(0)
+        .chain((2..=bytes.len()).filter(move |&i| bytes[i - 2] == b'\n' && bytes[i - 1] == b'\n'))
 }
 
 /// Shared compare-and-decide for one change-tracked section — the fixed
@@ -2299,6 +2456,363 @@ mod tests {
         assert_eq!(
             state.take_changed(SectionSlot::KbIndex, "map v1".to_string()),
             None
+        );
+    }
+
+    // ── Change detection across the turns of one session ──────────
+
+    /// A history holding one earlier turn: the person's message, the
+    /// tail message that turn sent, and the reply.
+    fn history_after(tail: &str) -> Vec<peko_message::LlmMessage> {
+        vec![
+            peko_message::LlmMessage::system("frozen prompt"),
+            peko_message::LlmMessage::user("hello"),
+            peko_message::LlmMessage::user(tail),
+            peko_message::LlmMessage::assistant("hi"),
+            peko_message::LlmMessage::user("next question"),
+        ]
+    }
+
+    /// A run on a session whose earlier turn already sent the hot
+    /// sections sends none of them again while their sources are
+    /// unchanged; only the iteration-budget line (and the clock, if
+    /// the minute turned) rides.
+    #[tokio::test]
+    async fn later_run_with_unchanged_sources_resends_no_sections() {
+        let renderer = PromptRenderer::new(catalog_funnel());
+        let mut ctx = empty_ctx();
+        let dir = tempfile::tempdir().unwrap();
+        write_memory(&mut ctx, &dir, Some("remember this"));
+        ctx.conversation_channel = Some("chan_abc123".to_string());
+        ctx.iteration_budget = Some(IterationBudgetState { iteration: 1 });
+
+        let mut first_run = RuntimeContextState::default();
+        let first = renderer
+            .render_runtime_context(&ctx, &mut first_run)
+            .await
+            .expect("first turn sends sections");
+        assert!(first.contains("remember this"), "got: {first}");
+
+        let mut second_run = RuntimeContextState::from_history(&history_after(&first));
+        let second = renderer
+            .render_runtime_context(&ctx, &mut second_run)
+            .await
+            .expect("iteration budget is always due");
+        assert!(second.contains("Iteration 1."), "got: {second}");
+        for gone in [
+            "remember this",
+            "conversation channel: chan_abc123",
+            "## Available Roles",
+            "## Skills (mandatory)",
+            "Updated — replaces",
+            "no longer applies",
+        ] {
+            assert!(!second.contains(gone), "{gone:?} resent: {second}");
+        }
+        // Byte cost of the second turn's tail, for the record.
+        assert!(
+            second.len() * 4 < first.len(),
+            "second tail {} bytes vs first {} bytes",
+            second.len(),
+            first.len()
+        );
+    }
+
+    /// A section whose text changed since the earlier turn is sent
+    /// alone, with the update notice: the earlier copy is still in the
+    /// history the model reads.
+    #[tokio::test]
+    async fn later_run_sends_a_changed_section_alone_with_the_notice() {
+        let renderer = PromptRenderer::new(catalog_funnel());
+        let mut ctx = empty_ctx();
+        let dir = tempfile::tempdir().unwrap();
+        write_memory(&mut ctx, &dir, Some("remember this"));
+        ctx.iteration_budget = Some(IterationBudgetState { iteration: 1 });
+        let first = renderer
+            .render_runtime_context(&ctx, &mut RuntimeContextState::default())
+            .await
+            .unwrap();
+
+        write_memory(&mut ctx, &dir, Some("remember this AND that"));
+        let mut second_run = RuntimeContextState::from_history(&history_after(&first));
+        let second = renderer
+            .render_runtime_context(&ctx, &mut second_run)
+            .await
+            .unwrap();
+        assert!(second.contains("remember this AND that"), "got: {second}");
+        assert!(
+            second.contains("_Updated — replaces the previous \"memory\" section._"),
+            "got: {second}"
+        );
+        assert!(!second.contains("## Available Roles"), "got: {second}");
+        assert!(!second.contains("## Skills (mandatory)"), "got: {second}");
+
+        // A third turn after the change sends nothing again: the
+        // newest copy in the history is the changed one.
+        let history = [history_after(&first), history_after(&second)].concat();
+        let mut third_run = RuntimeContextState::from_history(&history);
+        let third = renderer
+            .render_runtime_context(&ctx, &mut third_run)
+            .await
+            .unwrap();
+        assert!(!third.contains("remember this"), "got: {third}");
+
+        // Going back to the first text is a change too: the newest
+        // copy is the second one.
+        write_memory(&mut ctx, &dir, Some("remember this"));
+        let mut fourth_run = RuntimeContextState::from_history(&history);
+        let fourth = renderer
+            .render_runtime_context(&ctx, &mut fourth_run)
+            .await
+            .unwrap();
+        assert!(fourth.contains("remember this\n"), "got: {fourth}");
+        assert!(fourth.contains("Updated — replaces"), "got: {fourth}");
+    }
+
+    /// A section that turned empty since the earlier turn is retracted
+    /// once, and a turn after the retraction says nothing more.
+    #[tokio::test]
+    async fn later_run_retracts_an_emptied_section_once() {
+        let renderer = PromptRenderer::new(empty_funnel());
+        let mut ctx = empty_ctx();
+        let dir = tempfile::tempdir().unwrap();
+        write_memory(&mut ctx, &dir, Some("remember this"));
+        ctx.iteration_budget = Some(IterationBudgetState { iteration: 1 });
+        let first = renderer
+            .render_runtime_context(&ctx, &mut RuntimeContextState::default())
+            .await
+            .unwrap();
+
+        write_memory(&mut ctx, &dir, None);
+        let mut second_run = RuntimeContextState::from_history(&history_after(&first));
+        let second = renderer
+            .render_runtime_context(&ctx, &mut second_run)
+            .await
+            .unwrap();
+        assert!(
+            second.contains("_The \"memory\" section no longer applies._"),
+            "got: {second}"
+        );
+
+        let history = [history_after(&first), history_after(&second)].concat();
+        let mut third_run = RuntimeContextState::from_history(&history);
+        let third = renderer
+            .render_runtime_context(&ctx, &mut third_run)
+            .await
+            .unwrap();
+        assert!(!third.contains("memory"), "got: {third}");
+
+        // The file coming back after the retraction is sent plain.
+        write_memory(&mut ctx, &dir, Some("remember this"));
+        let mut fourth_run = RuntimeContextState::from_history(&history);
+        let fourth = renderer
+            .render_runtime_context(&ctx, &mut fourth_run)
+            .await
+            .unwrap();
+        assert!(fourth.contains("remember this"), "got: {fourth}");
+        assert!(!fourth.contains("Updated — replaces"), "got: {fourth}");
+    }
+
+    /// After compaction the history holds the summary and what came
+    /// after it, with no earlier tail message, so the next run sends
+    /// every section again; a session with no tail messages at all (a
+    /// new one) does the same.
+    #[tokio::test]
+    async fn later_run_after_compaction_or_without_tails_resends_all() {
+        let renderer = PromptRenderer::new(catalog_funnel());
+        let mut ctx = empty_ctx();
+        let dir = tempfile::tempdir().unwrap();
+        write_memory(&mut ctx, &dir, Some("remember this"));
+        ctx.iteration_budget = Some(IterationBudgetState { iteration: 1 });
+
+        let compacted = vec![
+            peko_message::LlmMessage::system("frozen prompt"),
+            peko_message::LlmMessage::system("[Conversation Summary - 9 messages]:\nearlier"),
+            peko_message::LlmMessage::user("next question"),
+        ];
+        for history in [compacted, Vec::new()] {
+            let mut state = RuntimeContextState::from_history(&history);
+            let body = renderer
+                .render_runtime_context(&ctx, &mut state)
+                .await
+                .unwrap();
+            assert!(body.contains("remember this"), "got: {body}");
+            assert!(body.contains("## Available Roles"), "got: {body}");
+            assert!(body.contains("Current time:"), "got: {body}");
+            assert!(!body.contains("Updated — replaces"), "got: {body}");
+        }
+    }
+
+    /// A different stamp, channel or role between turns renders a
+    /// different section, which is sent with the update notice.
+    #[tokio::test]
+    async fn later_run_with_a_different_channel_sends_the_new_session_context() {
+        let renderer = PromptRenderer::new(empty_funnel());
+        let mut ctx = empty_ctx();
+        ctx.conversation_channel = Some("chan_one".to_string());
+        let first = renderer
+            .render_runtime_context(&ctx, &mut RuntimeContextState::default())
+            .await
+            .unwrap();
+        ctx.conversation_channel = Some("chan_two".to_string());
+        let mut second_run = RuntimeContextState::from_history(&history_after(&first));
+        let second = renderer
+            .render_runtime_context(&ctx, &mut second_run)
+            .await
+            .unwrap();
+        assert!(second.contains("chan_two"), "got: {second}");
+        assert!(
+            second.contains("_Updated — replaces the previous \"session context\" section._"),
+            "got: {second}"
+        );
+    }
+
+    /// Custom (workspace-hook) sections follow the same rules across
+    /// turns.
+    #[tokio::test]
+    async fn later_run_tracks_custom_sections() {
+        let core = custom_section_funnel("all systems green");
+        let renderer = PromptRenderer::new(core.clone());
+        let ctx = empty_ctx();
+        let first = renderer
+            .render_runtime_context(&ctx, &mut RuntimeContextState::default())
+            .await
+            .unwrap();
+        assert!(first.contains("all systems green"), "got: {first}");
+
+        let mut unchanged = RuntimeContextState::from_history(&history_after(&first));
+        let quiet = renderer.render_runtime_context(&ctx, &mut unchanged).await;
+        assert!(
+            quiet
+                .as_deref()
+                .is_none_or(|body| !body.contains("status-board")),
+            "got: {quiet:?}"
+        );
+
+        core.section_texts
+            .lock()
+            .expect("section_texts poisoned")
+            .insert("status-board".to_string(), String::new());
+        let mut emptied = RuntimeContextState::from_history(&history_after(&first));
+        let retracted = renderer
+            .render_runtime_context(&ctx, &mut emptied)
+            .await
+            .unwrap();
+        assert!(
+            retracted.contains("_The \"status-board\" section no longer applies._"),
+            "got: {retracted}"
+        );
+    }
+
+    /// `repair_history` merges consecutive user messages into one with
+    /// several blocks; the tail block is still found.
+    #[tokio::test]
+    async fn from_history_reads_tails_inside_merged_user_messages() {
+        let renderer = PromptRenderer::new(catalog_funnel());
+        let ctx = empty_ctx();
+        let first = renderer
+            .render_runtime_context(&ctx, &mut RuntimeContextState::default())
+            .await
+            .unwrap();
+        let repaired = peko_message::repair::repair_history(history_after(&first));
+        assert!(
+            repaired.iter().any(|m| m.content.len() > 1),
+            "the fixture should merge user messages"
+        );
+        let mut state = RuntimeContextState::from_history(&repaired);
+        let second = renderer.render_runtime_context(&ctx, &mut state).await;
+        assert!(
+            second
+                .as_deref()
+                .is_none_or(|body| !body.contains("## Available Roles")),
+            "got: {second:?}"
+        );
+    }
+
+    /// Text that only looks like a tail message (no closing envelope,
+    /// or not at the start of the block) is not taken for one.
+    #[test]
+    fn from_history_ignores_text_that_is_not_a_tail_message() {
+        let state = RuntimeContextState::from_history(&[
+            peko_message::LlmMessage::user("<runtime-context>\n## Available Roles\nx"),
+            peko_message::LlmMessage::user("see <runtime-context>\nx\n</runtime-context>"),
+            peko_message::LlmMessage::assistant("<runtime-context>\nx\n</runtime-context>"),
+        ]);
+        assert!(state.carried.is_empty());
+    }
+
+    /// Each fixed section's render starts with the head the carried-copy
+    /// lookup searches for.
+    #[test]
+    fn every_section_render_starts_with_its_head() {
+        let dir = tempfile::tempdir().unwrap();
+        let kb = dir.path().join("kb");
+        std::fs::create_dir_all(kb.join("groups")).unwrap();
+        std::fs::create_dir_all(kb.join("roles")).unwrap();
+        std::fs::write(kb.join("MEMORY.md"), "m").unwrap();
+        std::fs::write(kb.join("CONVENTIONS.md"), "c").unwrap();
+        std::fs::write(kb.join("index.md"), "i").unwrap();
+        std::fs::write(kb.join("groups").join("discord.md"), "g").unwrap();
+        std::fs::write(kb.join("roles").join("test-agent.md"), "r").unwrap();
+        let mut ctx = empty_ctx();
+        ctx.workspace = dir.path().to_path_buf();
+        ctx.project_instructions = Some(("/w/AGENTS.md".to_string(), "p".to_string()));
+        let hot = hot(&ctx);
+        let renders = [
+            (SectionSlot::Identity, format_identity_section("x")),
+            (SectionSlot::CurrentTime, render_current_time()),
+            (SectionSlot::Memory, format_memory_section(&hot)),
+            (SectionSlot::Conventions, format_conventions_section(&hot)),
+            (SectionSlot::KbIndex, format_kb_index_section(&hot)),
+            (
+                SectionSlot::BindingNote,
+                format_binding_note_section(&ctx, &hot),
+            ),
+            (SectionSlot::RoleNote, format_role_note_section(&ctx, &hot)),
+            (
+                SectionSlot::ProjectContext,
+                format_project_context_section(&ctx),
+            ),
+            (
+                SectionSlot::SessionContext,
+                format_session_context_section(&ctx, "x"),
+            ),
+            (SectionSlot::Plans, format_plans_section("x")),
+            (SectionSlot::Roles, format_roles_section("x")),
+            (SectionSlot::Skills, format_skills_section("x")),
+            (SectionSlot::Workflows, format_workflows_section("x")),
+        ];
+        for (slot, render) in renders {
+            assert!(
+                render.starts_with(slot.head()),
+                "{slot:?} renders {render:?}, head {:?}",
+                slot.head()
+            );
+        }
+        assert!(format_custom_section("board", "x").starts_with("## board\n\n"));
+    }
+
+    /// A section that ends in a newline is followed by three newlines
+    /// in the joined body; the section after it is still found.
+    #[test]
+    fn carried_copy_is_found_after_a_section_ending_in_a_newline() {
+        let memory = "## Your long-term memory (MEMORY.md)\n\nm\n".to_string();
+        let roles = format_roles_section("x");
+        let body = format!("{memory}\n\n{roles}");
+        let carried = vec![body];
+        assert_eq!(
+            latest_carried_copy(&carried, SectionSlot::Roles.head(), "roles", &roles),
+            Some(roles.clone())
+        );
+        assert_eq!(
+            latest_carried_copy(&carried, SectionSlot::Memory.head(), "memory", &memory),
+            Some(memory.clone())
+        );
+        // A longer memory whose start is the old one is not a match.
+        let longer = "## Your long-term memory (MEMORY.md)\n\nm\nmore\n";
+        assert_eq!(
+            latest_carried_copy(&carried, SectionSlot::Memory.head(), "memory", longer),
+            Some(CARRIED_OTHER.to_string())
         );
     }
 }

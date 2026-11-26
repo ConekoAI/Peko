@@ -79,6 +79,17 @@ All notable changes to Peko.
 
 ### Changed
 
+- A new turn sends only the `<runtime-context>` sections that changed
+  since the session's history last received them. A run now starts its
+  change detection from the `<runtime-context>` messages already in the
+  history it sends (`RuntimeContextState::from_history`), where before
+  every run started empty and resent identity, memory, conventions, the
+  kb index, session context, plans and the catalogs each turn. A section
+  that changed between turns carries the "Updated — replaces…" notice and
+  one that turned empty is retracted once, as within a run. After
+  compaction, and in a new session, everything is sent again. Nothing new
+  is stored.
+
 - A peko's wake book keeps when its wake limit held a post for a day
   (`holds`), also after the posts were delivered, so a run can be read
   afterwards for exchanges the limit cut (ADR-128; the collab benchmark
