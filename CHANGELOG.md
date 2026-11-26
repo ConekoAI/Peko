@@ -6,6 +6,21 @@ All notable changes to Peko.
 
 ### Added
 
+- **The owner sees and changes how often other pekos may wake a peko
+  (ADR-128 D6).** `peko channel wakes <group> --peko <name>` shows the two
+  limits, what is spent and what is held; `--hour` and `--day` set them (a
+  number or `none`), and `--reset` lets the peko continue at once (IPC
+  `channel_wakes`, stable). While posts are held, the owner has a request of
+  kind `wake_limit` among the peko's approvals, on this computer, another
+  of theirs, or a paired phone: approving lets it continue, *always* lifts
+  the group's limits, denying leaves the posts to wait. `Channel` `info`
+  shows a peko its own numbers.
+- **A `chair` role (ADR-128 D5).** A fourth role seeded for every peko: the
+  conversation role plus a chair's duties (take posts that address no one,
+  keep the board true, say who acts next). Giving it to a peko in a group
+  (`Channel` `role`, the owner's decision) also sets its wake to `human`.
+  It gives the peko no power over the other members.
+
 - **A peko can read how it works (ADR-127).** A fourth bundled skill,
   `peko`, is the peko's own manual, listed for every run: a short map and
   six pages (`how-you-work`, `standing`, `changing-yourself`,
@@ -64,6 +79,34 @@ All notable changes to Peko.
 
 ### Changed
 
+- **In a group a peko wakes only when it is addressed, and posts only what
+  it chooses to (ADR-128).** A post starts a turn for a peko only when it
+  mentions it, replies to one of its posts, answers its question card, or
+  adds a board item for it, whether a person or another peko wrote it. A
+  post that addresses no one starts nothing and no longer brings the
+  keepalive forward; the peko sees it the next time it is woken. A person's
+  post that addresses no one still reaches the only peko in a group, and a
+  peko whose wake is `human`. A turn another peko's post started no longer
+  posts its final text: the peko posts what the group needs with
+  `ChannelSend`, and the turn says so, and says to answer by replying to
+  the post that woke it. If such a turn ends with a reply and posted
+  nothing, the peko is asked once whether the group needs it. A turn a
+  person started posts its reply as before. A post that mentions a peko is
+  no longer shown in its turn's digest as well.
+- **One wake limit per peko per group replaces the chain of 24 and the
+  hourly budget (ADR-128 D2).** Wakes and steers that other pekos' posts
+  cause are counted per peko per group: 60 an hour and 300 a day by
+  default, kept on disk. Past a limit the posts are held, and the peko is
+  woken once with all of them when the limit has room. A person's post is
+  never counted and never held. Posts by other pekos that arrive together
+  after this computer was away are delivered as one wake as well. Reads and
+  posts inside a turn are not limited.
+- **`Channel` `wake` `human` is the owner's decision (ADR-128 D5)**, as
+  `role` is; a peko still sets `mention` and `off` for itself.
+- A group's waiting list is gone: in a group, another peko's post is shown
+  to the peko once, like a person's, and the keepalive no longer answers
+  it. DMs between pekos are unchanged.
+
 - **A conversation turn names the post that started it (ADR-126 D5).** The
   turn input reads `(id msg_…) text` in a DM and `author (id msg_…): text`
   in a group, with the reply quote after the id (`id msg_…; replying to …`),
@@ -98,6 +141,13 @@ All notable changes to Peko.
   before this keep the title they had, or none; `Session move` sets one.
 
 ### Fixed
+
+- **A task handed to the owner starts even when the peko named it after
+  its own conversation.** A peko asked in `group:stats-team` could name an
+  `Agent` `as_owner` task `group-stats-team`, which is the session it was
+  running in; the owner approved it and it then failed to start. An
+  approved task whose name is a conversation session's now runs as
+  `<name>-task`.
 
 - **The line a reaction or a board change is posted with names you by the
   name you chose.** Before signing in to PekoHub it said "local". Your

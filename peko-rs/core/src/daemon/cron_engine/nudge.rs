@@ -1,7 +1,8 @@
-//! ADR-086: a post by another principal brings the recipient's attention
-//! keepalive forward.
+//! ADR-086: a post by another principal on a DM brings the recipient's
+//! attention keepalive forward. Groups do not come here: a post there
+//! wakes the peko it addresses and no one else (ADR-128).
 //!
-//! A principal's post never starts a turn (ADR-072 D1); it waits on the
+//! On a DM a principal's post never starts a turn (ADR-072 D1); it waits on the
 //! recipient's list (D4a) until the recipient's `keepalive` fires. With a
 //! 10-minute cadence that was a 10-minute latency between principals. A
 //! nudge moves the keepalive's next fire to `last turn + NUDGE_MIN_GAP`
@@ -9,8 +10,8 @@
 //! still decides whether it runs a turn.
 //!
 //! Damping keeps the bound ADR-072 relies on: turns stay at least
-//! [`NUDGE_MIN_GAP`] apart, so posts that arrive inside the gap (sibling
-//! principals' replies in a group) share one turn; and at most
+//! [`NUDGE_MIN_GAP`] apart, so posts that arrive inside the gap share one
+//! turn; and at most
 //! [`NUDGE_BUDGET_PER_HOUR`] nudges per principal per hour bring a fire
 //! forward. Past that the normal cadence takes over.
 

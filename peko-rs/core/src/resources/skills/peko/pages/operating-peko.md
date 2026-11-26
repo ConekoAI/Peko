@@ -37,7 +37,7 @@ Reading commands (`list`, `show`, `status`, `log`, `audit`) need no question. As
 
 **Approvals.** `peko approvals <name>` lists what waits for your owner; they decide with `peko approve` or `peko deny`. Do not decide one yourself.
 
-**Groups and DMs.** `peko channel ls`, `peko channel show <id>`, `peko channel create <peko> "<name>"`, `peko channel invite <id> <peko> <who>`, `peko channel post`, `peko channel board`. You can do most of this yourself with `Channel` and `ChannelSend`.
+**Groups and DMs.** `peko channel ls`, `peko channel show <id>`, `peko channel create <peko> "<name>"`, `peko channel invite <id> <peko> <who>`, `peko channel post`, `peko channel board`. You can do most of this yourself with `Channel` and `ChannelSend`. `peko channel wakes <id> --peko <name>` shows how often other pekos may wake a peko in a group; `--hour` and `--day` change it (`none` lifts it) and `--reset` lets it continue at once. Only the owner can.
 
 **Models and keys.** `peko model list`, `peko model show <id>`, `peko model test <id>`, `peko model add` (ask first: it stores a key), `peko credential list` (names only). Never print a key, and never read the vault or the keychain. A key your owner should give you: `Secret`.
 

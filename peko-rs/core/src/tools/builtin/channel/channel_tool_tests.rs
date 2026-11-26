@@ -323,6 +323,32 @@ async fn non_owner_runs_stay_in_their_conversation() {
     );
 }
 
+/// ADR-128 D5: giving a peko the seeded `chair` role in a group also
+/// makes it take people's posts that address no one; `info` shows how
+/// many wakes by other pekos it has spent there (D2).
+#[tokio::test]
+async fn the_chair_role_takes_unaddressed_posts_and_info_shows_the_wake_limit() {
+    let fx = Fixture::new().await;
+    fx.call(json!({"action": "create", "name": "desk", "slug": "desk"}))
+        .await
+        .unwrap();
+    let set = fx
+        .call(json!({"action": "role", "channel": "group:desk", "role": "chair"}))
+        .await
+        .unwrap();
+    assert_eq!(set["role"], "chair");
+    assert_eq!(set["wake"], "human");
+    let info = fx
+        .call(json!({"action": "info", "channel": "group:desk"}))
+        .await
+        .unwrap();
+    assert_eq!(info["you"]["wake"], "human");
+    assert_eq!(
+        info["you"]["wakes_by_pekos"],
+        json!({"per_hour": "60", "per_day": "300", "spent_hour": 0, "spent_day": 0, "held": 0})
+    );
+}
+
 /// ADR-087 D6: `role` sets the caller's binding role on a group or a DM,
 /// refuses a role the principal does not have, and clears when omitted.
 #[tokio::test]

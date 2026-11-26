@@ -33,6 +33,7 @@ pub mod dm_rekey;
 pub mod factory;
 pub(crate) mod first_contact;
 pub mod genesis;
+pub mod group_wakes;
 pub mod identity_prompt;
 pub mod kb;
 pub mod main_run;

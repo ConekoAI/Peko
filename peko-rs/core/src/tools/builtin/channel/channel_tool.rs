@@ -91,7 +91,7 @@ impl ChannelTool {
                 json!({"type":"object", "properties":{
                     "channel": channel,
                     "policy":{"type":"string", "enum":["human", "mention", "off"],
-                        "description":"human: every human root post starts a turn; mention: only @<name>; off: nothing does."}
+                        "description":"mention: a post that addresses you starts a turn (a mention of you, a reply to your post, a board item for you); human: so does a person's post that addresses no one (a chair's setting, the owner's decision); off: nothing does."}
                 }, "required":["channel", "policy"], "additionalProperties":false}),
             ),
             (
@@ -385,6 +385,23 @@ impl ChannelTool {
         let creator = self.port.actor_info(&creator).await.address;
         let role = binding.as_ref().and_then(|b| b.role.clone());
         let mut you = json!({"member": true, "wake": wake, "role": role});
+        if kind == ConversationKind::Group {
+            // ADR-128 D2: how often other pekos may wake this one here.
+            if let Ok(principal) = self.principal(id).await {
+                let status = crate::principal::group_wakes::WakeBook::open(
+                    &crate::principal::group_wakes::dir_for(&principal),
+                    channel,
+                )
+                .status(chrono::Utc::now());
+                you["wakes_by_pekos"] = json!({
+                    "per_hour": status.per_hour.to_string(),
+                    "per_day": status.per_day.to_string(),
+                    "spent_hour": status.spent_hour,
+                    "spent_day": status.spent_day,
+                    "held": status.held,
+                });
+            }
+        }
         if stamp.is_owner() {
             you["session"] = json!(binding.map(|b| b.session));
         }
@@ -441,8 +458,11 @@ impl Tool for ChannelTool {
         "Manage your group channels. create starts a group (you are its creator and first \
          member; made for your owner, it has them in it too) and can invite members at once; invite adds your owner or a principal from \
          Contacts; leave removes you from a group; wake sets what starts a turn for you in a \
-         group (human: every human root post, mention: only @<your name> — the default, off: \
-         nothing; posts by principals and replies never do); role chooses the role (from \
+         group (mention, the default: a post that addresses you, by a person or another \
+         peko: a mention of you, a reply to your post, a board item for you; human: also a \
+         person's post that addresses no one, which is how a group's chair is set and is the \
+         owner's decision; off: nothing; the only peko in a group also gets people's posts \
+         that address no one); role chooses the role (from \
          RoleCatalog) your turns run in a DM or group, or returns it to your default \
          conversation role when omitted; admin lets a member add members, or stops it (the \
          group's owner only); board changes a group's shared board of work (add an item, \
@@ -453,10 +473,12 @@ impl Tool for ChannelTool {
          makes you (not your owner) a member of a group by its invite link or a public \
          group's ID; info \
          shows a channel's kind, creator, participants, a group's home runtime, owner, admins, \
-         PekoHub ID and board, and your wake policy and role. A group's members and settings change \
+         PekoHub ID and board, and your wake policy, role, and how many of the wakes other \
+         pekos may cause you there are spent (past the limit their posts wait and reach you \
+         together later; only your owner changes it). A group's members and settings change \
          at its home runtime, by its owner or an admin. DMs are opened by ChannelSend and keep \
          their members and wake policy and have no board. Only the owner decides create, \
-         invite, admin, register, link, join, and role: a run acting for anyone else waits for the \
+         invite, admin, register, link, join, role, and wake human: a run acting for anyone else waits for the \
          owner's approval."
             .into()
     }
@@ -688,7 +710,19 @@ impl Tool for ChannelTool {
                         .await?;
                 }
                 let binding = self.port.set_role(&channel, &id, role).await?;
-                Ok(json!({"channel": channel.as_str(), "role": binding.role}))
+                // ADR-128 D5: a group's chair also takes people's posts
+                // that address no one.
+                let chairs = binding.role.as_deref() == Some(crate::principal::genesis::CHAIR_ROLE)
+                    && self.port.conversation_kind(&channel).await? == ConversationKind::Group;
+                let wake = if chairs {
+                    self.port
+                        .set_wake(&channel, &id, WakePolicy::Human)
+                        .await?
+                        .wake
+                } else {
+                    binding.wake
+                };
+                Ok(json!({"channel": channel.as_str(), "role": binding.role, "wake": wake}))
             }
             other => anyhow::bail!("Channel: unknown action {other:?}"),
         }

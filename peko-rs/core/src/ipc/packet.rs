@@ -1422,6 +1422,25 @@ pub enum RequestPacket {
     #[serde(rename = "channel_undelivered")]
     ChannelUndelivered { request_id: u64, channel: String },
 
+    /// ADR-128 D6: how often other pekos may wake `principal_name` in a
+    /// group, and what waits past that. With `per_hour` / `per_day` (a
+    /// number, or `none`) it sets the limits first; with `reset` it lets
+    /// the peko continue (what was spent is forgotten, so held posts
+    /// reach it at once). Groups only, and only the peko's owner.
+    /// Answered with `ChannelWakesResult`.
+    #[serde(rename = "channel_wakes")]
+    ChannelWakes {
+        request_id: u64,
+        channel: String,
+        principal_name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        per_hour: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        per_day: Option<String>,
+        #[serde(default)]
+        reset: bool,
+    },
+
     #[serde(rename = "channel_board")]
     ChannelBoard {
         request_id: u64,
@@ -1655,6 +1674,7 @@ impl RequestPacket {
             | Self::ChannelGroupRegister { request_id, .. }
             | Self::ChannelGroupLink { request_id, .. }
             | Self::ChannelSetWake { request_id, .. }
+            | Self::ChannelWakes { request_id, .. }
             | Self::ChannelBoard { request_id, .. }
             | Self::ChannelUndelivered { request_id, .. }
             | Self::DeviceAdd { request_id }
@@ -2553,6 +2573,24 @@ pub enum ResponsePacket {
         channel: peko_protocol::channel::ChannelId,
         principal_name: String,
         wake: peko_channel::WakePolicy,
+    },
+
+    /// Response to `ChannelWakes` (ADR-128 D6): the limits on wakes by
+    /// other pekos (`"60"`, or `"none"`), what is spent in the rolling
+    /// hour and day, how many posts are held, and when the limit next has
+    /// room (RFC 3339; absent when it has room now or never will).
+    #[serde(rename = "channel_wakes_result")]
+    ChannelWakesResult {
+        request_id: u64,
+        channel: peko_protocol::channel::ChannelId,
+        principal_name: String,
+        per_hour: String,
+        per_day: String,
+        spent_hour: u32,
+        spent_day: u32,
+        held: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        free_at: Option<String>,
     },
 
     #[serde(rename = "channel_pinned_to_shared")]
@@ -4255,6 +4293,7 @@ impl ResponsePacket {
             | Self::ChannelGroupRegistered { request_id, .. }
             | Self::ChannelGroupLinkResult { request_id, .. }
             | Self::ChannelWakeSet { request_id, .. }
+            | Self::ChannelWakesResult { request_id, .. }
             | Self::ChannelBoardResult { request_id, .. }
             | Self::ChannelUndeliveredResult { request_id, .. }
             | Self::DeviceCodeShown { request_id, .. }
@@ -4376,6 +4415,7 @@ impl ResponsePacket {
             Self::ChannelGroupRegistered { .. } => "ChannelGroupRegistered",
             Self::ChannelGroupLinkResult { .. } => "ChannelGroupLinkResult",
             Self::ChannelWakeSet { .. } => "ChannelWakeSet",
+            Self::ChannelWakesResult { .. } => "ChannelWakesResult",
             Self::ChannelBoardResult { .. } => "ChannelBoardResult",
             Self::ChannelUndeliveredResult { .. } => "ChannelUndeliveredResult",
             Self::DeviceCodeShown { .. } => "DeviceCodeShown",

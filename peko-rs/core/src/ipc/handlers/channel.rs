@@ -595,6 +595,124 @@ impl ChannelHandler {
         }
     }
 
+    /// `ChannelWakes` (ADR-128 D6): show, set or reset how often other
+    /// pekos may wake a peko in a group. Only the peko's owner.
+    #[allow(clippy::too_many_arguments)]
+    async fn channel_wakes(
+        &self,
+        request_id: u64,
+        channel: &str,
+        principal_name: &str,
+        per_hour: Option<&str>,
+        per_day: Option<&str>,
+        reset: bool,
+        caller: &CallerContext,
+        sink: &dyn ResponseSink,
+    ) -> anyhow::Result<()> {
+        use crate::principal::group_wakes::{self, Limit, Room, WakeBook};
+        if !self
+            .gate_principal_operator(caller, request_id, sink)
+            .await?
+        {
+            return Ok(());
+        }
+        let mut limits = [None, None];
+        for (slot, (name, text)) in limits
+            .iter_mut()
+            .zip([("per_hour", per_hour), ("per_day", per_day)])
+        {
+            let Some(text) = text else { continue };
+            let Some(limit) = Limit::parse(text) else {
+                return error_reply(
+                    sink,
+                    request_id,
+                    format!("[bad_request] {name} is a number or none (got {text:?})"),
+                )
+                .await;
+            };
+            *slot = Some(limit);
+        }
+        let Some(ch) = ChannelId::parse(channel) else {
+            return error_reply(sink, request_id, format!("invalid ChannelId: {channel}")).await;
+        };
+        let Some(manager) = self.host.principal_manager() else {
+            return error_reply(sink, request_id, "no principal manager".to_string()).await;
+        };
+        let Some(principal) = manager.get_by_name(principal_name).await else {
+            return error_reply(
+                sink,
+                request_id,
+                format!("[not_found] peko '{principal_name}' is not loaded"),
+            )
+            .await;
+        };
+        let port = self.host.channel_port();
+        let owner = principal.config.read().await.owner.clone();
+        if !crate::security::shared_actor_keys(Some(Arc::clone(&port)))
+            .same_actor(&owner, &caller.permission_subject(&owner))
+        {
+            return error_reply(
+                sink,
+                request_id,
+                format!("[forbidden] only {principal_name}'s owner can change how it wakes"),
+            )
+            .await;
+        }
+        match port.conversation_kind(&ch).await {
+            Ok(ConversationKind::Group) => {}
+            Ok(ConversationKind::Dm) => {
+                return error_reply(
+                    sink,
+                    request_id,
+                    format!("[bad_request] {ch} is a DM; wake limits are for groups"),
+                )
+                .await;
+            }
+            Err(e) => return error_reply(sink, request_id, e.to_string()).await,
+        }
+        if !port
+            .list_members(&ch)
+            .await
+            .is_ok_and(|members| members.contains(&ActorRef::from(&principal.id)))
+        {
+            return error_reply(
+                sink,
+                request_id,
+                format!("[forbidden] {principal_name} is not a member of {ch}"),
+            )
+            .await;
+        }
+        let book = WakeBook::open(&group_wakes::dir_for(&principal), &ch);
+        let now = chrono::Utc::now();
+        let [hour, day] = limits;
+        if hour.is_some() || day.is_some() {
+            book.set_limits(now, hour, day);
+        }
+        if reset {
+            book.reset(now);
+        }
+        let status = book.status(now);
+        let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+        send_response(
+            sink,
+            ResponsePacket::ChannelWakesResult {
+                request_id,
+                channel: ch,
+                principal_name: principal.name().await,
+                per_hour: status.per_hour.to_string(),
+                per_day: status.per_day.to_string(),
+                spent_hour: count(status.spent_hour),
+                spent_day: count(status.spent_day),
+                held: count(status.held),
+                free_at: match status.room {
+                    Room::At(at) => Some(at.to_rfc3339()),
+                    Room::Now | Room::Never => None,
+                },
+            },
+        )
+        .await
+    }
+
     /// ADR-094: copy a post's files into the channel's file store, under
     /// the limits of where the conversation reaches. The error is the
     /// user-facing reason.
@@ -1423,6 +1541,7 @@ impl RequestHandler for ChannelHandler {
                 | RequestPacket::ChannelGroupRegister { .. }
                 | RequestPacket::ChannelGroupLink { .. }
                 | RequestPacket::ChannelBoard { .. }
+                | RequestPacket::ChannelWakes { .. }
                 | RequestPacket::ChannelUndelivered { .. }
         )
     }
@@ -2194,6 +2313,27 @@ impl RequestHandler for ChannelHandler {
                         channel: ch,
                         msg_ids,
                     },
+                )
+                .await?
+            }
+
+            RequestPacket::ChannelWakes {
+                request_id,
+                channel,
+                principal_name,
+                per_hour,
+                per_day,
+                reset,
+            } => {
+                self.channel_wakes(
+                    request_id,
+                    &channel,
+                    &principal_name,
+                    per_hour.as_deref(),
+                    per_day.as_deref(),
+                    reset,
+                    caller,
+                    sink,
                 )
                 .await?
             }
@@ -4403,6 +4543,7 @@ mod wake_tests {
         _tooling: Arc<crate::tools::runtime::ToolingRuntime>,
         port: Arc<dyn ChannelPort>,
         handler: ChannelHandler,
+        manager: Arc<PrincipalManager>,
         alice: Arc<Principal>,
         bob: Arc<Principal>,
         group: ChannelId,
@@ -4460,13 +4601,14 @@ mod wake_tests {
             }
             let handler = ChannelHandler::new(Arc::new(Host {
                 port: Arc::clone(&port),
-                manager,
+                manager: Arc::clone(&manager),
             }));
             Self {
                 _temp: temp,
                 _tooling: tooling,
                 port,
                 handler,
+                manager,
                 alice,
                 bob,
                 group,
@@ -4504,6 +4646,166 @@ mod wake_tests {
             };
             self.send(request, &CallerContext::local()).await
         }
+    }
+
+    impl Fixture {
+        /// `ChannelWakes` for alice in the group, as the local owner.
+        async fn wakes(
+            &self,
+            channel: &ChannelId,
+            per_hour: Option<&str>,
+            per_day: Option<&str>,
+            reset: bool,
+        ) -> ResponsePacket {
+            let request = RequestPacket::ChannelWakes {
+                request_id: 1,
+                channel: channel.as_str().into(),
+                principal_name: "alice".into(),
+                per_hour: per_hour.map(str::to_string),
+                per_day: per_day.map(str::to_string),
+                reset,
+            };
+            self.send(request, &CallerContext::local()).await
+        }
+    }
+
+    /// `(per_hour, per_day, spent_hour, held)` of a `ChannelWakesResult`.
+    fn wakes_of(response: ResponsePacket) -> (String, String, u32, u32) {
+        match response {
+            ResponsePacket::ChannelWakesResult {
+                per_hour,
+                per_day,
+                spent_hour,
+                held,
+                ..
+            } => (per_hour, per_day, spent_hour, held),
+            other => panic!("expected ChannelWakesResult, got {other:?}"),
+        }
+    }
+
+    /// ADR-128 D2, D6: the owner reads and sets how often other pekos may
+    /// wake a peko in a group; when the limit holds posts, the owner is
+    /// asked, and approving lets the peko continue.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_owner_reads_sets_and_lifts_a_pekos_wake_limit() {
+        use crate::principal::group_wakes::{self, HeldPost, Room, WakeBook};
+        use crate::principal::policy_gate::{self, Decision};
+        let fx = Fixture::new().await;
+        assert_eq!(
+            wakes_of(fx.wakes(&fx.group, None, None, false).await),
+            ("60".into(), "300".into(), 0, 0),
+            "the defaults"
+        );
+        assert_eq!(
+            wakes_of(fx.wakes(&fx.group, Some("1"), Some("none"), false).await),
+            ("1".into(), "none".into(), 0, 0)
+        );
+        let refused = error_message(fx.wakes(&fx.group, Some("lots"), None, false).await);
+        assert!(refused.contains("a number or none"), "{refused}");
+
+        // Another peko wakes alice once; its next post is held.
+        let book = WakeBook::open(&group_wakes::dir_for(&fx.alice), &fx.group);
+        let now = chrono::Utc::now();
+        assert!(book.spend(now));
+        assert!(!book.spend(now));
+        book.hold(
+            now,
+            vec![HeldPost {
+                event_id: "9".into(),
+                line: "principal:local:bob: @alice ping".into(),
+                at: now,
+            }],
+        );
+        assert_eq!(
+            wakes_of(fx.wakes(&fx.group, None, None, false).await),
+            ("1".into(), "none".into(), 1, 1)
+        );
+
+        let pending = policy_gate::pending_requests_for_owner(&fx.manager, &fx.alice, None).await;
+        assert_eq!(pending.len(), 1, "{pending:?}");
+        assert_eq!(
+            policy_gate::request_kind(&pending[0]).as_deref(),
+            Some("wake_limit")
+        );
+        let summary = policy_gate::request_summary(&pending[0]);
+        assert!(
+            summary.contains("1 wakes an hour") && summary.contains("1 posts"),
+            "{summary}"
+        );
+        let denied =
+            policy_gate::decide_request(&fx.manager, &fx.alice, &pending[0].id, Decision::Deny)
+                .await
+                .unwrap();
+        assert!(denied.contains("wait for the limit"), "{denied}");
+        assert!(
+            policy_gate::pending_requests_for_owner(&fx.manager, &fx.alice, None)
+                .await
+                .is_empty(),
+            "denied: not asked again for these posts"
+        );
+        assert_eq!(book.status(chrono::Utc::now()).held, 1, "they still wait");
+
+        // The owner lets it continue from the command line instead.
+        assert_eq!(
+            wakes_of(fx.wakes(&fx.group, None, None, true).await),
+            ("1".into(), "none".into(), 0, 1)
+        );
+        assert_eq!(book.status(chrono::Utc::now()).room, Room::Now);
+    }
+
+    /// ADR-128 D6: approving the request lets the peko continue, and
+    /// *always* lifts the group's limits.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn approving_a_wake_limit_request_lets_the_peko_continue() {
+        use crate::principal::group_wakes::{self, HeldPost, Limit, Room, WakeBook};
+        use crate::principal::policy_gate::{self, Decision};
+        let fx = Fixture::new().await;
+        let book = WakeBook::open(&group_wakes::dir_for(&fx.alice), &fx.group);
+        let now = chrono::Utc::now();
+        book.set_limits(now, Some(Limit::Count(1)), None);
+        assert!(book.spend(now));
+        book.hold(
+            now,
+            vec![HeldPost {
+                event_id: "9".into(),
+                line: "principal:local:bob: @alice ping".into(),
+                at: now,
+            }],
+        );
+        let pending = policy_gate::pending_requests_for_owner(&fx.manager, &fx.alice, None).await;
+        let reply = policy_gate::decide_request(
+            &fx.manager,
+            &fx.alice,
+            &pending[0].id,
+            Decision::Approve { always: true },
+        )
+        .await
+        .unwrap();
+        assert!(reply.contains("no longer limited"), "{reply}");
+        let status = book.status(chrono::Utc::now());
+        assert_eq!(status.room, Room::Now);
+        assert_eq!(
+            (status.per_hour, status.per_day),
+            (Limit::None, Limit::None)
+        );
+        assert!(
+            policy_gate::pending_requests_for_owner(&fx.manager, &fx.alice, None)
+                .await
+                .is_empty()
+        );
+    }
+
+    /// Wake limits are for groups, and only a member peko has them.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wake_limits_are_refused_outside_a_pekos_groups() {
+        let fx = Fixture::new().await;
+        let other = fx
+            .port
+            .create(&fx.bob.id, CreateOpts::runtime("bobs"))
+            .await
+            .unwrap();
+        let refused = error_message(fx.wakes(&other, None, None, false).await);
+        assert!(refused.contains("not a member"), "{refused}");
     }
 
     fn error_message(response: ResponsePacket) -> String {

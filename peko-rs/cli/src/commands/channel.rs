@@ -292,6 +292,31 @@ pub enum ChannelCommands {
         json: bool,
     },
 
+    /// Show or change how often other pekos may wake one of yours in a group.
+    ///
+    /// Past the limit, other pekos' posts to it wait and reach it together
+    /// once the limit has room. People's posts always reach it.
+    Wakes {
+        /// The group's channel id.
+        channel: String,
+        /// Which of your pekos.
+        #[arg(long, value_name = "PEKO")]
+        peko: String,
+        /// Wakes by other pekos per hour: a number, or `none` for no limit.
+        #[arg(long, value_name = "N|none")]
+        hour: Option<String>,
+        /// Wakes by other pekos per day: a number, or `none` for no limit.
+        #[arg(long, value_name = "N|none")]
+        day: Option<String>,
+        /// Let it continue now: forget what it spent, so posts that wait
+        /// reach it at once.
+        #[arg(long)]
+        reset: bool,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Show a group's board of work, or change it (ADR-101).
     Board {
         /// The group's channel id.
@@ -396,6 +421,7 @@ impl ChannelCommands {
             | ChannelCommands::Blocked { json }
             | ChannelCommands::Register { json, .. }
             | ChannelCommands::Link { json, .. }
+            | ChannelCommands::Wakes { json, .. }
             | ChannelCommands::Board { json, .. } => *json,
         }
     }
@@ -1131,6 +1157,71 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                     link.unwrap_or_default(),
                     expires.unwrap_or_default()
                 );
+            }
+            Ok(())
+        }
+        ChannelCommands::Wakes {
+            channel,
+            peko,
+            hour,
+            day,
+            reset,
+            ..
+        } => {
+            let client = DaemonClient::connect()
+                .await
+                .context("Wake limits need the engine: start it with `peko engine start`")?;
+            let resp = client
+                .request_response(RequestPacket::ChannelWakes {
+                    request_id: 0,
+                    channel,
+                    principal_name: peko,
+                    per_hour: hour,
+                    per_day: day,
+                    reset,
+                })
+                .await?;
+            let ResponsePacket::ChannelWakesResult {
+                channel,
+                principal_name,
+                per_hour,
+                per_day,
+                spent_hour,
+                spent_day,
+                held,
+                free_at,
+                ..
+            } = resp
+            else {
+                if let ResponsePacket::Error { message, .. } = resp {
+                    anyhow::bail!("{message}");
+                }
+                anyhow::bail!("unexpected reply: {resp:?}");
+            };
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "channel": channel, "peko": principal_name,
+                        "per_hour": per_hour, "per_day": per_day,
+                        "spent_hour": spent_hour, "spent_day": spent_day,
+                        "held": held, "free_at": free_at,
+                    })
+                );
+            } else {
+                println!(
+                    "Other pekos may wake {principal_name} in {channel} {per_hour} times an \
+                     hour and {per_day} a day ({spent_hour} this hour, {spent_day} today)."
+                );
+                match (held, free_at) {
+                    (0, _) => {}
+                    (n, Some(at)) => println!(
+                        "{n} post(s) to it wait until {at}. `--reset` lets it continue now."
+                    ),
+                    (n, None) => {
+                        println!("{n} post(s) to it wait. `--reset` lets it continue now.")
+                    }
+                }
             }
             Ok(())
         }

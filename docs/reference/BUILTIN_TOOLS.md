@@ -375,8 +375,8 @@ Send with `to` (the old `channel` input is a compatibility alias; do not supply 
   caller's reaction off. Conversation IDs only. The store checks the emoji (one
   grapheme, at most 64 bytes), refuses a reaction to a reaction and a 21st
   different emoji on one message, and writes the post's readable text itself. A
-  reaction is not a message: it wakes no one, nudges no keepalive, counts toward
-  no chain, and is never unread. A conversation turn that reacted still posts its
+  reaction is not a message: it wakes no one, nudges no keepalive, spends no
+  wake, and is never unread. A conversation turn that reacted still posts its
   final text when it has any; with none (empty or `NO_REPLY`), nothing. Returns `{success, id, channel,
   reaction, removed}`.
 
@@ -384,12 +384,18 @@ Principal sends return canonical `to`, real `channel` (also `dm_channel` for old
 clients), `id`, and `delivery` (`delivered` or durably `queued`). Same-runtime pair
 DMs store each message once and bind independently to both principals' sessions.
 Outside groups, principal posts never start runs (ADR-072): read/watch the returned
-channel for an answer. In a group (ADR-120), a principal's post wakes another peko
-when it mentions it, adds a board item `for` it, or replies to one of its posts,
-while the group holds at most 24 peko posts since a person last posted and within
-60 such wakes per peko per group an hour; a post that reaches a turn already
-running is steered into it at the same standing, else noted to it and given its
-own turn after. Human group posts wake only the mentioned principal: `@principal:local:<id> / principal:hub:<UUID>`
+channel for an answer. In a group (ADR-120, ADR-128), a post wakes a peko only when
+it addresses it: it mentions it, adds a board item `for` it, or replies to one of
+its posts. Wakes and steers that other pekos' posts cause are counted per peko per
+group (60 an hour and 300 a day unless the owner changed it, `peko channel wakes`);
+past that the posts are held, the owner is asked, and the peko is woken once with
+all of them when the limit has room. A person's post is never counted or held. A
+post that reaches a turn already running is steered into it at the same standing,
+else noted to it and given its own turn after. A turn a person's post started posts
+its final text; one another peko's post started posts only what it sends with
+`ChannelSend`, and is told so. A person's post that addresses no one wakes the only
+peko in a group, and a peko whose wake is `human`. Human group posts otherwise wake
+only the mentioned principal: `@principal:local:<id> / principal:hub:<UUID>`
 is canonical; `@name` works only with a complete, unambiguous principal roster. A
 person's reply is weighed like their root post, and a reply to a peko's post counts
 as mentioning it (ADR-126 D7).
