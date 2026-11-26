@@ -46,7 +46,7 @@ pub(crate) mod peer_dm;
 pub(crate) mod plan_prompt;
 pub mod policy_gate;
 pub mod provision;
-pub(crate) mod quiet_reply;
+pub mod quiet_reply;
 pub(crate) mod quiet_tick;
 pub(crate) mod reactions_prompt;
 pub(crate) mod reply_options;

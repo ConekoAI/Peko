@@ -1211,10 +1211,12 @@ impl GroupWakeResponder {
     }
 }
 
-/// A post as a turn reads it (ADR-126 D6): `{author}: {text}`, or for a
-/// reply `{author} (replying to {quoted author}: “{start of the message}”):
-/// {text}`, the quote read from this copy's own log. A message this copy
-/// does not hold reads as "a message that isn't loaded".
+/// A post as a turn reads it (ADR-126 D5, D6): `{author} (id msg_…): {text}`,
+/// or for a reply `{author} (id msg_…; replying to {quoted author}: “{start
+/// of the message}”): {text}`, the quote read from this copy's own log. The
+/// id is what `ChannelSend` takes as `parent` to react to the post or answer
+/// it. A message this copy does not hold reads as "a message that isn't
+/// loaded".
 pub(crate) async fn turn_input(
     port: &dyn ChannelPort,
     channel: &ChannelId,
@@ -1224,17 +1226,22 @@ pub(crate) async fn turn_input(
         author,
         text,
         reply_to,
+        msg_id,
         ..
     } = event
     else {
         return String::new();
     };
-    match reply_to {
+    match crate::principal::peer_dm::post_note(
+        port,
+        channel,
+        msg_id.as_deref(),
+        reply_to.as_deref(),
+    )
+    .await
+    {
+        Some(note) => format!("{author} ({note}): {text}"),
         None => format!("{author}: {text}"),
-        Some(parent) => format!(
-            "{author} ({}): {text}",
-            crate::principal::peer_dm::replying_to(port, channel, parent).await
-        ),
     }
 }
 
@@ -3024,13 +3031,9 @@ mod tests {
 
         // One turn, in the resolved session, with the speaker prefix.
         assert!(eventually(|| async { calls.lock().unwrap().len() == 1 }).await);
-        assert_eq!(
-            calls.lock().unwrap()[0],
-            (
-                "session-1".to_string(),
-                "user:local:alice: @self hello group".to_string()
-            )
-        );
+        let (session, input) = calls.lock().unwrap()[0].clone();
+        assert_eq!(session, "session-1");
+        assert_eq!(id_free(&input), "user:local:alice: @self hello group");
 
         // The reply lands on the group as the principal, THREADED
         // onto the triggering user post.
@@ -3888,7 +3891,7 @@ mod tests {
             store.actor_info(&peer).await.address,
             tag(&store, &me).await
         );
-        assert_eq!(calls.lock().unwrap()[0].1, expected);
+        assert_eq!(id_free(&calls.lock().unwrap()[0].1), expected);
         assert_eq!(
             authors.lock().unwrap()[0].as_deref(),
             Some(peer.to_string().as_str())
@@ -4057,7 +4060,7 @@ mod tests {
         assert_eq!(steered.len(), 1);
         assert!(steered[0].from_peer);
         assert_eq!(
-            steered[0].content,
+            id_free(&steered[0].content),
             format!(
                 "{}: {} stop, I've got the tests",
                 store.actor_info(&alice).await.address,
@@ -4105,7 +4108,7 @@ mod tests {
             store.actor_info(&alice).await.address,
             tag(&store, &me).await
         );
-        assert_eq!(calls.lock().unwrap()[0].1, expected);
+        assert_eq!(id_free(&calls.lock().unwrap()[0].1), expected);
         assert_eq!(
             authors.lock().unwrap()[0].as_deref(),
             Some(alice.to_string().as_str())
@@ -4183,7 +4186,7 @@ mod tests {
             store.actor_info(&alice).await.address,
             tag(&store, &me).await
         );
-        assert_eq!(calls.lock().unwrap()[0].1, expected);
+        assert_eq!(id_free(&calls.lock().unwrap()[0].1), expected);
         assert_eq!(
             authors.lock().unwrap()[0].as_deref(),
             Some(alice.to_string().as_str())
@@ -4373,6 +4376,51 @@ mod tests {
         assert_eq!(
             turn_input(port, &channel, &posted("user:local:alice", "hi")).await,
             "user:local:alice: hi"
+        );
+    }
+
+    /// A turn's input without the `(id msg_…)` note on its post, which
+    /// it must have (ADR-126 D5).
+    fn id_free(input: &str) -> String {
+        let start = input
+            .find(" (id msg_")
+            .unwrap_or_else(|| panic!("no post id in {input:?}"));
+        let end = start + input[start..].find(')').expect("closed note") + 1;
+        format!("{}{}", &input[..start], &input[end..])
+    }
+
+    /// ADR-126 D5: a turn names the post that started it by its id, so the
+    /// peko can react to that post or answer it, also when it replies.
+    #[tokio::test]
+    async fn a_turn_names_its_post_by_id() {
+        let (store, _tmp) = test_store("turn-id");
+        let me = pid("prin_self");
+        let channel = store.create(&me, CreateOpts::runtime("g")).await.unwrap();
+        let alice = ActorRef::User("alice".into());
+        store.invite(&channel, &me, &alice).await.unwrap();
+        let line = store
+            .post(&channel, &alice, PostMsg::root("which branch?"))
+            .await
+            .unwrap();
+        let quoted = msg_id_at(&store, &channel, &line).await;
+        let mut post = posted("user:local:alice", "hi");
+        if let ChannelEvent::Posted { msg_id, .. } = &mut post {
+            *msg_id = Some("msg_abc".into());
+        }
+        let port: &dyn ChannelPort = store.as_ref();
+        assert_eq!(
+            turn_input(port, &channel, &post).await,
+            "user:local:alice (id msg_abc): hi"
+        );
+        if let ChannelEvent::Posted { reply_to, .. } = &mut post {
+            *reply_to = Some(quoted);
+        }
+        let input = turn_input(port, &channel, &post).await;
+        assert!(
+            input.starts_with("user:local:alice (id msg_abc; replying to ")
+                && input.contains("“which branch?”")
+                && input.ends_with("): hi"),
+            "{input}"
         );
     }
 }

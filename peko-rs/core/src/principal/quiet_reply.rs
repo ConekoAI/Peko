@@ -14,7 +14,7 @@
 //!   catches the peko that forgets the marker.
 
 /// The reply that posts nothing.
-pub(crate) const NO_REPLY: &str = "NO_REPLY";
+pub const NO_REPLY: &str = "NO_REPLY";
 
 /// Longest reply the group guard drops. The posts it targets are two or
 /// three sentences; anything longer likely carries content.
@@ -47,7 +47,7 @@ const CONTRAST: &[&str] = &[" but ", " however", " except", " although", " thoug
 
 /// The text to post for a turn's `reply`, or `None` to post nothing.
 /// `group` applies the group guard (see the module docs).
-pub(crate) fn postable(reply: &str, group: bool) -> Option<&str> {
+pub fn postable(reply: &str, group: bool) -> Option<&str> {
     let mut text = reply.trim();
     if let Some((body, last)) = text.rsplit_once('\n') {
         if is_marker(last) {
@@ -62,6 +62,16 @@ pub(crate) fn postable(reply: &str, group: bool) -> Option<&str> {
         return None;
     }
     Some(text)
+}
+
+/// Whether `text`, the start of a reply still streaming, may yet turn out
+/// to be the bare marker, so a client holds it back rather than show it.
+pub fn may_be_marker(text: &str) -> bool {
+    let core = text
+        .trim()
+        .trim_matches(|c: char| matches!(c, '`' | '*' | '_' | '.' | '"' | '\'' | '(' | ')'))
+        .to_ascii_uppercase();
+    NO_REPLY.starts_with(&core)
 }
 
 fn is_marker(line: &str) -> bool {
@@ -82,6 +92,16 @@ fn only_says_nothing(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_streaming_start_may_be_the_marker() {
+        for start in ["", " ", "N", "NO_", "no_rep", "`NO_REPLY`", "**NO_REPLY"] {
+            assert!(may_be_marker(start), "{start:?}");
+        }
+        for start in ["Not", "Hi", "NO_REPLY then", "NOPE"] {
+            assert!(!may_be_marker(start), "{start:?}");
+        }
+    }
 
     #[test]
     fn the_marker_posts_nothing() {

@@ -458,12 +458,21 @@ impl AppState {
             .reactions(&channel)
             .await
             .unwrap_or_default();
-        let events: Vec<Value> = events
-            .into_iter()
-            .filter(ChannelEvent::is_message)
-            .map(|ev| with_reactions(&ev, &reactions))
-            .collect();
-        Ok(json!({ "channel": channel.as_str(), "events": events, "has_more": has_more }))
+        // Each post names its author as this computer calls them, as a
+        // conversation's `last` does (ADR-108 D12).
+        let mut names: HashMap<String, String> = HashMap::new();
+        let mut out = Vec::new();
+        for ev in events.into_iter().filter(ChannelEvent::is_message) {
+            let mut value = with_reactions(&ev, &reactions);
+            if let ChannelEvent::Posted { author, .. } = &ev {
+                if !names.contains_key(author) {
+                    names.insert(author.clone(), self.display_name(author).await);
+                }
+                with_author_name(&mut value, &names[author]);
+            }
+            out.push(value);
+        }
+        Ok(json!({ "channel": channel.as_str(), "events": out, "has_more": has_more }))
     }
 
     /// ADR-126 D8: put the person's `emoji` on post `to` in `channel`, or
@@ -1385,10 +1394,14 @@ impl AppState {
             return;
         }
         if self.devices.gate.has_watchers() {
+            let mut value = serde_json::to_value(&event).unwrap_or(Value::Null);
+            if let ChannelEvent::Posted { author, .. } = &event {
+                with_author_name(&mut value, &self.display_name(author).await);
+            }
             self.emit_device_event(json!({
                 "kind": "event",
                 "channel": channel.as_str(),
-                "event": event,
+                "event": value,
             }))
             .await;
         }
@@ -1745,6 +1758,14 @@ impl crate::ipc::handlers::device::DeviceHost for AppState {
 
 /// A post as a phone reads it (ADR-126 D8): the event, with the
 /// reactions on it when there are any.
+/// A post as a phone gets it, with `author_name`: what this computer
+/// calls its author (ADR-108 D12).
+fn with_author_name(value: &mut Value, name: &str) {
+    if let Value::Object(map) = value {
+        map.insert("author_name".into(), json!(name));
+    }
+}
+
 fn with_reactions(ev: &ChannelEvent, reactions: &peko_channel::Reactions) -> Value {
     let mut value = serde_json::to_value(ev).unwrap_or(Value::Null);
     if let (
@@ -2069,6 +2090,47 @@ mod tests {
             .await
             .unwrap();
         assert!(page["events"][0].get("reactions").is_none(), "{page}");
+    }
+
+    /// ADR-108 D12: a post the phone reads, or is told of live, names its
+    /// author as this computer calls them.
+    #[tokio::test]
+    async fn a_phone_gets_each_posts_author_by_name() {
+        let mut rig = Rig::new().await;
+        let (group, peko) = rig.group().await;
+        rig.app
+            .store()
+            .register_actor(
+                &peko,
+                None,
+                None,
+                None,
+                Some("mochi"),
+                peko_channel::Registration::LocalOnly,
+            )
+            .await
+            .unwrap();
+        rig.ask("watch", json!({})).await.unwrap();
+        rig.peer_posts(&group, &peko, "Where shall we go?").await;
+        let page = rig
+            .ask("read", json!({ "channel": group.as_str() }))
+            .await
+            .unwrap();
+        assert_eq!(page["events"][0]["author_name"], "mochi", "{page}");
+
+        let sent = rig.sent_within(Duration::from_millis(400)).await;
+        let live: Vec<DeviceEventPayload> = sent
+            .iter()
+            .filter_map(|m| match m {
+                TunnelMessage::TunnelDeviceEvent { signature, .. } => {
+                    Some(TestDevice::read(&rig.runtime, signature).unwrap())
+                }
+                _ => None,
+            })
+            .collect();
+        let live: Vec<&DeviceEventPayload> =
+            live.iter().filter(|e| e.event["kind"] == "event").collect();
+        assert_eq!(live[0].event["event"]["author_name"], "mochi");
     }
 
     #[tokio::test]

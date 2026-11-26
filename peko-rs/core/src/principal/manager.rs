@@ -1379,14 +1379,21 @@ impl PrincipalManager {
             .await
             .map_err(|e| IngressError::Post(anyhow::anyhow!("{e:#}")))?;
         }
-        // ADR-126 D6: a reply's turn reads the message it answers.
-        let quoted;
-        let message = match (&self.channel_port, &ingress.dm_channel, reply_to) {
-            (Some(port), Some(dm), Some(_)) => {
-                quoted =
-                    crate::principal::peer_dm::dm_turn_text(port.as_ref(), dm, reply_to, message)
-                        .await;
-                quoted.as_str()
+        // ADR-126 D5, D6: the turn reads the post's id, and for a reply
+        // the message it answers.
+        let noted;
+        let message = match (&self.channel_port, &ingress.dm_channel) {
+            (Some(port), Some(dm)) => {
+                let id = crate::principal::peer_dm::posted_id(port.as_ref(), dm, message).await;
+                noted = crate::principal::peer_dm::dm_turn_text(
+                    port.as_ref(),
+                    dm,
+                    id.as_deref(),
+                    reply_to,
+                    message,
+                )
+                .await;
+                noted.as_str()
             }
             _ => message,
         };
@@ -1862,6 +1869,8 @@ impl PrincipalManager {
         // ADR-094: the files the person sent arrived in the channel's file
         // store; the peko gets its own copies (ADR-088 D2), and a note for
         // any that did not arrive.
+        // ADR-126 D5: the id of the post, for the turn to name.
+        let msg_id = crate::principal::peer_dm::posted_id(port.as_ref(), channel, message).await;
         let dir = self
             .attachments_dir(&principal, author, Some(channel))
             .await;
@@ -1873,11 +1882,16 @@ impl PrincipalManager {
             files,
         )
         .await;
-        // ADR-126 D6: a reply's turn reads the start of the message it
-        // answers.
-        let message =
-            crate::principal::peer_dm::dm_turn_text(port.as_ref(), channel, reply_to, &message)
-                .await;
+        // ADR-126 D5, D6: the turn reads the post's id, and for a reply
+        // the start of the message it answers.
+        let message = crate::principal::peer_dm::dm_turn_text(
+            port.as_ref(),
+            channel,
+            msg_id.as_deref(),
+            reply_to,
+            &message,
+        )
+        .await;
         let message = message.as_str();
         let peer = port.actor_info(author).await.subject();
         let (owner, agent_name) = {

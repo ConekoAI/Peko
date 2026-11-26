@@ -27,7 +27,22 @@ All notable changes to Peko.
   `reply_to`, so a runtime that predates this reads it as a reply that
   starts nothing.
 
+- **A phone gets each post's author by name (ADR-108 D12).** The `read`
+  verb and live `event` frames give every post an `author_name`, what this
+  computer calls its author, as a conversation's `last` already did; the
+  phone app shows group authors, quotes and the reply bar by name.
+
 ### Changed
+
+- **A conversation turn names the post that started it (ADR-126 D5).** The
+  turn input reads `(id msg_…) text` in a DM and `author (id msg_…): text`
+  in a group, with the reply quote after the id (`id msg_…; replying to …`),
+  so the peko can react to that post or answer it by id. Before, a peko asked
+  twice to "acknowledge with a reaction" reused an id it had read earlier and
+  reacted to the older message.
+- **`peko send` prints nothing for a turn that posts nothing.** A turn that
+  only reacted (or answered `NO_REPLY`) printed `<peko>: NO_REPLY`; the CLI
+  now holds the start of a reply back while it may still be that marker.
 
 - **A person's reply reaches the peko (ADR-126 D7).** In a DM a person's
   reply starts a turn like any of their posts, on every path (desktop, the
