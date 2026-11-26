@@ -52,6 +52,13 @@ All notable changes to Peko.
   "text"`), and every hit carries the session's `title`. Sessions made
   before this keep the title they had, or none; `Session move` sets one.
 
+### Fixed
+
+- **The line a reaction or a board change is posted with names you by the
+  name you chose.** Before signing in to PekoHub it said "local". Your
+  login name is still never written into a post (ADR-124 D2), so with no
+  name chosen the line keeps "local".
+
 ## [0.6.0] - 2026-11-25
 
 ### Added
