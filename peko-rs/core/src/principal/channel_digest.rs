@@ -1052,7 +1052,12 @@ fn digest_worthy(ev: &ChannelEvent, own_path: &str, me: &Me<'_>, scope: Scope, k
         // ADR-126 D7: a person's reply starts a turn like their root post.
         (Scope::Bound, Kind::Dm) => !by_user,
         (_, Kind::Group) => {
-            let woke = by_user
+            // A mention of this peko reaches it as a turn of its own, from
+            // a person or another peko (ADR-128 D1): now, or later when a
+            // wake limit holds it (D2). Shown here too, it would be
+            // handled twice (2026-11-26 live run: a held question answered
+            // early, then delivered again).
+            let woke = !by_me
                 && (peko_channel::mentions(text, me.name)
                     || peko_channel::mentions(text, me.address)
                     || me.hub.is_some_and(|h| peko_channel::mentions(text, h)));
@@ -1066,10 +1071,11 @@ fn digest_worthy(ev: &ChannelEvent, own_path: &str, me: &Me<'_>, scope: Scope, k
 /// stored waiting list. Returns the digest-worthy posts to show once
 /// and the updated waiting list.
 ///
-/// A worthy post by another principal joins the waiting list instead of
-/// the one-shot preview: it never woke anyone (ADR-072 D1), so it must
-/// not vanish once seen. A post by this principal answers everything
-/// waiting before it.
+/// On a DM, a worthy post by another principal joins the waiting list
+/// instead of the one-shot preview: it never woke anyone (ADR-072 D1), so
+/// it must not vanish once seen. A post by this principal answers
+/// everything waiting before it. A group keeps no waiting list
+/// (ADR-128 D1).
 fn sort_new_posts<'a>(
     events: &'a [(peko_channel::port::TaskId, ChannelEvent)],
     mut waiting: Vec<AttentionItem>,
@@ -1081,6 +1087,14 @@ fn sort_new_posts<'a>(
     Vec<&'a (peko_channel::port::TaskId, ChannelEvent)>,
     Vec<AttentionItem>,
 ) {
+    // ADR-128 D1: in a group, another peko's post does not wait for an
+    // answer. One that addresses this peko wakes it (or is held by its
+    // wake limit and delivered later); any other is shown once and
+    // answered only if the peko chooses to. A list kept by an earlier
+    // version is dropped.
+    if kind == Kind::Group {
+        waiting.clear();
+    }
     let mut fresh = Vec::new();
     for event in events {
         let (id, ev) = event;
@@ -1102,7 +1116,7 @@ fn sort_new_posts<'a>(
         if !digest_worthy(ev, own_path, me, scope, kind) {
             continue;
         }
-        if needs_answer(author, me) {
+        if kind != Kind::Group && needs_answer(author, me) {
             if !waiting.iter().any(|w| w.id == *id) {
                 waiting.push(AttentionItem {
                     id: id.clone(),
@@ -1612,26 +1626,36 @@ mod tests {
         )
         .await
         .unwrap();
+        // ADR-128: another peko's mention reaches this one as a turn of
+        // its own (now, or held by the wake limit), so it is not shown.
+        port.post_attributed(
+            &group,
+            &me_subject(),
+            "prin_other",
+            PostMsg::root("@self review please"),
+        )
+        .await
+        .unwrap();
         let text = render_channel_digest(&port, &metas, child_id(), &ME, true)
             .await
             .expect("unmentioned and other-principal posts must digest");
-        let (waiting, fresh) = text
-            .split_once("channel activity since you last read:")
-            .unwrap();
+        // ADR-128 D1: in a group another peko's post does not wait for an
+        // answer; it is shown once, like a person's.
+        assert!(!text.contains("waiting"), "{text}");
         assert!(
-            waiting.contains("1 waiting") && waiting.contains("deploy done"),
-            "{text}"
-        );
-        assert!(
-            fresh.contains("1 new message(s)") && fresh.contains("lunch?"),
+            text.contains("2 new message(s)")
+                && text.contains("lunch?")
+                && text.contains("deploy done"),
             "{text}"
         );
         assert!(!text.contains("ping"), "{text}");
+        assert!(!text.contains("review please"), "{text}");
     }
 
     /// A group's session is made just after the group. Before anything
-    /// has set its mark, another peko's post there still waits for an
-    /// answer; what predates the session stays history.
+    /// has set its mark, another peko's post there is still shown to it
+    /// (once, not as waiting: ADR-128 D1); what predates the session stays
+    /// history.
     #[tokio::test]
     async fn a_new_group_session_sees_posts_made_after_it_began() {
         let (_dir, port) = store();
@@ -1656,10 +1680,11 @@ mod tests {
             .unwrap();
 
         let peek = digest_pass(&port, &metas, child_id(), &ME, false, false, None).await;
-        assert_eq!(peek.waiting.len(), 1, "{:?}", peek.waiting);
+        assert!(peek.waiting.is_empty(), "{:?}", peek.waiting);
+        assert_eq!(peek.listed, 1);
         let text = render_channel_digest(&port, &metas, child_id(), &ME, false)
             .await
-            .expect("the post made after the session began waits");
+            .expect("the post made after the session began is shown");
         assert!(text.contains("after"), "{text}");
         assert!(!text.contains("before"), "history: {text}");
     }

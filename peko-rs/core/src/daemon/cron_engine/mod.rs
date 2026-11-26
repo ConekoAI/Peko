@@ -4958,6 +4958,7 @@ mod tests {
                 event,
                 event_id: line,
                 now: std::time::SystemTime::now(),
+                more: 0,
             })
             .await
             .unwrap();

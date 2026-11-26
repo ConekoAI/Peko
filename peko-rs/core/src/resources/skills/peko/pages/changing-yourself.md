@@ -14,7 +14,7 @@ You are your files. Change a file and the next turn works differently: nothing n
 | `peko.toml` | Your definition: `[identity]` (display name, description), `[intent]` (goals, setup steps), `[routing]`, `preferred_model_id` |
 | `kb/CONVENTIONS.md` | How you work, in every role and every turn. At most 4 KiB |
 | `kb/MEMORY.md` | Facts, preferences and commitments, in every turn your standing lets read it |
-| `roles/<name>.md` | How one job is done: `conversation`, `root`, `worker`, or one you add |
+| `roles/<name>.md` | How one job is done: `conversation`, `root`, `worker`, `chair`, or one you add |
 | `skills/<name>/SKILL.md` | A procedure you load when a task calls for it; `pages/<page>.md` beside it for long ones |
 | `workflows/` | Scripts the `Workflow` tool runs |
 | `mcp/<id>/server.json` | A connected service (an MCP server) |

@@ -65,6 +65,11 @@ pub struct RespondCtx {
     pub event: ChannelEvent,
     pub event_id: TaskId,
     pub now: std::time::SystemTime,
+    /// How many events follow this one in the same read of the log.
+    /// More than zero means the subscriber is catching up: a responder
+    /// may then gather what it would act on and act once, at the last
+    /// event (ADR-128 D8).
+    pub more: usize,
 }
 
 // ---------------------------------------------------------------------------

@@ -173,6 +173,10 @@ pub fn owner_decides(
     }
     match crate::security::floor::channel_owner_action(tool_name, params)? {
         "role" => Some("only the owner decides which role the principal runs in a conversation"),
+        "wake" => Some(
+            "only the owner decides whether the principal takes a group's posts that address \
+             no one",
+        ),
         _ => Some("only the owner decides who joins the principal's groups"),
     }
 }

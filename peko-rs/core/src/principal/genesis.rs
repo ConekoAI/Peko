@@ -615,6 +615,49 @@ pub fn seed_default_worker_role(workspace: &std::path::Path) -> Result<bool> {
     )
 }
 
+/// The role a group's chair runs (ADR-128 D5).
+pub const CHAIR_ROLE: &str = "chair";
+
+/// The compiled-in `chair` role: the `conversation` role's text under the
+/// chair's own header, followed by what a chair does besides. Built from
+/// both files, so a chair never falls behind the conversation role.
+pub fn chair_role_seed_content() -> &'static str {
+    static CHAIR: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        let chair = include_str!("../resources/roles/chair/ROLE.md");
+        let (header, duties) = split_front_matter(chair);
+        let (_, conversation) =
+            split_front_matter(crate::principal::child_turns::conversation_role_seed_content());
+        format!("{header}\n{}\n\n{}\n", conversation.trim(), duties.trim())
+    });
+    &CHAIR
+}
+
+/// A role file's front matter (with its `---` lines) and what follows.
+fn split_front_matter(content: &str) -> (&str, &str) {
+    content
+        .strip_prefix("---\n")
+        .and_then(|rest| rest.find("\n---\n"))
+        .map_or(("", content), |end| {
+            let cut = "---\n".len() + end + "\n---\n".len();
+            content.split_at(cut)
+        })
+}
+
+/// Stamp the compiled-in `chair` role into `<workspace>/roles/chair.md`
+/// when the workspace has none (ADR-128 D5): the role a peko runs in a
+/// group it chairs. Seeded at provision and on every boot like
+/// `conversation`; an existing file (either layout) is never touched.
+///
+/// Returns `true` when the file was written.
+pub fn seed_default_chair_role(workspace: &std::path::Path) -> Result<bool> {
+    seed_role(
+        workspace,
+        CHAIR_ROLE,
+        chair_role_seed_content(),
+        PREVIOUS_CHAIR_SEEDS,
+    )
+}
+
 /// The roles every peko is seeded with, as workspace paths and their
 /// current text. An exported seed leaves out a role still identical to
 /// its default (ADR-107).
@@ -639,12 +682,13 @@ pub fn default_role_files() -> Vec<(String, &'static str)> {
             ),
             include_str!("../resources/roles/worker/ROLE.md"),
         ),
+        (format!("roles/{CHAIR_ROLE}.md"), chair_role_seed_content()),
     ]
 }
 
 /// Seed the roles every principal starts with: `root` (the trunk),
-/// `conversation` (ADR-087), and `worker` (delegated tasks). Returns the
-/// ids written.
+/// `conversation` (ADR-087), `worker` (delegated tasks), and `chair`
+/// (ADR-128). Returns the ids written.
 pub fn seed_default_roles(workspace: &std::path::Path) -> Result<Vec<&'static str>> {
     let mut seeded = Vec::new();
     if seed_default_root_role(workspace)? {
@@ -655,6 +699,9 @@ pub fn seed_default_roles(workspace: &std::path::Path) -> Result<Vec<&'static st
     }
     if seed_default_worker_role(workspace)? {
         seeded.push(crate::tools::builtin::messaging::agent::DEFAULT_ROLE);
+    }
+    if seed_default_chair_role(workspace)? {
+        seeded.push(CHAIR_ROLE);
     }
     Ok(seeded)
 }
@@ -674,7 +721,11 @@ pub fn seed_default_roles(workspace: &std::path::Path) -> Result<Vec<&'static st
 const CURRENT_ROOT_SEED: &str = "1da56bd3f034ade18a2628b1caedf7340b695713944183ff2c73f92d9604d914";
 #[cfg(test)]
 const CURRENT_CONVERSATION_SEED: &str =
-    "ecc575c0ef4d14d6ae1bd8b471c0558a075e791fdae497316c5ef326c02439a8";
+    "5ab745cbf0b8e8425bab50c9aa9f4ed1c095e9596b44554e4529ff1eb889e197";
+#[cfg(test)]
+const CURRENT_CHAIR_SEED: &str = "0b0bf18b48207a6c1357a13fe4f05fd5722568a306444f7549f99ec32cfc0721";
+/// Earlier `chair` seeds (see [`PREVIOUS_ROOT_SEEDS`]).
+const PREVIOUS_CHAIR_SEEDS: &[&str] = &[];
 #[cfg(test)]
 const CURRENT_WORKER_SEED: &str =
     "9c6c79e23786155bc4496bae3bbea473cae85b5f773b2f2453f0fa7bb0389615";
@@ -720,6 +771,7 @@ const PREVIOUS_CONVERSATION_SEEDS: &[&str] = &[
     "c6eeb8ed3df42aa814e2d264ae923fad67cb6437cefcbc76ce2aa10130b190a1",
     "e20a6531e91e4e79b9012820832bc22c94b07507a64a3ee361cde697273822eb",
     "e53589830a6be5f6d5da7ff740e6ac11bbf1af3224f408add720d2cf52380591",
+    "ecc575c0ef4d14d6ae1bd8b471c0558a075e791fdae497316c5ef326c02439a8",
     "e601541af9f74254026de20d69c10d0a51b08cd8b6677a05e502a5a3e73f8de3",
     "eb197ddd4ae837fdab2203009a351a08814ba0aba8722caba31c2f2616978537",
 ];
@@ -1583,6 +1635,12 @@ mod tests {
                 CURRENT_WORKER_SEED,
                 PREVIOUS_WORKER_SEEDS,
             ),
+            (
+                "chair",
+                chair_role_seed_content(),
+                CURRENT_CHAIR_SEED,
+                PREVIOUS_CHAIR_SEEDS,
+            ),
         ] {
             let digest = format!("{:x}", Sha256::digest(content.as_bytes()));
             assert_eq!(
@@ -1604,8 +1662,15 @@ mod tests {
         let ws = tempfile::tempdir().unwrap();
         assert_eq!(
             seed_default_roles(ws.path()).unwrap(),
-            vec!["root", "conversation", "worker"]
+            vec!["root", "conversation", "worker", "chair"]
         );
+        // ADR-128 D5: the chair's role is the conversation role under its
+        // own header, plus what a chair does besides.
+        let chair = std::fs::read_to_string(ws.path().join("roles").join("chair.md")).unwrap();
+        assert!(chair.starts_with("---\nname: chair\n"), "{chair}");
+        assert_eq!(chair.matches("\n---\n").count(), 1, "one header: {chair}");
+        assert!(chair.contains("You are the peko, talking in one conversation"));
+        assert!(chair.contains("You chair this group."));
         let worker = std::fs::read_to_string(ws.path().join("roles").join("worker.md")).unwrap();
         assert!(worker.starts_with("---\nname: worker\n"));
         assert_eq!(
@@ -1624,7 +1689,7 @@ mod tests {
         std::fs::write(&custom, b"custom").unwrap();
         assert_eq!(
             seed_default_roles(ws2.path()).unwrap(),
-            vec!["root", "worker"]
+            vec!["root", "worker", "chair"]
         );
         assert_eq!(std::fs::read_to_string(&custom).unwrap(), "custom");
     }

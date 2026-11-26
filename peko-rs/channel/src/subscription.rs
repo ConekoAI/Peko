@@ -148,7 +148,8 @@ impl ChannelSubscriber {
         let items = self.port.peek_with_ids(&self.channel, &since).await?;
 
         let mut delivered: Vec<ChannelEvent> = Vec::with_capacity(items.len());
-        for (task_id, ev) in items {
+        let total = items.len();
+        for (index, (task_id, ev)) in items.into_iter().enumerate() {
             // Meter.
             if let Err(e) = self
                 .meter
@@ -167,6 +168,7 @@ impl ChannelSubscriber {
                 event: ev.clone(),
                 event_id: task_id,
                 now: std::time::SystemTime::now(),
+                more: total - index - 1,
             };
             self.responder.consider_response(ctx).await?;
 

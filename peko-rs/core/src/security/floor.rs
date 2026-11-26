@@ -26,7 +26,8 @@ pub const OWNER_ONLY_TOOLS: &[&str] = &["Plan", "Bash", "Secret", "Changes", "Br
 /// who can reach the principal and whom it can reach (ADR-082 D6);
 /// `role` changes the instructions it follows in a conversation (ADR-087
 /// D6); `admin` changes who may manage a group (ADR-092 D1); `join` puts
-/// the principal in a group someone else runs (ADR-098 D2). A visitor's
+/// the principal in a group someone else runs (ADR-098 D2). `wake` with
+/// `human` is one too (ADR-128 D5; see [`channel_owner_action`]). A visitor's
 /// run gets them only as the owner's decision: refused unless its
 /// `ACCESS.toml` section sets `ask_owner`, and then each call waits for
 /// the owner ([`crate::security::judge::owner_decides`], ADR-113 D1).
@@ -40,9 +41,17 @@ pub fn channel_owner_action<'a>(tool_name: &str, params: &'a serde_json::Value) 
     if tool_name != "Channel" {
         return None;
     }
-    params["action"]
-        .as_str()
-        .filter(|a| CHANNEL_OWNER_ACTIONS.contains(a))
+    let action = params["action"].as_str()?;
+    if CHANNEL_OWNER_ACTIONS.contains(&action) {
+        return Some(action);
+    }
+    // ADR-128 D5: `human` makes the peko take people's posts that
+    // address no one, which is what a group's chair does.
+    (action == "wake"
+        && params["policy"]
+            .as_str()
+            .is_some_and(|p| p.eq_ignore_ascii_case("human")))
+    .then_some("wake")
 }
 
 /// The longest brief an `Agent` `as_owner` call may hand the owner
@@ -137,6 +146,7 @@ pub fn action_refusal(
         "role" => "Choosing the role for a conversation",
         "admin" => "Choosing a group's admins",
         "join" => "Joining a group",
+        "wake" => "Taking a group's posts that address no one",
         _ => "Creating groups and inviting people",
     };
     Some(format!(
@@ -642,6 +652,24 @@ pub fn glob_pattern_escapes(pattern: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ADR-128 D5: `wake` `human` is the owner's decision; `mention` and
+    /// `off` stay the peko's own.
+    #[test]
+    fn taking_unaddressed_posts_is_the_owners_decision() {
+        let wake = |policy: &str| serde_json::json!({"action": "wake", "policy": policy});
+        assert_eq!(
+            channel_owner_action("Channel", &wake("human")),
+            Some("wake")
+        );
+        assert_eq!(
+            channel_owner_action("Channel", &wake("Human")),
+            Some("wake")
+        );
+        assert_eq!(channel_owner_action("Channel", &wake("mention")), None);
+        assert_eq!(channel_owner_action("Channel", &wake("off")), None);
+        assert_eq!(channel_owner_action("ChannelSend", &wake("human")), None);
+    }
     use peko_tools_core::{Compartment, Origin, Trust};
 
     fn stamp(trust: Trust) -> ActingFor {

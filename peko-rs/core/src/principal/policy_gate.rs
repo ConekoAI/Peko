@@ -864,6 +864,104 @@ const RESET_REQUEST: &str = "peko.devices_reset";
 const OWNER_CHANGE_REQUEST: &str = "peko.owner_change";
 /// The pseudo-tool of a peko key change's request (ADR-110 D4).
 const KEY_CHANGE_REQUEST: &str = "peko.key_change";
+/// The pseudo-tool of a group whose wake limit holds posts (ADR-128 D6).
+const WAKE_LIMIT_REQUEST: &str = "peko.wake_limit";
+
+/// The groups where `principal`'s limit of wakes by other pekos holds
+/// posts and the owner has not answered yet (ADR-128 D6), as requests:
+/// approving lets the peko continue.
+fn wake_limit_records(principal: &Principal) -> Vec<ApprovalRecord> {
+    use crate::principal::group_wakes;
+    let now = Utc::now();
+    group_wakes::all(&group_wakes::dir_for(principal), now)
+        .into_iter()
+        .filter(|(_, status)| status.asks_owner)
+        .map(|(_, status)| {
+            let frees = match status.room {
+                group_wakes::Room::At(at) => format!("until {}", at.format("%H:%M UTC")),
+                group_wakes::Room::Never => "until you raise the limit".to_string(),
+                group_wakes::Room::Now => "a moment".to_string(),
+            };
+            let reason = format!(
+                "Other pekos may wake it {} times an hour and {} a day in this group, so that \
+                 pekos cannot keep each other going unseen. Approve to let it continue now \
+                 (always: no limit in this group). Deny and the posts wait {frees}. People \
+                 can always reach it. `peko channel wakes` changes the limits.",
+                status.per_hour, status.per_day
+            );
+            let call = GatedCall {
+                principal_id: principal.id.0.clone(),
+                principal_name: None,
+                session_id: None,
+                agent_id: None,
+                workspace: None,
+                stamp: ActingFor {
+                    actor: "runtime".into(),
+                    name: Some("Peko".into()),
+                    trust: peko_tools_core::Trust::Owner,
+                    compartment: peko_tools_core::Compartment::Internal,
+                    origin: Origin::Runtime,
+                    owner_request: false,
+                },
+                tool_name: WAKE_LIMIT_REQUEST.to_string(),
+                params: serde_json::json!({
+                    "channel": status.channel,
+                    "held": status.held,
+                    "limit": status.limit_reached(),
+                }),
+                call_id: None,
+            };
+            ApprovalRecord {
+                id: status.request_id(),
+                digest: call.digest(),
+                call,
+                reason,
+                created_at: status.held_since.unwrap_or(now),
+                // Waits until decided, or until the limit frees up.
+                expires_at: now + chrono::Duration::days(1),
+                status: ApprovalStatus::Pending,
+                grant: None,
+            }
+        })
+        .collect()
+}
+
+/// The owner's decision on a group's held posts (ADR-128 D6): approved,
+/// what the peko spent is forgotten and the held posts reach it at once
+/// (with *always*, the group's limits are lifted too); denied, they keep
+/// waiting for the limit and the request is not shown again for them.
+fn decide_wake_limit(principal: &Principal, id: &str, decision: Decision) -> Result<String> {
+    use crate::principal::group_wakes::{self, Limit};
+    let now = Utc::now();
+    let (book, status) = group_wakes::all(&group_wakes::dir_for(principal), now)
+        .into_iter()
+        .find(|(_, status)| status.request_id() == id)
+        .with_context(|| format!("no request {id}"))?;
+    Ok(match decision {
+        Decision::Approve { always } => {
+            if always {
+                book.set_limits(now, Some(Limit::None), Some(Limit::None));
+            }
+            book.reset(now);
+            let lifted = if always {
+                " Other pekos' wakes are no longer limited there."
+            } else {
+                ""
+            };
+            format!(
+                "It continues in {}: the {} posts held there reach it now.{lifted}",
+                status.channel, status.held
+            )
+        }
+        Decision::Deny => {
+            book.dismiss(now);
+            format!(
+                "The {} posts held in {} wait for the limit to free up.",
+                status.held, status.channel
+            )
+        }
+    })
+}
 
 /// The requests waiting for the owner of `principal`, with the owner
 /// changes, peko key changes and contacts' device resets waiting for them
@@ -877,6 +975,8 @@ pub async fn pending_requests_for_owner(
     person: Option<&str>,
 ) -> Vec<ApprovalRecord> {
     let mut out = pending_requests(principal);
+    out.extend(wake_limit_records(principal));
+    out.sort_by_key(|r| r.created_at);
     let Some(account) = manager.local_account().await else {
         return out;
     };
@@ -1307,6 +1407,16 @@ pub fn request_summary(record: &ApprovalRecord) -> String {
             let peko = record.call.params["peko"].as_str().unwrap_or_default();
             return format!("PekoHub says {peko} has a new identity. Use it?");
         }
+        WAKE_LIMIT_REQUEST => {
+            let params = &record.call.params;
+            return format!(
+                "Other pekos reached the limit of {} in {}: {} posts to this peko wait. Let it \
+                 continue?",
+                params["limit"].as_str().unwrap_or("its wakes"),
+                params["channel"].as_str().unwrap_or_default(),
+                params["held"].as_u64().unwrap_or_default(),
+            );
+        }
         _ => {}
     }
     if is_owner_task(&record.call) {
@@ -1324,6 +1434,7 @@ pub fn request_kind(record: &ApprovalRecord) -> Option<String> {
         RESET_REQUEST => return Some("devices_reset".into()),
         OWNER_CHANGE_REQUEST => return Some("owner_change".into()),
         KEY_CHANGE_REQUEST => return Some("key_change".into()),
+        WAKE_LIMIT_REQUEST => return Some("wake_limit".into()),
         _ => {}
     }
     is_owner_task(&record.call).then(|| "owner_task".to_string())
@@ -1353,6 +1464,9 @@ pub async fn decide_request_via(
 ) -> Result<String> {
     if is_hub_claim(id) {
         return decide_hub_claim(manager, principal, id, decision, via).await;
+    }
+    if id.starts_with(crate::principal::group_wakes::REQUEST_ID_PREFIX) {
+        return decide_wake_limit(principal, id, decision);
     }
     let dir = approvals_dir(principal);
     // ADR-100 D2: work run as the owner is approved one brief at a time.
@@ -1683,7 +1797,7 @@ async fn replay(
         stamp.trust = peko_tools_core::Trust::Owner;
         stamp.compartment = peko_tools_core::Compartment::Internal;
         stamp.owner_request = false;
-        params = owner_task_params(&params);
+        params = owner_task_params(&params, &conversation_slugs(principal).await);
     }
     let mut context = crate::async_exec::executor::ToolDispatchContext::builder(
         call.tool_name.clone(),
@@ -1713,21 +1827,42 @@ async fn replay(
     Ok(receipt.task_id)
 }
 
+/// The slugs of `principal`'s conversation sessions (a group's
+/// `group-<slug>`, a DM's `local-user`, …): names an owner task must not
+/// take.
+async fn conversation_slugs(principal: &Principal) -> Vec<String> {
+    peko_session::manager::SessionManager::new()
+        .with_sessions_dir_internal(principal.memory.sessions_dir())
+        .list_all_sessions(false)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|meta| meta.channel_id.is_some())
+        .filter_map(|meta| meta.slug)
+        .collect()
+}
+
 /// The `Agent` call an approved owner task runs: no `as_owner`, and its
 /// slug at the top of the owner's tree rather than under the
-/// conversation it was asked in.
-fn owner_task_params(params: &serde_json::Value) -> serde_json::Value {
+/// conversation it was asked in. A slug that is a conversation session's
+/// (`taken`) gets `-task` added: a peko asked in `group:stats-team` named
+/// its task `group-stats-team`, which is the session it was running in,
+/// and the approved task could not start (2026-11-26 benchmark run).
+fn owner_task_params(params: &serde_json::Value, taken: &[String]) -> serde_json::Value {
     let mut params = params.clone();
     if let Some(map) = params.as_object_mut() {
         map.remove("as_owner");
         map.remove("item");
-        let slug = map
+        let mut slug = map
             .get("path")
             .and_then(|p| p.as_str())
             .map(|p| p.trim_start_matches("sess:"))
             .filter(|p| !p.is_empty() && !p.contains('/'))
             .unwrap_or("owner-task")
             .to_string();
+        while taken.contains(&slug) {
+            slug.push_str("-task");
+        }
         map.insert(
             "path".into(),
             serde_json::Value::String(format!("sess:/{slug}")),
@@ -1758,6 +1893,30 @@ async fn notify_requester(manager: &PrincipalManager, record: &ApprovalRecord, t
 
 #[cfg(test)]
 mod tests {
+    /// An approved owner task never takes a conversation session's name:
+    /// a peko asked in `group:stats-team` named its task `group-stats-team`
+    /// (the session it ran in) and the approved task could not start.
+    #[test]
+    fn an_owner_task_does_not_take_a_conversation_sessions_name() {
+        let taken = vec!["group-stats-team".to_string(), "local-user".to_string()];
+        let path = |slug: &str| {
+            super::owner_task_params(
+                &serde_json::json!({"as_owner": true, "item": "8af09a", "path": slug, "prompt": "p"}),
+                &taken,
+            )
+        };
+        let renamed = path("group-stats-team");
+        assert_eq!(renamed["path"], "sess:/group-stats-team-task");
+        assert!(renamed.get("as_owner").is_none() && renamed.get("item").is_none());
+        assert_eq!(path("run-tests")["path"], "sess:/run-tests");
+        assert_eq!(path("")["path"], "sess:/owner-task");
+        let both = vec!["x".to_string(), "x-task".to_string()];
+        assert_eq!(
+            super::owner_task_params(&serde_json::json!({"path": "x"}), &both)["path"],
+            "sess:/x-task-task"
+        );
+    }
+
     use super::*;
     use peko_tools_core::{Compartment, Trust};
 

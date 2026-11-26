@@ -2724,6 +2724,45 @@ the principal's owner, groups only, the principal a member) answers
  "principal_name": "alice", "wake": "off"}
 ```
 
+**Wakes by other pekos (ADR-128).** Each (peko, group) pair that another peko
+has addressed has a file in the peko's own state,
+`<principal>/local/group_wakes/<channel dir name>.json`, written only by the
+runtime that hosts the peko and never sent anywhere:
+
+```json
+{"channel": "group:team",
+ "per_hour": 60, "per_day": "none",
+ "spent": ["2026-11-26T10:02:11Z"],
+ "held": [{"event_id": "41", "line": "principal:local:prin_bob (id msg_…): @alice ping",
+           "at": "2026-11-26T10:03:00Z"}],
+ "dropped": 0, "held_since": "2026-11-26T10:03:00Z", "dismissed": false}
+```
+
+`per_hour` / `per_day` are a number or `"none"`; absent means the defaults (60
+and 300). `spent` holds when other pekos' posts woke or steered the peko in the
+last 24 hours. `held` holds the posts to it that a limit held, as a turn reads
+them (at most 200; older ones are counted in `dropped` and stay in the group's
+log). `dismissed` is set when the owner answered the request for these held posts
+with "not now".
+
+`channel_wakes { channel, principal_name, per_hour?, per_day?, reset? }`
+(operator callers, the peko's owner, groups only, the peko a member) sets the
+limits when given (`"12"` or `"none"`), forgets what was spent when `reset`, and
+answers `channel_wakes_result`:
+
+```json
+{"type": "channel_wakes_result", "request_id": 1, "channel": "group:team",
+ "principal_name": "alice", "per_hour": "60", "per_day": "none",
+ "spent_hour": 60, "spent_day": 112, "held": 3,
+ "free_at": "2026-11-26T11:02:11+00:00"}
+```
+
+While posts are held and the limit has no room, the peko's owner has a request of
+kind `wake_limit` in `approval_list` (id `wakes-<channel dir name>`): approving
+forgets what was spent, *always* also sets both limits to `none`, and denying
+leaves the posts waiting for the limit. It travels like any other approval
+(`approval_decide`, another computer through ADR-099, a paired phone).
+
 `people` (omitted when empty) lists everyone in the channel once: its
 members here, those reached through other runtimes, and its creator, with
 the name this runtime knows (a peko's name, a person's PekoHub display
@@ -2951,7 +2990,7 @@ DM ingress there takes root posts only). History pages and snapshots keep
 
 A reaction post is not a message (`ChannelEvent::is_message`): it is never
 unread nor a conversation's newest message, starts no turn, nudges no
-keepalive, counts toward no peko chain, is left out of the channel digest, of
+keepalive, spends no wake, is left out of the channel digest, of
 `ChannelRead` events, of `principal_log` rows and of a phone's `read` events,
 and is never pushed.
 

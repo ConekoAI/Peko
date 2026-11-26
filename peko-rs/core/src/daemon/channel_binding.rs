@@ -2,9 +2,9 @@
 //! ADR-072).
 //!
 //! Every (principal, channel) membership gets a [`ChannelSubscriber`]
-//! that reads new events. What may start a run is narrow, because
-//! principals must never wake each other into a loop (ADR-072): **only
-//! humans and cron start runs.**
+//! that reads new events. What may start a run is narrow: outside
+//! groups, **only humans and cron start runs** (ADR-072); in a group, a
+//! post starts a run only for a peko it addresses (ADR-128).
 //!
 //! - **DM channels** (`kind: dm` in `meta.json`) get
 //!   [`NoopChannelResponder`]. A user's DM is driven by the ingress path
@@ -15,22 +15,25 @@
 //!   `watch`.
 //! - **Group channels** (`kind: group` — every `group:<slug>` and bare
 //!   `chan_*` group) get a [`GroupWakeResponder`] when the principal has
-//!   a resolvable model. What wakes it is the binding's policy (ADR-082
-//!   D3), read per post: `mention` (the default) — a human ROOT post
-//!   that mentions the principal (`@<name>`, case-insensitive, whole
-//!   word); `human` — every human root post; `off` — nothing.
-//!   A person's reply is weighed like their root post, and a reply to
-//!   one of this peko's posts counts as mentioning it (ADR-126 D7). A
-//!   reaction is not a message and wakes no one (D2). Another peko's post
-//!   wakes the principal when it asks it for something (ADR-120 D1): it
-//!   mentions it, adds a board item for it, or replies to one of its
-//!   posts — while the group holds at most [`MAX_PEKO_CHAIN`] peko posts
-//!   since a person last posted, and within [`PEER_WAKES_PER_GROUP_HOUR`]
-//!   (D3). The principal's own posts never wake it. Everything else is
-//!   read, not pushed.
-//! - **Peer-post nudge** (ADR-086). A post by another principal that
-//!   starts no turn — every one on a DM, and in a group one that does not
-//!   wake the principal — brings the recipient's attention-gated
+//!   a resolvable model. A post wakes the peko only when it addresses
+//!   it (ADR-128 D1): it mentions it (`@<name>`, case-insensitive, whole
+//!   word), replies to one of its posts (ADR-126 D7), answers its
+//!   question card, or adds a board item for it. That holds for a
+//!   person's post and another peko's alike. A person's post that
+//!   addresses no one also wakes the only peko in the group, and a peko
+//!   whose binding is `human` (a chair, D5); `off` wakes nothing. A
+//!   reaction is not a message and wakes no one (ADR-126 D2), and the
+//!   principal's own posts never wake it. Everything else is read, not
+//!   pushed: an unaddressed post starts nothing and nudges nothing.
+//! - **The wake limit** (ADR-128 D2). Wakes and steers that other pekos'
+//!   posts cause are counted per peko per group, per rolling hour and
+//!   day ([`crate::principal::group_wakes`]). Past a limit the post is
+//!   held, and when the limit has room again the peko is woken once with
+//!   everything held. A person's post is never counted and never held.
+//!   Other pekos' posts found together in one read of the log (this
+//!   runtime catching up) are delivered as one wake too (D8).
+//! - **Peer-post nudge** (ADR-086), DMs only. A post by another principal
+//!   on a DM starts no turn; it brings the recipient's attention-gated
 //!   `keepalive` forward through the cron engine ([`PeerPostNudge`]). The
 //!   nudge starts no run itself: the keepalive fires on the next poll, at
 //!   least two minutes after its last turn and within an hourly budget,
@@ -43,9 +46,11 @@
 //! [`crate::principal::peer_children::ensure_group_child`]), driven by
 //! [`PeerTurnDriver`] — the same `drive_turn_streaming` call the ingress
 //! paths make: no time limit, the session's conversation context, and a
-//! stop handle in the daemon's streaming-run registry. The responder
-//! posts the turn's final text back to the channel as the principal,
-//! threaded onto the triggering post. The turn input is
+//! stop handle in the daemon's streaming-run registry. When a person's
+//! post started the turn, the responder posts its final text back to the
+//! channel as the principal, threaded onto that post. When another
+//! peko's post started it, nothing is posted unless the peko posts with
+//! `ChannelSend` (ADR-128 D4), and the turn is told so. The turn input is
 //! `{author}: {text}` so the principal can tell speakers apart; a reply
 //! reads `{author} (replying to {quoted author}: “…”): {text}`, quoting
 //! the start of the message it answers from this copy's log (ADR-126
@@ -101,6 +106,9 @@ use peko_subject::{ActorRef, PrincipalId};
 
 use crate::daemon::state::StreamingRunHandle;
 use crate::principal::child_turns::PeerChildTurns;
+use crate::principal::group_wakes::{
+    compiled_message, HeldPost, Room, WakeBook, PEKO_STARTED_NOTE, UNPOSTED_REMINDER,
+};
 use crate::principal::manager::PrincipalManager;
 use crate::principal::Principal;
 use crate::session::ownership::is_run_active_error;
@@ -108,20 +116,6 @@ use crate::session::ownership::is_run_active_error;
 /// Poll interval while the collision watch waits for another path's
 /// run on the bound session to end.
 const COMPLETION_POLL_MS: u64 = 50;
-
-/// ADR-120 D3: a peko's post wakes another peko only while the group
-/// holds at most this many peko posts since a person last posted there
-/// (this one included). Past it, peko posts wait for the keepalive as
-/// unmentioned ones do, until a person posts again.
-pub(crate) const MAX_PEKO_CHAIN: usize = 24;
-
-/// ADR-120 D3: most wakes and steers other pekos' posts may cause in one
-/// peko, per group, per rolling hour. Counted by the receiving runtime,
-/// so it holds however a remote runtime labels its posts.
-pub(crate) const PEER_WAKES_PER_GROUP_HOUR: usize = 60;
-
-/// How far back the chain check reads a group's log.
-const CHAIN_LOOKBACK: usize = 100;
 
 /// The daemon's in-flight streaming-run registry (`AppState::streaming_runs`),
 /// keyed by session id; `PrincipalStop` cancels runs through it.
@@ -274,9 +268,21 @@ struct ResponderInner {
     /// What this responder pushed into running turns and has not seen
     /// settled yet (ADR-120 D2).
     pushed: std::sync::Mutex<HashMap<uuid::Uuid, (std::time::Instant, Pushed)>>,
-    /// When other pekos' posts woke or steered this peko here in the
-    /// last hour (ADR-120 D3, [`PEER_WAKES_PER_GROUP_HOUR`]).
-    peer_wakes: std::sync::Mutex<std::collections::VecDeque<std::time::Instant>>,
+    /// How often other pekos' posts woke or steered this peko here, and
+    /// what is held past the limit (ADR-128 D2).
+    wakes: WakeBook,
+    /// Other pekos' posts to this peko found so far in the read of the
+    /// log now in progress (ADR-128 D8), with their turn inputs.
+    batch: std::sync::Mutex<Vec<(RespondCtx, String)>>,
+    /// Whether a task already waits to deliver held posts.
+    held_timer: std::sync::atomic::AtomicBool,
+}
+
+/// Whether a turn `author` started posts its final text by itself
+/// (ADR-128 D4). A person's does, and so does a turn no post started;
+/// one another peko started posts only what the peko posts.
+fn replies_by_itself(author: Option<&ActorRef>) -> bool {
+    !matches!(author, Some(ActorRef::Principal(_)))
 }
 
 impl ResponderInner {
@@ -429,7 +435,14 @@ impl ResponderInner {
             .drive_turn(&session_id, &text, author.as_ref())
             .await
         {
-            Ok(reply) => self.post_reply(&session_id, event_id, &reply).await,
+            Ok(reply) => {
+                if replies_by_itself(author.as_ref()) {
+                    self.post_reply(&session_id, event_id, &reply).await;
+                } else {
+                    self.remind_unposted(&session_id, author.as_ref(), &reply)
+                        .await;
+                }
+            }
             Err(e) => {
                 // Run-active collision: another path (Agent-tool
                 // resume, completion wake) is driving a run on the
@@ -509,7 +522,7 @@ impl ResponderInner {
         }
     }
 
-    /// A person's post met a run another path drives on the bound
+    /// A post met a run another path drives on the bound
     /// session. Wait for that run to end, then drive the post's own
     /// turn, acting for `author` (ADR-078; for the owner in a shared
     /// group that is an ADR-100 owner request), and thread the reply
@@ -534,7 +547,11 @@ impl ResponderInner {
             self.settle_leftovers(session_id).await;
             match self.driver.drive_turn(session_id, text, Some(author)).await {
                 Ok(reply) => {
-                    self.post_reply(session_id, event_id, &reply).await;
+                    if replies_by_itself(Some(author)) {
+                        self.post_reply(session_id, event_id, &reply).await;
+                    } else {
+                        self.remind_unposted(session_id, Some(author), &reply).await;
+                    }
                     return;
                 }
                 Err(e) if is_run_active_error(&e) => {
@@ -566,8 +583,8 @@ impl ResponderInner {
     /// - anything else (a post with no author, converted to steering)
     ///   gets one successor turn, posted as a ROOT post: its event
     ///   correlation was lost, so there is nothing to thread onto.
-    ///   Principal-authored root posts wake no one unless they mention
-    ///   a peko, which the chain limit bounds (ADR-120 D3).
+    ///   Principal-authored root posts wake no one unless they address
+    ///   a peko, which that peko's wake limit bounds (ADR-128 D2).
     ///
     /// Failures are log-only. No re-queue: the steering was consumed by
     /// the drain, and an infinite retry loop is worse than the log-only
@@ -599,7 +616,14 @@ impl ResponderInner {
                     .drive_turn(session_id, &text, Some(&author))
                     .await
                 {
-                    Ok(reply) => self.post_reply(session_id, event_id, &reply).await,
+                    Ok(reply) => {
+                        if replies_by_itself(Some(&author)) {
+                            self.post_reply(session_id, event_id, &reply).await;
+                        } else {
+                            self.remind_unposted(session_id, Some(&author), &reply)
+                                .await;
+                        }
+                    }
                     Err(e) => warn!(
                         channel = %self.channel,
                         session = %session_id,
@@ -705,6 +729,122 @@ impl ResponderInner {
     }
 }
 
+impl ResponderInner {
+    /// A turn another peko started ended with `reply` and posted nothing
+    /// (a turn that posted in the group has no final text left,
+    /// `drive_conversation_turn`). When the reply is one a person's turn
+    /// would have posted, ask the peko once whether the group needs it
+    /// (ADR-128 D4): it posts it with `ChannelSend`, or says `NO_REPLY`.
+    /// Whatever it answers, nothing is posted from here.
+    async fn remind_unposted(&self, session_id: &str, author: Option<&ActorRef>, reply: &str) {
+        if crate::principal::quiet_reply::postable(reply, true).is_none() {
+            return;
+        }
+        debug!(
+            channel = %self.channel,
+            session = %session_id,
+            "channel binding: a turn another peko started wrote a reply and posted nothing; \
+             asking once"
+        );
+        if let Err(e) = self
+            .driver
+            .drive_turn(session_id, UNPOSTED_REMINDER, author)
+            .await
+        {
+            debug!(
+                channel = %self.channel,
+                session = %session_id,
+                "channel binding: the reminder turn did not run: {e:#}"
+            );
+        }
+    }
+
+    /// One turn for several posts other pekos wrote to this peko
+    /// (ADR-128 D2, D8). It acts for the conversation itself (no single
+    /// author), waits for a run in flight to end, and posts nothing by
+    /// itself: the peko posts what the group needs with `ChannelSend`.
+    async fn run_compiled(&self, message: String) {
+        let _turn_guard = self.turn_lock.lock().await;
+        let Some(session_id) = self.session().await else {
+            return;
+        };
+        loop {
+            self.wait_for_no_run(&session_id).await;
+            self.settle_leftovers(&session_id).await;
+            match self.driver.drive_turn(&session_id, &message, None).await {
+                Ok(reply) => {
+                    self.remind_unposted(&session_id, None, &reply).await;
+                    return;
+                }
+                Err(e) if is_run_active_error(&e) => {
+                    tokio::time::sleep(Duration::from_millis(COMPLETION_POLL_MS)).await;
+                }
+                Err(e) => {
+                    warn!(
+                        channel = %self.channel,
+                        session = %session_id,
+                        "channel binding: turn for held posts failed (posting nothing): {e:#}"
+                    );
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Make sure a task waits to deliver what the wake limit holds
+    /// (ADR-128 D2): it sleeps until the limit has room, or until the
+    /// book changes (the owner lifted the limit), and then wakes the peko
+    /// once with everything held. Ends when nothing is held.
+    fn ensure_held_timer(self: &Arc<Self>) {
+        use std::sync::atomic::Ordering;
+        if self.held_timer.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let this = Arc::clone(self);
+        tokio::spawn(async move {
+            loop {
+                let now = chrono::Utc::now();
+                let status = this.wakes.status(now);
+                if status.held == 0 {
+                    break;
+                }
+                // Registered before the room check, so a change made in
+                // between is not missed.
+                let changed = crate::principal::group_wakes::changed();
+                match status.room {
+                    Room::Now => {
+                        if let Some(held) = this.wakes.take_held(now) {
+                            let lines: Vec<String> =
+                                held.posts.into_iter().map(|post| post.line).collect();
+                            debug!(
+                                channel = %this.channel,
+                                principal = %this.principal,
+                                posts = lines.len(),
+                                "channel binding: the wake limit has room; delivering held posts"
+                            );
+                            this.run_compiled(compiled_message(&lines, held.dropped, true))
+                                .await;
+                        }
+                    }
+                    Room::At(at) => {
+                        let wait = (at - now).to_std().unwrap_or_default();
+                        tokio::select! {
+                            () = tokio::time::sleep(wait) => {}
+                            () = changed => {}
+                        }
+                    }
+                    Room::Never => changed.await,
+                }
+            }
+            this.held_timer.store(false, Ordering::SeqCst);
+            // A post held between the last check and here.
+            if this.wakes.status(chrono::Utc::now()).held > 0 {
+                this.ensure_held_timer();
+            }
+        });
+    }
+}
+
 /// Detached-task spawn: the subscriber's
 /// cursor advance + persistence must not block on an LLM turn (see
 /// module docs). The turn lock inside `run_turn` serializes concurrent
@@ -731,13 +871,9 @@ fn spawn_turn(inner: Arc<ResponderInner>, ctx: RespondCtx, input: String) {
 #[derive(Clone)]
 pub(crate) struct GroupWakeResponder {
     inner: Arc<ResponderInner>,
-    /// The principal's name: a user post wakes it only when it mentions
+    /// The principal's name: a post addresses it when it mentions
     /// `@<name>`.
     name: String,
-    /// ADR-086 / ADR-120: where another peko's post that does not wake
-    /// this one nudges its keepalive. Unset until the cron engine
-    /// exists; an unset slot nudges nothing.
-    nudge: PeerNudgeSlot,
 }
 
 impl GroupWakeResponder {
@@ -748,7 +884,9 @@ impl GroupWakeResponder {
         port: Arc<dyn ChannelPort>,
         resolver: Arc<dyn BindingResolver>,
         driver: Arc<dyn BoundTurnDriver>,
+        wakes_dir: &Path,
     ) -> Self {
+        let wakes = WakeBook::open(wakes_dir, &channel);
         // The bound child is `/group-<slug>` under the trunk; derive
         // the path with the same slug rule `ensure_group_child`
         // applies, then add the display-side `sess:` scheme prefix so
@@ -772,19 +910,20 @@ impl GroupWakeResponder {
                 resolved_session: tokio::sync::OnceCell::new(),
                 turn_lock: tokio::sync::Mutex::new(()),
                 pushed: std::sync::Mutex::new(HashMap::new()),
-                peer_wakes: std::sync::Mutex::new(std::collections::VecDeque::new()),
+                wakes,
+                batch: std::sync::Mutex::new(Vec::new()),
+                held_timer: std::sync::atomic::AtomicBool::new(false),
             }),
             name,
-            nudge: Arc::default(),
         }
     }
 
-    /// Nudge the keepalive through `slot` for other pekos' posts that do
-    /// not wake this peko (ADR-086).
-    #[must_use]
-    pub(crate) fn with_nudge(mut self, slot: PeerNudgeSlot) -> Self {
-        self.nudge = slot;
-        self
+    /// Pick up posts the wake limit held before this runtime stopped
+    /// (ADR-128 D2). Call inside the tokio runtime.
+    pub(crate) fn resume_held(&self) {
+        if self.inner.wakes.status(chrono::Utc::now()).held > 0 {
+            self.inner.ensure_held_timer();
+        }
     }
 
     /// Another peko's post (ADR-120 D1): `(author, text)` for a post by
@@ -846,96 +985,95 @@ impl GroupWakeResponder {
         }
     }
 
-    /// ADR-120 D3: whether the group's peko posts since a person last
-    /// posted, `event_id` included, are still within
-    /// [`MAX_PEKO_CHAIN`]. Unreadable history holds the chain.
-    async fn chain_allows(&self, event_id: &str) -> bool {
-        let Ok(page) = self
-            .inner
-            .port
-            .peek_tail(
-                &self.inner.channel,
-                CHAIN_LOOKBACK,
-                Some(&event_id.to_string()),
-            )
-            .await
-        else {
-            return false;
-        };
-        let mut chain = 1usize;
-        for (_, earlier) in page.events.iter().rev() {
-            // ADR-126 D2: a reaction counts toward no chain.
-            if !earlier.is_message() {
-                continue;
-            }
-            let ChannelEvent::Posted { author, .. } = earlier else {
-                continue;
-            };
-            match ActorRef::from_str(author) {
-                Ok(ActorRef::User(_) | ActorRef::Visitor(_)) => break,
-                Ok(ActorRef::Principal(_)) => chain += 1,
-                _ => {}
-            }
-            if chain > MAX_PEKO_CHAIN {
-                return false;
-            }
-        }
-        chain <= MAX_PEKO_CHAIN
-    }
-
-    /// ADR-120 D3: spend one of this peko's hourly wakes by other pekos
-    /// here; `false` once [`PEER_WAKES_PER_GROUP_HOUR`] are spent.
-    fn spend_peer_wake(&self) -> bool {
-        let now = std::time::Instant::now();
-        let hour = Duration::from_hours(1);
-        let mut spent = self
-            .inner
-            .peer_wakes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        while spent
-            .front()
-            .is_some_and(|at| now.duration_since(*at) >= hour)
-        {
-            spent.pop_front();
-        }
-        if spent.len() >= PEER_WAKES_PER_GROUP_HOUR {
-            return false;
-        }
-        spent.push_back(now);
-        true
-    }
-
-    /// Another peko's post (ADR-120 D1, D3): it wakes this peko — or is
-    /// steered into its running turn — when it asks it for something,
-    /// the binding wakes at all, and the chain and the hourly budget
-    /// allow. Otherwise it nudges the keepalive (ADR-086), unless it is
-    /// a board change that asks nothing of this peko (ADR-101 D2).
+    /// Another peko's post (ADR-128 D1, D2): when it addresses this peko
+    /// and the binding wakes at all, it joins the posts gathered in this
+    /// read of the log ([`Self::flush_peer_posts`] acts on them).
+    /// Anything else starts nothing and nudges nothing.
     async fn consider_peer_post(&self, ctx: RespondCtx, wake: WakePolicy) {
         let Some((_, text)) = self.peer_post(&ctx.event) else {
             return;
         };
+        if wake == WakePolicy::Off || !self.peer_asks_me(&ctx.event, text).await {
+            return;
+        }
         let input = turn_input(self.inner.port.as_ref(), &self.inner.channel, &ctx.event).await;
-        let asks = self.peer_asks_me(&ctx.event, text).await;
-        if asks && wake != WakePolicy::Off && self.chain_allows(&ctx.event_id).await {
-            if self.spend_peer_wake() {
-                spawn_turn(Arc::clone(&self.inner), ctx, input);
-                return;
-            }
+        self.inner
+            .batch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((ctx, input));
+    }
+
+    /// Act on the other pekos' posts to this peko that one read of the
+    /// log brought (ADR-128 D2, D8). One post wakes the peko, or is
+    /// steered into its running turn, acting for its author; several are
+    /// delivered as one wake. Either spends one wake. When the limit has
+    /// no room, or earlier posts are still held, they are held too.
+    fn flush_peer_posts(&self) {
+        let mut batch = std::mem::take(
+            &mut *self
+                .inner
+                .batch
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        if batch.is_empty() {
+            return;
+        }
+        let now = chrono::Utc::now();
+        if !self.inner.wakes.spend(now) {
             debug!(
                 channel = %self.inner.channel,
                 principal = %self.inner.principal,
-                "channel binding: hourly budget of wakes by other pekos is spent; \
-                 the post waits for the keepalive"
+                posts = batch.len(),
+                "channel binding: the limit of wakes by other pekos is reached; holding"
             );
-        }
-        let board_only = matches!(&ctx.event, ChannelEvent::Posted { board: Some(_), .. });
-        if board_only && !asks {
+            let held = batch
+                .into_iter()
+                .map(|(ctx, line)| HeldPost {
+                    event_id: ctx.event_id,
+                    line,
+                    at: now,
+                })
+                .collect();
+            self.inner.wakes.hold(now, held);
+            self.inner.ensure_held_timer();
             return;
         }
-        if let Some(nudge) = self.nudge.get() {
-            nudge.peer_posted(&ctx.principal, &ctx.channel).await;
+        if batch.len() == 1 {
+            let (ctx, input) = batch.remove(0);
+            spawn_turn(
+                Arc::clone(&self.inner),
+                ctx,
+                format!("{input}\n{PEKO_STARTED_NOTE}"),
+            );
+            return;
         }
+        let lines: Vec<String> = batch.into_iter().map(|(_, line)| line).collect();
+        let inner = Arc::clone(&self.inner);
+        tokio::spawn(async move {
+            inner.run_compiled(compiled_message(&lines, 0, false)).await;
+        });
+    }
+
+    /// Whether this peko is the only one in the group (ADR-128 D1): a
+    /// person's post there can be for no other peko. Read from this
+    /// runtime's copy of the roster; when it cannot be read, the peko is
+    /// not taken to be the only one.
+    async fn only_peko_here(&self) -> bool {
+        let Ok(roster) = self.inner.port.participants(&self.inner.channel).await else {
+            return false;
+        };
+        let pekos = roster
+            .iter()
+            .filter(|actor| {
+                matches!(
+                    ActorRef::from_str(&actor.address),
+                    Ok(ActorRef::Principal(_))
+                )
+            })
+            .count();
+        pekos == 1
     }
 
     /// The wake filter. Returns the turn input to act on, or `None` to
@@ -1097,7 +1235,21 @@ impl GroupWakeResponder {
 #[async_trait]
 impl ChannelResponder for GroupWakeResponder {
     async fn consider_response(&self, ctx: RespondCtx) -> peko_channel::Result<()> {
-        // ADR-126 D2: a reaction wakes no one and nudges nothing.
+        let last_of_read = ctx.more == 0;
+        let considered = self.consider(ctx).await;
+        // ADR-128 D8: other pekos' posts gathered in this read of the log
+        // are acted on together, once the read is through.
+        if last_of_read {
+            self.flush_peer_posts();
+        }
+        considered
+    }
+}
+
+impl GroupWakeResponder {
+    /// Weigh one event (see the module docs' group bullet).
+    async fn consider(&self, ctx: RespondCtx) -> peko_channel::Result<()> {
+        // ADR-126 D2: a reaction wakes no one.
         if !ctx.event.is_message() {
             return Ok(());
         }
@@ -1109,8 +1261,8 @@ impl ChannelResponder for GroupWakeResponder {
             .binding_for(&self.inner.channel, &self.inner.principal)
             .await?
             .map_or(WakePolicy::Mention, |b| b.wake);
-        // ADR-120 D1: another peko's post, whatever the policy (an
-        // unwoken one still nudges the keepalive).
+        // ADR-128 D1: another peko's post wakes this one only when it
+        // addresses it.
         if self.peer_post(&ctx.event).is_some() {
             self.consider_peer_post(ctx, wake).await;
             return Ok(());
@@ -1195,16 +1347,18 @@ impl ChannelResponder for GroupWakeResponder {
                     .then(|| Self::response_trigger(&self.name, &ctx.event))
                     .flatten()
             });
-        if input.is_none() {
+        // ADR-128 D1: a person's post that addresses no one is still for
+        // the only peko in the group.
+        if input.is_none()
+            && !(Self::human_post(&ctx.event).is_some() && self.only_peko_here().await)
+        {
             return Ok(());
         }
         let input = self.input(&ctx.event).await;
         spawn_turn(Arc::clone(&self.inner), ctx, input);
         Ok(())
     }
-}
 
-impl GroupWakeResponder {
     /// The turn input for `event` (ADR-126 D6).
     async fn input(&self, event: &ChannelEvent) -> String {
         turn_input(self.inner.port.as_ref(), &self.inner.channel, event).await
@@ -1587,6 +1741,9 @@ pub(crate) struct ResponderDrivers {
     pub(crate) turn: Arc<dyn BoundTurnDriver>,
     pub(crate) group_resolver: Arc<dyn BindingResolver>,
     pub(crate) name: String,
+    /// Where the principal's wake books are kept
+    /// ([`crate::principal::group_wakes::dir_for`]).
+    pub(crate) wakes_dir: PathBuf,
 }
 
 /// Pick the responder for one (principal, channel) pair. Pure decision
@@ -1611,18 +1768,23 @@ pub(crate) fn select_responder(
     nudge: PeerNudgeSlot,
 ) -> Arc<dyn ChannelResponder> {
     match (kind, drivers) {
-        (ConversationKind::Group, Some(drivers)) => Arc::new(
-            GroupWakeResponder::new(
+        (ConversationKind::Group, Some(drivers)) => {
+            let responder = GroupWakeResponder::new(
                 channel,
                 principal,
                 drivers.name,
                 port,
                 drivers.group_resolver,
                 drivers.turn,
-            )
-            .with_nudge(nudge),
-        ),
-        _ => with_peer_nudge(Arc::new(NoopChannelResponder), port, nudge),
+                &drivers.wakes_dir,
+            );
+            responder.resume_held();
+            Arc::new(responder)
+        }
+        // A group without a driver wakes nothing, and nudges nothing
+        // (ADR-128 D1); only a DM's peer posts nudge the keepalive.
+        (ConversationKind::Group, None) => Arc::new(NoopChannelResponder),
+        (ConversationKind::Dm, _) => with_peer_nudge(Arc::new(NoopChannelResponder), port, nudge),
     }
 }
 
@@ -1894,6 +2056,7 @@ impl ChannelBindingSupervisor {
                 turn: Arc::clone(&turn) as Arc<dyn BoundTurnDriver>,
                 group_resolver: Arc::clone(&group_resolver) as Arc<dyn BindingResolver>,
                 name,
+                wakes_dir: crate::principal::group_wakes::dir_for(principal),
             });
         select_responder(
             channel.clone(),
@@ -2106,6 +2269,7 @@ mod tests {
             event,
             event_id: event_id.to_string(),
             now: std::time::SystemTime::now(),
+            more: 0,
         }
     }
 
@@ -2224,6 +2388,7 @@ mod tests {
             Arc::clone(&store) as Arc<dyn ChannelPort>,
             Arc::new(resolver),
             Arc::new(driver),
+            &tmp.path().join("wakes"),
         );
         (responder, store, channel, principal, tmp)
     }
@@ -2687,6 +2852,7 @@ mod tests {
                 calls: Arc::new(AtomicUsize::new(0)),
             }),
             name: "self".to_string(),
+            wakes_dir: test_wakes_dir(),
         }
     }
 
@@ -2700,6 +2866,16 @@ mod tests {
         let principal = pid("prin_self");
         let channel = store
             .create(&principal, CreateOpts::runtime("group"))
+            .await
+            .unwrap();
+        // A second peko, so that a person's post that addresses no one is
+        // not taken to be for this one (ADR-128 D1).
+        store
+            .invite(
+                &channel,
+                &principal,
+                &ActorRef::Principal("prin_peer".into()),
+            )
             .await
             .unwrap();
 
@@ -2736,13 +2912,15 @@ mod tests {
             .unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(calls.lock().unwrap().is_empty());
-        // A user post that mentions it MUST fire.
+        // A user post that mentions it MUST fire. (By address: a short
+        // name counts only when every peko in the roster has a known name.)
+        let mention = format!("{} hello group", tag(&store, &principal).await);
         responder
             .consider_response(respond_ctx(
                 &principal,
                 &channel,
                 "3",
-                posted("user:local:alice", "@self hello group"),
+                posted("user:local:alice", &mention),
             ))
             .await
             .unwrap();
@@ -2900,7 +3078,13 @@ mod tests {
             port,
             Arc::new(resolver),
             Arc::new(driver),
+            &test_wakes_dir(),
         )
+    }
+
+    /// A place for a test responder's wake book that no other test uses.
+    fn test_wakes_dir() -> PathBuf {
+        std::env::temp_dir().join(format!("peko-test-wakes-{}", uuid::Uuid::new_v4()))
     }
 
     /// ADR-086: the responder wrapper nudges on another principal's
@@ -3087,6 +3271,7 @@ mod tests {
                 calls: Arc::new(AtomicUsize::new(0)),
             }),
             Arc::new(driver),
+            &test_wakes_dir(),
         );
         let line = store
             .post(
@@ -3368,6 +3553,16 @@ mod tests {
             .create(&principal, CreateOpts::runtime("group"))
             .await
             .unwrap();
+        // A second peko, so that a person's post that addresses no one is
+        // not taken to be for this one (ADR-128 D1).
+        store
+            .invite(
+                &channel,
+                &principal,
+                &ActorRef::Principal("prin_peer".into()),
+            )
+            .await
+            .unwrap();
         store.bind(&channel, &principal, "session-1").await.unwrap();
         let (driver, calls) = StubDriver::new("r");
         let responder = select_responder(
@@ -3442,6 +3637,16 @@ mod tests {
         let principal = pid("prin_self");
         let channel = store
             .create(&principal, CreateOpts::runtime("group"))
+            .await
+            .unwrap();
+        // A second peko, so that a person's post that addresses no one is
+        // not taken to be for this one (ADR-128 D1).
+        store
+            .invite(
+                &channel,
+                &principal,
+                &ActorRef::Principal("prin_peer".into()),
+            )
             .await
             .unwrap();
         store.bind(&channel, &principal, "session-1").await.unwrap();
@@ -3715,6 +3920,7 @@ mod tests {
                     calls: Arc::new(AtomicUsize::new(0)),
                 }),
                 Arc::new(driver),
+                &test_wakes_dir(),
             )
         };
 
@@ -3814,18 +4020,7 @@ mod tests {
         format!("@{}", store.actor_info(&ActorRef::from(me)).await.address)
     }
 
-    /// Records the keepalive nudges another peko's posts cause.
-    struct NudgeRecorder(std::sync::Mutex<usize>);
-
-    #[async_trait]
-    impl PeerPostNudge for NudgeRecorder {
-        async fn peer_posted(&self, _principal: &PrincipalId, _channel: &ChannelId) {
-            *self.0.lock().unwrap() += 1;
-        }
-    }
-
-    /// A group with `me`, another peko and a person, its responder
-    /// nudging into a recorder.
+    /// A group with `me`, another peko and a person.
     async fn peko_group(
         driver: impl BoundTurnDriver,
     ) -> (
@@ -3834,7 +4029,6 @@ mod tests {
         ChannelId,
         PrincipalId,
         ActorRef,
-        Arc<NudgeRecorder>,
         tempfile::TempDir,
     ) {
         let resolver = StubResolver {
@@ -3849,28 +4043,33 @@ mod tests {
             .invite(&channel, &me, &ActorRef::User("alice".into()))
             .await
             .unwrap();
-        let recorder = Arc::new(NudgeRecorder(std::sync::Mutex::new(0)));
-        let slot: PeerNudgeSlot = Arc::default();
-        let _ = slot.set(Arc::clone(&recorder) as Arc<dyn PeerPostNudge>);
-        (
-            responder.with_nudge(slot),
-            store,
-            channel,
-            me,
-            peer,
-            recorder,
-            tmp,
-        )
+        (responder, store, channel, me, peer, tmp)
     }
 
-    /// ADR-120 D1: another peko's mention wakes this one, acting for that
-    /// peko, with the reply threaded onto its post; it nudges nothing.
+    /// The wake book of the responder [`peko_group`] built.
+    fn wake_book(tmp: &tempfile::TempDir, channel: &ChannelId) -> WakeBook {
+        WakeBook::open(&tmp.path().join("wakes"), channel)
+    }
+
+    /// Whether the group's log holds a post with `text`.
+    async fn posted_in(store: &Arc<ChannelStore>, channel: &ChannelId, text: &str) -> bool {
+        store
+            .peek(channel, &peko_channel::Checkpoint::default())
+            .await
+            .unwrap()
+            .iter()
+            .any(|ev| matches!(ev, ChannelEvent::Posted { text: t, .. } if t == text))
+    }
+
+    /// ADR-120 D1, ADR-128 D4: another peko's mention wakes this one,
+    /// acting for that peko. The turn is told nothing is posted unless it
+    /// posts, and its final text is not posted.
     #[tokio::test]
-    async fn a_pekos_mention_wakes_the_peko_it_names() {
+    async fn a_pekos_mention_wakes_the_peko_it_names_and_posts_nothing_by_itself() {
         let driver = CollisionStubDriver::steady("on it");
         let calls = Arc::clone(&driver.calls);
         let authors = Arc::clone(&driver.authors);
-        let (responder, store, channel, me, peer, nudges, _tmp) = peko_group(driver).await;
+        let (responder, store, channel, me, peer, tmp) = peko_group(driver).await;
 
         post_and_consider(
             &store,
@@ -3885,9 +4084,16 @@ mod tests {
         )
         .await;
 
-        assert!(eventually(|| async { calls.lock().unwrap().len() == 1 }).await);
+        // The turn, then one reminder: it wrote a reply and posted nothing.
+        assert!(eventually(|| async { calls.lock().unwrap().len() == 2 }).await);
+        assert_eq!(calls.lock().unwrap()[1].1, UNPOSTED_REMINDER);
+        assert_eq!(
+            authors.lock().unwrap()[1].as_deref(),
+            Some(peer.to_string().as_str()),
+            "the reminder keeps the turn's standing"
+        );
         let expected = format!(
-            "{}: {} can you review the parser?",
+            "{}: {} can you review the parser?\n{PEKO_STARTED_NOTE}",
             store.actor_info(&peer).await.address,
             tag(&store, &me).await
         );
@@ -3896,31 +4102,27 @@ mod tests {
             authors.lock().unwrap()[0].as_deref(),
             Some(peer.to_string().as_str())
         );
-        let (store2, channel2) = (Arc::clone(&store), channel.clone());
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(calls.lock().unwrap().len(), 2, "it is asked once only");
         assert!(
-            eventually(|| async {
-                store2
-                    .peek(&channel2, &peko_channel::Checkpoint::default())
-                    .await
-                    .unwrap()
-                    .iter()
-                    .any(|ev| {
-                        matches!(ev, ChannelEvent::Posted { text, parent, .. }
-                        if text == "on it" && parent.is_some())
-                    })
-            })
-            .await
+            !posted_in(&store, &channel, "on it").await,
+            "a turn another peko started posts only what the peko posts"
         );
-        assert_eq!(*nudges.0.lock().unwrap(), 0, "a woken post nudges nothing");
+        assert_eq!(
+            wake_book(&tmp, &channel)
+                .status(chrono::Utc::now())
+                .spent_hour,
+            1,
+            "the wake is counted"
+        );
     }
 
-    /// ADR-120 D1: a peko's post that asks nothing of this one starts no
-    /// turn and nudges the keepalive, as before.
+    /// ADR-128 D1: a peko's post that addresses no one starts no turn.
     #[tokio::test]
-    async fn a_pekos_unmentioned_post_only_nudges() {
+    async fn a_pekos_unaddressed_post_starts_nothing() {
         let driver = CollisionStubDriver::steady("x");
         let calls = Arc::clone(&driver.calls);
-        let (responder, store, channel, me, peer, nudges, _tmp) = peko_group(driver).await;
+        let (responder, store, channel, me, peer, tmp) = peko_group(driver).await;
 
         post_and_consider(
             &store,
@@ -3934,16 +4136,17 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(calls.lock().unwrap().is_empty());
-        assert_eq!(*nudges.0.lock().unwrap(), 1);
+        let status = wake_book(&tmp, &channel).status(chrono::Utc::now());
+        assert_eq!((status.spent_hour, status.held), (0, 0));
     }
 
     /// ADR-120 D1: a peko's reply to this peko's post wakes it: the
     /// answer reaches the asker without polling.
     #[tokio::test]
     async fn a_pekos_reply_to_my_post_wakes_me() {
-        let driver = CollisionStubDriver::steady("thanks");
+        let driver = CollisionStubDriver::steady("NO_REPLY");
         let calls = Arc::clone(&driver.calls);
-        let (responder, store, channel, me, peer, _nudges, _tmp) = peko_group(driver).await;
+        let (responder, store, channel, me, peer, _tmp) = peko_group(driver).await;
         let mine = store
             .post(
                 &channel,
@@ -3966,25 +4169,80 @@ mod tests {
         assert!(eventually(|| async { calls.lock().unwrap().len() == 1 }).await);
     }
 
-    /// ADR-120 D3: past [`MAX_PEKO_CHAIN`] peko posts since a person
-    /// last posted, a peko's mention waits for the keepalive; a person's
-    /// post starts a new chain.
-    #[tokio::test]
-    async fn a_long_peko_chain_waits_for_the_keepalive() {
-        let driver = CollisionStubDriver::steady("x");
+    /// ADR-128 D2: past the limit of wakes by other pekos, their posts to
+    /// this peko are held; once the owner lets it continue (or the limit
+    /// frees up) it is woken once with all of them, acting for the
+    /// conversation, and posts nothing by itself.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn past_the_wake_limit_posts_are_held_then_delivered_in_one_wake() {
+        use crate::principal::group_wakes::Limit;
+        let driver = CollisionStubDriver::steady("NO_REPLY");
         let calls = Arc::clone(&driver.calls);
-        let (responder, store, channel, me, peer, nudges, _tmp) = peko_group(driver).await;
-        let alice = ActorRef::User("alice".into());
-        store
-            .post(&channel, &alice, PostMsg::root("let's start"))
-            .await
-            .unwrap();
-        for i in 0..MAX_PEKO_CHAIN {
-            store
-                .post(&channel, &peer, PostMsg::root(format!("step {i}")))
-                .await
-                .unwrap();
+        let authors = Arc::clone(&driver.authors);
+        let (responder, store, channel, me, peer, tmp) = peko_group(driver).await;
+        let book = wake_book(&tmp, &channel);
+        book.set_limits(chrono::Utc::now(), Some(Limit::Count(1)), None);
+        let mention = tag(&store, &me).await;
+
+        for text in ["first", "second", "third"] {
+            post_and_consider(
+                &store,
+                &responder,
+                &me,
+                &channel,
+                &peer,
+                PostMsg::root(format!("{mention} {text}")),
+            )
+            .await;
         }
+        assert!(eventually(|| async { calls.lock().unwrap().len() == 1 }).await);
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(calls.lock().unwrap().len(), 1, "only the first one woke it");
+        let status = book.status(chrono::Utc::now());
+        assert_eq!((status.spent_hour, status.held), (1, 2));
+        assert!(status.asks_owner, "the owner is asked");
+
+        book.reset(chrono::Utc::now());
+        assert!(eventually(|| async { calls.lock().unwrap().len() == 2 }).await);
+        let compiled = calls.lock().unwrap()[1].1.clone();
+        assert!(compiled.contains("over your limit of wakes"), "{compiled}");
+        let (second, third) = (
+            compiled.find(&format!("{mention} second")),
+            compiled.find(&format!("{mention} third")),
+        );
+        assert!(
+            second.is_some() && second < third,
+            "oldest first: {compiled}"
+        );
+        assert!(
+            !compiled.contains(&format!("{mention} first")),
+            "{compiled}"
+        );
+        assert_eq!(
+            authors.lock().unwrap()[1],
+            None,
+            "it acts for the conversation, not one author"
+        );
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(!posted_in(&store, &channel, "NO_REPLY").await);
+        let status = book.status(chrono::Utc::now());
+        assert_eq!(
+            (status.spent_hour, status.held),
+            (1, 0),
+            "the reset forgot the first wake; delivering the held posts spent one"
+        );
+    }
+
+    /// ADR-128 D2: a person's post is never counted and never held.
+    #[tokio::test]
+    async fn a_person_reaches_a_peko_that_spent_its_wakes() {
+        use crate::principal::group_wakes::Limit;
+        let driver = CollisionStubDriver::steady("here");
+        let calls = Arc::clone(&driver.calls);
+        let (responder, store, channel, me, peer, tmp) = peko_group(driver).await;
+        let book = wake_book(&tmp, &channel);
+        book.set_limits(chrono::Utc::now(), Some(Limit::Count(0)), None);
+        let mention = tag(&store, &me).await;
 
         post_and_consider(
             &store,
@@ -3992,38 +4250,124 @@ mod tests {
             &me,
             &channel,
             &peer,
-            PostMsg::root(format!("{} your turn", tag(&store, &me).await)),
+            PostMsg::root(format!("{mention} ping")),
         )
         .await;
         tokio::time::sleep(Duration::from_millis(100)).await;
-        assert!(calls.lock().unwrap().is_empty(), "the chain is held");
-        assert_eq!(*nudges.0.lock().unwrap(), 1, "it waits for the keepalive");
+        assert!(calls.lock().unwrap().is_empty(), "the peko's post is held");
 
-        store
-            .post(&channel, &alice, PostMsg::root("keep going"))
-            .await
-            .unwrap();
         post_and_consider(
             &store,
             &responder,
             &me,
             &channel,
-            &peer,
-            PostMsg::root(format!("{} your turn", tag(&store, &me).await)),
+            &ActorRef::User("alice".into()),
+            PostMsg::root(format!("{mention} are you there?")),
         )
         .await;
         assert!(eventually(|| async { calls.lock().unwrap().len() == 1 }).await);
+        assert!(
+            eventually(|| async { posted_in(&store, &channel, "here").await }).await,
+            "a person's turn posts its final reply"
+        );
+        let status = book.status(chrono::Utc::now());
+        assert_eq!((status.spent_hour, status.held), (0, 1));
     }
 
-    /// ADR-120 D3: the hourly budget of wakes by other pekos.
-    #[tokio::test]
-    async fn the_hourly_peer_wake_budget_runs_out() {
-        let (responder, _store, _channel, _me, _peer, _nudges, _tmp) =
-            peko_group(CollisionStubDriver::steady("x")).await;
-        for _ in 0..PEER_WAKES_PER_GROUP_HOUR {
-            assert!(responder.spend_peer_wake());
+    /// ADR-128 D8: other pekos' posts to this peko found in one read of
+    /// the log (this runtime catching up) are delivered as one wake.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn posts_found_in_one_read_are_delivered_as_one_wake() {
+        let driver = CollisionStubDriver::steady("NO_REPLY");
+        let calls = Arc::clone(&driver.calls);
+        let (responder, store, channel, me, peer, tmp) = peko_group(driver).await;
+        let mention = tag(&store, &me).await;
+        let mut lines = Vec::new();
+        for text in ["one", "two", "three"] {
+            lines.push(
+                store
+                    .post(&channel, &peer, PostMsg::root(format!("{mention} {text}")))
+                    .await
+                    .unwrap(),
+            );
         }
-        assert!(!responder.spend_peer_wake());
+        let events = store
+            .peek_with_ids(&channel, &peko_channel::Checkpoint::default())
+            .await
+            .unwrap();
+        let batch: Vec<_> = events
+            .into_iter()
+            .filter(|(id, _)| lines.contains(id))
+            .collect();
+        let total = batch.len();
+        for (index, (id, event)) in batch.into_iter().enumerate() {
+            let mut ctx = respond_ctx(&me, &channel, &id, event);
+            ctx.more = total - index - 1;
+            responder.consider_response(ctx).await.unwrap();
+        }
+
+        assert!(eventually(|| async { calls.lock().unwrap().len() == 1 }).await);
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "one turn for the three posts");
+        assert!(
+            calls[0].1.contains("before you could be woken"),
+            "{}",
+            calls[0].1
+        );
+        for text in ["one", "two", "three"] {
+            assert!(calls[0].1.contains(&format!("{mention} {text}")));
+        }
+        assert_eq!(
+            wake_book(&tmp, &channel)
+                .status(chrono::Utc::now())
+                .spent_hour,
+            1
+        );
+    }
+
+    /// ADR-128 D1: a person's post that addresses no one wakes the only
+    /// peko in a group, and no peko in a group that has several.
+    #[tokio::test]
+    async fn an_unaddressed_post_by_a_person_wakes_only_a_lone_peko() {
+        let driver = CollisionStubDriver::steady("hello");
+        let calls = Arc::clone(&driver.calls);
+        let (responder, store, channel, me, _peer, _tmp) = peko_group(driver).await;
+        let alice = ActorRef::User("alice".into());
+        post_and_consider(
+            &store,
+            &responder,
+            &me,
+            &channel,
+            &alice,
+            PostMsg::root("anyone around?"),
+        )
+        .await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "two pekos: it is for neither"
+        );
+
+        let lone = CollisionStubDriver::steady("hello");
+        let lone_calls = Arc::clone(&lone.calls);
+        let resolver = StubResolver {
+            id: "session-1".into(),
+            calls: Arc::new(AtomicUsize::new(0)),
+        };
+        let (responder, store, channel, me, _tmp) =
+            bound_responder("prin_lone", lone, resolver).await;
+        store.invite(&channel, &me, &alice).await.unwrap();
+        post_and_consider(
+            &store,
+            &responder,
+            &me,
+            &channel,
+            &alice,
+            PostMsg::root("anyone around?"),
+        )
+        .await;
+        assert!(eventually(|| async { lone_calls.lock().unwrap().len() == 1 }).await);
     }
 
     /// ADR-120 D2: a post with the running turn's standing is steered
@@ -4037,7 +4381,7 @@ mod tests {
         let inbox = Arc::clone(&driver.inbox);
         *driver.running_for.lock().unwrap() = Some(ActorRef::User("alice".into()).to_string());
         active.store(1, Ordering::SeqCst);
-        let (responder, store, channel, me, _peer, _nudges, _tmp) = peko_group(driver).await;
+        let (responder, store, channel, me, _peer, _tmp) = peko_group(driver).await;
         let alice = ActorRef::User("alice".into());
 
         post_and_consider(
@@ -4086,7 +4430,7 @@ mod tests {
         let inbox = Arc::clone(&driver.inbox);
         *driver.running_for.lock().unwrap() = Some(ActorRef::User("alice".into()).to_string());
         active.store(1, Ordering::SeqCst);
-        let (responder, store, channel, me, _peer, _nudges, _tmp) = peko_group(driver).await;
+        let (responder, store, channel, me, _peer, _tmp) = peko_group(driver).await;
         let alice = ActorRef::User("alice".into());
 
         post_and_consider(
@@ -4143,7 +4487,7 @@ mod tests {
         let inbox = Arc::clone(&driver.inbox);
         *driver.running_for.lock().unwrap() = Some(ActorRef::User("bob".into()).to_string());
         active.store(1, Ordering::SeqCst);
-        let (responder, store, channel, me, _peer, _nudges, _tmp) = peko_group(driver).await;
+        let (responder, store, channel, me, _peer, _tmp) = peko_group(driver).await;
         let alice = ActorRef::User("alice".into());
 
         post_and_consider(
@@ -4208,13 +4552,13 @@ mod tests {
             .unwrap()
     }
 
-    /// ADR-126 D2: a reaction wakes no one, whatever the policy, nudges
-    /// no keepalive, and does not count toward the peko chain.
+    /// ADR-126 D2: a reaction wakes no one, whatever the policy, and
+    /// spends no wake.
     #[tokio::test]
-    async fn reactions_wake_no_one_and_nudge_nothing() {
-        let driver = CollisionStubDriver::steady("x");
+    async fn reactions_wake_no_one_and_spend_nothing() {
+        let driver = CollisionStubDriver::steady("NO_REPLY");
         let calls = Arc::clone(&driver.calls);
-        let (responder, store, channel, me, peer, nudges, _tmp) = peko_group(driver).await;
+        let (responder, store, channel, me, peer, tmp) = peko_group(driver).await;
         let alice = ActorRef::User("alice".into());
         store.bind(&channel, &me, "session-1").await.unwrap();
         store
@@ -4246,10 +4590,16 @@ mod tests {
             calls.lock().unwrap().is_empty(),
             "a reaction starts no turn"
         );
-        assert_eq!(*nudges.0.lock().unwrap(), 0, "a reaction nudges nothing");
+        assert_eq!(
+            wake_book(&tmp, &channel)
+                .status(chrono::Utc::now())
+                .spent_hour,
+            0,
+            "a reaction spends no wake"
+        );
 
-        // The chain: a person posts, then many peko reactions; another
-        // peko's mention still wakes, as the reactions count for nothing.
+        // Many peko reactions later, another peko's mention still wakes:
+        // the reactions count for nothing.
         store
             .set_wake(&channel, &me, WakePolicy::Mention)
             .await
@@ -4259,7 +4609,7 @@ mod tests {
             .await
             .unwrap();
         let root = msg_id_at(&store, &channel, &root).await;
-        for i in 0..(MAX_PEKO_CHAIN + 5) {
+        for i in 0..30 {
             let emoji = char::from_u32(0x1F600 + (i as u32 % 20))
                 .unwrap()
                 .to_string();
@@ -4291,7 +4641,7 @@ mod tests {
     async fn a_persons_reply_to_my_post_wakes_me_under_mention_not_off() {
         let driver = CollisionStubDriver::steady("on it");
         let calls = Arc::clone(&driver.calls);
-        let (responder, store, channel, me, _peer, _nudges, _tmp) = peko_group(driver).await;
+        let (responder, store, channel, me, _peer, _tmp) = peko_group(driver).await;
         let alice = ActorRef::User("alice".into());
         let mine = store
             .post(

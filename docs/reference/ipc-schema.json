@@ -3805,6 +3805,49 @@
           "type": "object"
         },
         {
+          "description": "ADR-128 D6: how often other pekos may wake `principal_name` in a\ngroup, and what waits past that. With `per_hour` / `per_day` (a\nnumber, or `none`) it sets the limits first; with `reset` it lets\nthe peko continue (what was spent is forgotten, so held posts\nreach it at once). Groups only, and only the peko's owner.\nAnswered with `ChannelWakesResult`.",
+          "properties": {
+            "channel": {
+              "type": "string"
+            },
+            "per_day": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "per_hour": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "principal_name": {
+              "type": "string"
+            },
+            "request_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "reset": {
+              "default": false,
+              "type": "boolean"
+            },
+            "type": {
+              "const": "channel_wakes",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "channel",
+            "principal_name"
+          ],
+          "type": "object"
+        },
+        {
           "properties": {
             "channel": {
               "type": "string"
@@ -10262,6 +10305,50 @@
           "x-stability": "internal"
         },
         {
+          "description": "ADR-128 D6: how often other pekos may wake `principal_name` in a\ngroup, and what waits past that. With `per_hour` / `per_day` (a\nnumber, or `none`) it sets the limits first; with `reset` it lets\nthe peko continue (what was spent is forgotten, so held posts\nreach it at once). Groups only, and only the peko's owner.\nAnswered with `ChannelWakesResult`.",
+          "properties": {
+            "channel": {
+              "type": "string"
+            },
+            "per_day": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "per_hour": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "principal_name": {
+              "type": "string"
+            },
+            "request_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "reset": {
+              "default": false,
+              "type": "boolean"
+            },
+            "type": {
+              "const": "channel_wakes",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "channel",
+            "principal_name"
+          ],
+          "type": "object",
+          "x-stability": "stable"
+        },
+        {
           "properties": {
             "channel": {
               "type": "string"
@@ -11953,6 +12040,66 @@
           ],
           "type": "object",
           "x-stability": "internal"
+        },
+        {
+          "description": "Response to `ChannelWakes` (ADR-128 D6): the limits on wakes by\nother pekos (`\"60\"`, or `\"none\"`), what is spent in the rolling\nhour and day, how many posts are held, and when the limit next has\nroom (RFC 3339; absent when it has room now or never will).",
+          "properties": {
+            "channel": {
+              "$ref": "#/$defs/ChannelId"
+            },
+            "free_at": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "held": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "per_day": {
+              "type": "string"
+            },
+            "per_hour": {
+              "type": "string"
+            },
+            "principal_name": {
+              "type": "string"
+            },
+            "request_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "spent_day": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "spent_hour": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "channel_wakes_result",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "channel",
+            "principal_name",
+            "per_hour",
+            "per_day",
+            "spent_hour",
+            "spent_day",
+            "held"
+          ],
+          "type": "object",
+          "x-stability": "stable"
         },
         {
           "properties": {
