@@ -2791,6 +2791,129 @@ mod tests {
         );
     }
 
+    /// The tail's change detection holds across the turns of one
+    /// session: the second run reloads the history from disk, finds
+    /// the first turn's `<runtime-context>` message there, and sends
+    /// only the iteration-budget line (and the clock if the minute
+    /// turned). The memory edited before a third run is sent alone,
+    /// with the update notice.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial(core)]
+    async fn loop_second_run_on_a_session_resends_only_changed_runtime_context() {
+        peko_identity::init_test_env();
+        let tooling = test_tooling().await;
+        let temp_dir = TempDir::new().unwrap();
+        let (provider, mock) = mock_provider();
+        mock.queue_text("First.");
+        mock.queue_text("Second.");
+        mock.queue_text("Third.");
+
+        let workspace = temp_dir.path().join("workspace");
+        std::fs::create_dir_all(workspace.join("kb")).unwrap();
+        std::fs::write(workspace.join("kb").join("MEMORY.md"), "remember the alamo").unwrap();
+
+        let agent_name = format!("tail-across-runs-{}", uuid::Uuid::new_v4());
+        let mut config = test_agent_config(&agent_name);
+        config.prompt = Some("You are {{agent_name}}.".to_string());
+        let agent = Arc::new(
+            Agent::new_for_test(config, temp_dir.path(), tooling.clone())
+                .await
+                .unwrap()
+                .with_principal_workspace(workspace.clone()),
+        );
+        let loop_ = AgenticLoop::new(
+            agent,
+            provider.clone(),
+            tooling.clone(),
+            std::sync::Arc::new(
+                crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(
+                    provider.clone() as std::sync::Arc<dyn peko_engine::ProviderView>,
+                ),
+            ),
+            peko_engine::CompactionConfig::default(),
+        )
+        .await;
+        let session = test_session(&agent_name, temp_dir.path()).await;
+
+        let text_of = |msg: &LlmMessage| -> String {
+            msg.content
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let tail_of = |request: usize| -> String {
+            let recorded = mock.recorded_requests();
+            let tail = recorded[request].messages.last().expect("tail present");
+            assert!(matches!(tail.role, MessageRole::User));
+            text_of(tail)
+        };
+
+        loop_
+            .run_with_resume("first turn", Vec::new(), |_| {}, &session, None)
+            .await
+            .expect("first run");
+        let first = tail_of(0);
+        assert!(first.contains("remember the alamo"), "first tail: {first}");
+
+        let history = session.load_history().await.unwrap();
+        loop_
+            .run_with_resume("second turn", Vec::new(), |_| {}, &session, Some(history))
+            .await
+            .expect("second run");
+        let second = tail_of(1);
+        let body = second
+            .strip_prefix("<runtime-context>\n")
+            .and_then(|b| b.strip_suffix("\n</runtime-context>"))
+            .unwrap_or_else(|| panic!("second tail is not a runtime-context message: {second}"));
+        for section in body.split("\n\n") {
+            assert!(
+                section.contains("Iteration 1.") || section.starts_with("Current time: "),
+                "second run resent a section: {section:?}\nwhole tail: {second}"
+            );
+        }
+        // The first turn's tail is still in front of the model.
+        let recorded = mock.recorded_requests();
+        assert!(
+            recorded[1]
+                .messages
+                .iter()
+                .any(|m| text_of(m).contains("remember the alamo")),
+            "the earlier copy must be in the second request"
+        );
+        eprintln!(
+            "tail bytes: first run {} / second run {}",
+            first.len(),
+            second.len()
+        );
+
+        std::fs::write(
+            workspace.join("kb").join("MEMORY.md"),
+            "remember the alamo, twice",
+        )
+        .unwrap();
+        let history = session.load_history().await.unwrap();
+        loop_
+            .run_with_resume("third turn", Vec::new(), |_| {}, &session, Some(history))
+            .await
+            .expect("third run");
+        let third = tail_of(2);
+        assert!(
+            third.contains("remember the alamo, twice"),
+            "third tail: {third}"
+        );
+        assert!(
+            third.contains("_Updated — replaces the previous \"memory\" section._"),
+            "third tail: {third}"
+        );
+        assert!(
+            !third.contains("## Principal identity"),
+            "third tail: {third}"
+        );
+    }
+
     /// Phase 1 contract: hook-driven sections fire in parallel. Three
     /// hooks each sleep 50ms; total must be < 150ms when parallel
     /// (serial would take ~150ms+).

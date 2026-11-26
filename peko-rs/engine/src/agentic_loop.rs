@@ -1067,11 +1067,14 @@ impl AgenticLoop {
         let mut total_usage = TokenUsage::default();
         let mut output_limit_recoveries = 0;
 
-        // Per-run change-detection state for the tail runtime-context
-        // message (see the injection site inside the loop). A section
-        // is re-injected only when its rendered text differs from the
-        // last injected value.
-        let mut runtime_ctx_state = crate::RuntimeContextState::default();
+        // Change-detection state for the tail runtime-context message
+        // (see the injection site inside the loop). A section is
+        // re-injected only when its rendered text differs from the last
+        // copy the history carries: the state starts from the
+        // `<runtime-context>` messages earlier turns of this session
+        // left in `messages`, so a new turn does not resend unchanged
+        // sections. Compaction below resets it, which resends all.
+        let mut runtime_ctx_state = crate::RuntimeContextState::from_history(&messages);
 
         // ADR-052 D5 (T2): per-run "focus directory" — the directory
         // the agent most recently touched via a path-bearing tool call
