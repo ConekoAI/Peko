@@ -135,6 +135,12 @@ struct File {
     /// Held posts no longer quoted here ([`MAX_HELD`]).
     #[serde(default)]
     dropped: usize,
+    /// When a limit held a post in the last day, one entry per post,
+    /// oldest first. Kept after the posts are delivered: it is how one
+    /// tells afterwards that an exchange between pekos was cut by the
+    /// limit and did not end by itself.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    holds: Vec<DateTime<Utc>>,
     /// When the first of the posts now held was held.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     held_since: Option<DateTime<Utc>>,
@@ -155,6 +161,7 @@ impl File {
     fn prune(&mut self, now: DateTime<Utc>) {
         let day_ago = now - Duration::days(1);
         self.spent.retain(|at| *at > day_ago);
+        self.holds.retain(|at| *at > day_ago);
     }
 
     fn spent_in_hour(&self, now: DateTime<Utc>) -> usize {
@@ -220,6 +227,8 @@ pub struct WakeStatus {
     /// Whether the owner is asked about the held posts: a limit holds
     /// them now, and the owner has not said "not now".
     pub asks_owner: bool,
+    /// Posts a limit held in the last day, delivered since or not.
+    pub held_in_day: usize,
 }
 
 impl WakeStatus {
@@ -350,6 +359,7 @@ impl WakeBook {
             for post in posts {
                 if !file.held.iter().any(|h| h.event_id == post.event_id) {
                     file.held.push(post);
+                    file.holds.push(now);
                 }
             }
             let excess = file.held.len().saturating_sub(MAX_HELD);
@@ -388,6 +398,7 @@ impl WakeBook {
             held_since: file.held_since,
             room: file.room(now),
             asks_owner: !file.held.is_empty() && !file.dismissed && file.room(now) != Room::Now,
+            held_in_day: file.holds.len(),
         }
     }
 
@@ -606,6 +617,11 @@ mod tests {
         let status = book.status(at(61));
         assert_eq!((status.held, status.spent_hour), (0, 1), "one wake spent");
         assert!(!status.asks_owner);
+        assert_eq!(
+            status.held_in_day, 3,
+            "that a limit held them stays on record after they are delivered"
+        );
+        assert_eq!(book.status(at(26 * 60)).held_in_day, 0, "for a day");
     }
 
     #[test]
