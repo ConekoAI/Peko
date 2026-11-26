@@ -30,11 +30,23 @@ use peko_tools_core::{Tool, ToolContext};
 use serde_json::json;
 
 use crate::tools::builtin::skill::body::preprocess_dynamic_context;
-use crate::tools::builtin::skill::frontmatter::{parse_yaml_frontmatter_typed, SkillFrontmatter};
-use crate::tools::builtin::skill::{append_skill_text, SharedSkillRuntime, MAX_SKILL_BODY_BYTES};
+use crate::tools::builtin::skill::frontmatter::{
+    parse_yaml_frontmatter_typed, PageAudience, SkillFrontmatter,
+};
+use crate::tools::builtin::skill::{
+    append_skill_text, SharedSkillRuntime, SkillRuntime, MAX_SKILL_BODY_BYTES,
+};
 
 /// Error variant returned when a skill's SKILL.md cannot be read or parsed.
 const SKILL_UNREADABLE: &str = "skill_unreadable";
+
+/// What a run that is not the owner's gets for an `owner` page (ADR-127
+/// D3): the page is its owner's to act on, and how to raise it.
+pub const OWNER_PAGE_ANSWER: &str = "This page is for your owner's own work: what it covers is \
+done by your owner, or by you when you work for them, not in this conversation.
+If the person you are talking with needs it, say plainly that you cannot do it here and offer \
+to raise it with your owner.
+How to raise it: Skill with name \"peko\" and page \"standing\".";
 
 /// Legacy escape marker retained for source compatibility. The renderer now
 /// scans escapes directly and never inserts this sentinel.
@@ -69,6 +81,8 @@ impl Tool for SkillTool {
     fn description(&self) -> String {
         r#"Run a skill: returns `{name, dir, body}`, its SKILL.md body with dynamic context resolved and arguments substituted. `name` is the skill's directory name; `args` are positional strings. Files the body mentions are relative to `dir` (null for a skill that ships with the runtime); its commands run in the workspace. An unknown name lists the available skills; an unreadable or invalid skill file is an error.
 
+A skill may have pages: the body then ends with the pages for you, and `pages` lists them. `page` returns `{name, page, body}`, that page's text (plain, no arguments). A page for your owner's runs read from another run returns a short answer instead.
+
 Asked to learn a skill, or to do something the same way every time: write `skills/<name>/SKILL.md` in your workspace (frontmatter `name` and `description`, which says when to use it, then the instructions) and say you did. A memory note is not a skill.
 
 Writing a SKILL.md: `$ARGUMENTS` is all args joined by spaces; `$0`, `$1`, … are positional; `$name` maps by position to the frontmatter `arguments:` list (undeclared names stay as written; `\$` keeps a placeholder literal). `!` plus a backticked command, at a line start or after whitespace, or a fenced block opened with ```!, is replaced by the command's stdout in one pass; a failure appends `stderr: …`, and a command times out after 5000 ms. Frontmatter `allowed-tools: ["git *", …]` limits commands by globs anchored to the whole command (empty: all); `shell: bash` is the only shell."#
@@ -87,6 +101,10 @@ Writing a SKILL.md: `$ARGUMENTS` is all args joined by spaces; `$0`, `$1`, … a
                     "type": "array",
                     "items": { "type": "string" },
                     "description": "Positional arguments. Maps to $0..$N and $ARGUMENTS in the body."
+                },
+                "page": {
+                    "type": "string",
+                    "description": "One of the skill's pages, by name (the skill's body lists them)"
                 }
             },
             "required": ["name"]
@@ -136,6 +154,15 @@ Writing a SKILL.md: `$ARGUMENTS` is all args joined by spaces; `$0`, `$1`, … a
             );
         };
 
+        // ADR-127 D3: pages are listed for the run's standing.
+        let owner = ctx
+            .acting_for
+            .as_ref()
+            .is_some_and(peko_tools_core::ActingFor::is_owner);
+        if let Some(page) = params.get("page").and_then(|v| v.as_str()) {
+            return read_page(self.runtime.as_ref(), &name, page, owner);
+        }
+
         let content = entry.read().map_err(|e| {
             anyhow::anyhow!("{SKILL_UNREADABLE}: failed to read SKILL.md for skill {name}: {e}")
         })?;
@@ -170,18 +197,91 @@ Writing a SKILL.md: `$ARGUMENTS` is all args joined by spaces; `$0`, `$1`, … a
             } => anyhow::bail!("Skill invocation aborted"),
         };
 
-        let rendered = substitute_args(&body, &frontmatter.arguments, &args)?;
+        let mut rendered = substitute_args(&body, &frontmatter.arguments, &args)?;
+        let pages = visible_pages(self.runtime.as_ref(), &name, owner);
+        if !pages.is_empty() {
+            append_skill_text(&mut rendered, &page_list(&name, &pages))?;
+        }
 
         // Files a skill mentions (scripts, references) live beside its
         // SKILL.md; the caller needs the directory to open them.
         // A bundled skill has no directory: `dir` is null.
         let dir = entry.dir().map(|dir| dir.display().to_string());
-        Ok(json!({
+        let mut out = json!({
             "name": frontmatter.name,
             "dir": dir,
             "body": rendered,
-        }))
+        });
+        if !pages.is_empty() {
+            out["pages"] = json!(pages.iter().map(|(page, _)| page).collect::<Vec<_>>());
+        }
+        Ok(out)
     }
+}
+
+/// The pages of `skill` a run sees, with their descriptions: all of
+/// them for an owner run, the `all` ones otherwise. A page whose
+/// frontmatter does not parse is left out.
+fn visible_pages(runtime: &dyn SkillRuntime, skill: &str, owner: bool) -> Vec<(String, String)> {
+    runtime
+        .list_pages(skill)
+        .into_iter()
+        .filter_map(|name| {
+            let (frontmatter, _) = runtime.resolve_page(skill, &name)?.parse().ok()?;
+            frontmatter
+                .audience
+                .shown_to(owner)
+                .then(|| (name, frontmatter.description.trim().to_string()))
+        })
+        .collect()
+}
+
+/// The page list a skill's body ends with.
+fn page_list(skill: &str, pages: &[(String, String)]) -> String {
+    let mut text = format!(
+        "\n\n## Pages\n\nOpen one with Skill, name \"{skill}\" and page set to its name:\n"
+    );
+    for (page, description) in pages {
+        text.push_str(&format!("- `{page}`: {description}\n"));
+    }
+    text
+}
+
+/// `Skill` with `page` (ADR-127 D2, D3).
+fn read_page(
+    runtime: &dyn SkillRuntime,
+    skill: &str,
+    page: &str,
+    owner: bool,
+) -> anyhow::Result<serde_json::Value> {
+    let Some(found) = runtime.resolve_page(skill, page) else {
+        let pages = visible_pages(runtime, skill, owner);
+        if pages.is_empty() {
+            anyhow::bail!("skill '{skill}' has no pages");
+        }
+        let names: Vec<&str> = pages.iter().map(|(name, _)| name.as_str()).collect();
+        anyhow::bail!(
+            "skill '{skill}' has no page '{page}' — its pages: {}",
+            names.join(", ")
+        );
+    };
+    let (frontmatter, body) = found
+        .parse()
+        .map_err(|e| anyhow::anyhow!("{SKILL_UNREADABLE}: page {page} of skill {skill}: {e:#}"))?;
+    if !frontmatter.audience.shown_to(owner) {
+        return Ok(json!({
+            "name": skill,
+            "page": page,
+            "audience": PageAudience::Owner.as_str(),
+            "body": OWNER_PAGE_ANSWER,
+        }));
+    }
+    Ok(json!({
+        "name": skill,
+        "page": page,
+        "audience": frontmatter.audience.as_str(),
+        "body": body,
+    }))
 }
 
 /// Substitute placeholders from the source once. Replacement values are
@@ -450,6 +550,212 @@ mod tests {
         );
         let err = tool.execute(json!({"name": "nope"})).await.unwrap_err();
         assert!(err.to_string().contains("coding-agents"), "got {err}");
+    }
+
+    fn stamped(trust: peko_tools_core::Trust) -> ToolContext {
+        let mut stamp = peko_tools_core::ActingFor::runtime();
+        stamp.trust = trust;
+        if trust != peko_tools_core::Trust::Owner {
+            stamp.actor = "visitor:local:sam".into();
+            stamp.compartment = peko_tools_core::Compartment::Conversation {
+                channel: "chan_x".into(),
+            };
+        }
+        ToolContext::default_for_tool("Skill").with_acting_for(stamp)
+    }
+
+    fn manual_tool(skills: &std::path::Path) -> SkillTool {
+        SkillTool::new(Arc::new(WorkspaceSkillRuntime::with_bundled(
+            skills.to_path_buf(),
+        )))
+    }
+
+    /// ADR-127 D1, D3: the map lists the pages for the run's standing,
+    /// and stays within 2 KB for the owner, who sees them all.
+    #[tokio::test]
+    async fn the_manual_map_lists_the_pages_for_the_runs_standing() {
+        use crate::tools::builtin::skill::MAX_SKILL_MAP_BYTES;
+        use peko_tools_core::Trust;
+        let tmp = TempDir::new().unwrap();
+        let tool = manual_tool(&tmp.path().join("skills"));
+        let owner = tool
+            .execute_with_context(json!({"name": "peko"}), &stamped(Trust::Owner))
+            .await
+            .unwrap();
+        let body = owner["body"].as_str().unwrap();
+        assert!(
+            body.len() <= MAX_SKILL_MAP_BYTES,
+            "{} bytes:\n{body}",
+            body.len()
+        );
+        assert_eq!(owner["dir"], serde_json::Value::Null);
+        assert_eq!(
+            owner["pages"],
+            json!([
+                "changing-yourself",
+                "how-you-work",
+                "improving-peko",
+                "operating-peko",
+                "seeds",
+                "standing"
+            ])
+        );
+        for page in ["`changing-yourself`", "`seeds`", "`standing`"] {
+            assert!(body.contains(page), "{page} missing:\n{body}");
+        }
+
+        let visitor = tool
+            .execute_with_context(json!({"name": "peko"}), &stamped(Trust::Untrusted))
+            .await
+            .unwrap();
+        assert_eq!(visitor["pages"], json!(["how-you-work", "standing"]));
+        let body = visitor["body"].as_str().unwrap();
+        for page in [
+            "changing-yourself",
+            "operating-peko",
+            "improving-peko",
+            "`seeds`",
+        ] {
+            assert!(!body.contains(page), "{page} shown to a visitor:\n{body}");
+        }
+        // A run with no stamp is not the owner's.
+        let bare = tool.execute(json!({"name": "peko"})).await.unwrap();
+        assert_eq!(bare["pages"], visitor["pages"]);
+    }
+
+    /// ADR-127 D3: another run asking for an owner page gets three lines
+    /// pointing at `standing`; an `all` page reads the same for everyone.
+    #[tokio::test]
+    async fn an_owner_page_asked_by_another_run_gets_the_short_answer() {
+        use peko_tools_core::Trust;
+        let tmp = TempDir::new().unwrap();
+        let tool = manual_tool(&tmp.path().join("skills"));
+        let ask = |trust| {
+            let tool = &tool;
+            async move {
+                tool.execute_with_context(
+                    json!({"name": "peko", "page": "operating-peko"}),
+                    &stamped(trust),
+                )
+                .await
+                .unwrap()
+            }
+        };
+        let visitor = ask(Trust::Untrusted).await;
+        assert_eq!(visitor["body"], OWNER_PAGE_ANSWER);
+        assert_eq!(visitor["audience"], "owner");
+        assert_eq!(OWNER_PAGE_ANSWER.lines().count(), 3);
+        assert!(OWNER_PAGE_ANSWER.contains("\"standing\""));
+        let owner = ask(Trust::Owner).await;
+        assert!(owner["body"].as_str().unwrap().contains("peko create"));
+        assert!(!owner["body"].as_str().unwrap().starts_with("---"));
+
+        let standing = tool
+            .execute_with_context(
+                json!({"name": "peko", "page": "standing"}),
+                &stamped(Trust::Untrusted),
+            )
+            .await
+            .unwrap();
+        assert_eq!(standing["audience"], "all");
+        assert!(standing["body"]
+            .as_str()
+            .unwrap()
+            .contains("Putting something to your owner"));
+    }
+
+    #[tokio::test]
+    async fn an_unknown_page_lists_the_pages_for_the_run() {
+        use peko_tools_core::Trust;
+        let tmp = TempDir::new().unwrap();
+        let tool = manual_tool(&tmp.path().join("skills"));
+        let err = tool
+            .execute_with_context(
+                json!({"name": "peko", "page": "../SKILL"}),
+                &stamped(Trust::Untrusted),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            err,
+            "skill 'peko' has no page '../SKILL' — its pages: how-you-work, standing"
+        );
+        let err = tool
+            .execute(json!({"name": "triage", "page": "x"}))
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "skill 'triage' has no pages");
+    }
+
+    /// ADR-127 D2: a page file in the workspace adds a page to the
+    /// bundled skill or replaces the one of its name; a workspace skill
+    /// of its own has only its own pages; a page past 8 KB is refused.
+    #[tokio::test]
+    async fn workspace_pages_add_to_or_replace_bundled_ones() {
+        use peko_tools_core::Trust;
+        let tmp = TempDir::new().unwrap();
+        let skills = tmp.path().join("skills");
+        let pages = skills.join("peko/pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        std::fs::write(
+            pages.join("standing.md"),
+            "---\ndescription: Ours\naudience: all\n---\nOur own standing.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            pages.join("house-rules.md"),
+            "---\ndescription: House rules\n---\nWipe your paws.\n",
+        )
+        .unwrap();
+        let tool = manual_tool(&skills);
+        let visitor = stamped(Trust::Untrusted);
+        let map = tool
+            .execute_with_context(json!({"name": "peko"}), &visitor)
+            .await
+            .unwrap();
+        assert_eq!(
+            map["pages"],
+            json!(["house-rules", "how-you-work", "standing"])
+        );
+        let page = tool
+            .execute_with_context(json!({"name": "peko", "page": "standing"}), &visitor)
+            .await
+            .unwrap();
+        assert_eq!(page["body"], "Our own standing.");
+        let page = tool
+            .execute_with_context(json!({"name": "peko", "page": "house-rules"}), &visitor)
+            .await
+            .unwrap();
+        assert_eq!(page["audience"], "all", "the default audience");
+
+        std::fs::write(
+            pages.join("huge.md"),
+            format!("---\ndescription: Huge\n---\n{}", "x".repeat(9000)),
+        )
+        .unwrap();
+        let err = tool
+            .execute_with_context(json!({"name": "peko", "page": "huge"}), &visitor)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("exceeds 8 KB"), "{err}");
+
+        // A workspace skill with its own SKILL.md replaces the bundled
+        // one entirely: only its pages.
+        std::fs::write(
+            skills.join("peko/SKILL.md"),
+            "---\nname: peko\ndescription: Ours\n---\nOur manual.\n",
+        )
+        .unwrap();
+        let ours = tool
+            .execute_with_context(json!({"name": "peko"}), &stamped(Trust::Owner))
+            .await
+            .unwrap();
+        assert_eq!(ours["pages"], json!(["house-rules", "standing"]));
+        assert!(tool
+            .execute_with_context(json!({"name": "peko", "page": "seeds"}), &visitor)
+            .await
+            .is_err());
     }
 
     fn write_skill(dir: &std::path::Path, name: &str, body: &str, args: &[&str]) {

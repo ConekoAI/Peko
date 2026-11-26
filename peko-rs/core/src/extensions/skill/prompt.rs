@@ -257,10 +257,11 @@ mod tests {
             .unwrap()
             .set_len((MAX_SKILL_FILE_BYTES + 1) as u64)
             .unwrap();
-        assert!(WorkspaceSkillsPromptHandler::new()
+        let listed = WorkspaceSkillsPromptHandler::new()
             .render(&skills_input(workspace.path()))
             .await
-            .is_none());
+            .unwrap_or_default();
+        assert!(!listed.contains("large"), "got: {listed}");
         let tool = SkillTool::new(std::sync::Arc::new(WorkspaceSkillRuntime::new(skills)));
         assert!(tool
             .execute(serde_json::json!({"name":"large"}))
@@ -320,25 +321,29 @@ mod tests {
         assert!(!text.contains("broken"), "got: {text}");
     }
 
-    #[tokio::test]
-    async fn workspace_skills_handler_passes_through_without_workspace() {
-        let temp = TempDir::new().unwrap();
-        let handler = WorkspaceSkillsPromptHandler::new();
-        let result = handler.render(&skills_input(temp.path())).await;
-        assert!(result.is_none(), "Expected no section, got {result:?}");
+    /// The line every run's catalog has for the manual (ADR-127 D3).
+    fn manual_line() -> String {
+        let manual = super::super::bundled::bundled_skill("peko").unwrap();
+        let (fm, _) = parse_yaml_frontmatter_typed::<SkillFrontmatter>(manual.text).unwrap();
+        format!("- peko: {} (ships with the runtime)", fm.description)
     }
 
     #[tokio::test]
-    async fn workspace_skills_handler_passes_through_on_empty_dir() {
+    async fn a_run_without_skills_of_its_own_is_listed_only_the_manual() {
+        let temp = TempDir::new().unwrap();
+        let handler = WorkspaceSkillsPromptHandler::new();
+        let result = handler.render(&skills_input(temp.path())).await;
+        assert_eq!(result, Some(manual_line()));
+    }
+
+    #[tokio::test]
+    async fn an_empty_skills_dir_lists_only_the_manual() {
         let temp = TempDir::new().unwrap();
         std::fs::create_dir(temp.path().join("skills")).unwrap();
 
         let handler = WorkspaceSkillsPromptHandler::new();
         let result = handler.render(&skills_input(temp.path())).await;
-        assert!(
-            result.is_none(),
-            "Expected no section for empty skills dir, got {result:?}"
-        );
+        assert_eq!(result, Some(manual_line()));
     }
 
     #[tokio::test]
@@ -487,10 +492,11 @@ mod tests {
             .await
             .expect("bundled skills listed");
         let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines.len(), 3, "got: {text}");
+        assert_eq!(lines.len(), 4, "got: {text}");
         assert!(lines[0].starts_with("- coding-agents: "), "got: {text}");
         assert!(lines[1].starts_with("- computer-use: "), "got: {text}");
-        assert!(lines[2].starts_with("- triage: "), "got: {text}");
+        assert!(lines[2].starts_with("- peko: "), "got: {text}");
+        assert!(lines[3].starts_with("- triage: "), "got: {text}");
         assert!(
             lines
                 .iter()
@@ -507,7 +513,13 @@ mod tests {
             .render(&skills_input(temp.path()))
             .await
             .unwrap();
-        assert_eq!(text, "- docker: Docker ops (skills/docker/SKILL.md)");
+        assert_eq!(
+            text,
+            format!(
+                "- docker: Docker ops (skills/docker/SKILL.md)\n{}",
+                manual_line()
+            )
+        );
     }
 
     #[tokio::test]

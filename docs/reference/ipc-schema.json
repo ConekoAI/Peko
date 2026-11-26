@@ -700,6 +700,13 @@
                 "null"
               ]
             },
+            "seed_from": {
+              "description": "Where `seed` came from, as the client says: a file path, or a\nPekoHub seed as `pekohub:<owner>/<name>@<version>`. Kept in the\nnew peko's `seed/origin.toml` and named by the seeds it exports\n(ADR-127 D10); nothing about it is checked.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "seed_path": {
               "description": "A seed file on this computer, read by the daemon, for a seed\ntoo large to travel in one request. Only an operator caller\nmay name one; ignored when `seed` is given.",
               "type": [
@@ -1545,6 +1552,40 @@
             "type",
             "request_id",
             "name"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Publish a seed on PekoHub as this computer's person (ADR-127 D10):\nthe seed is theirs, under their handle, exactly as if they had\npublished it on the website. The engine reads `path` (and\n`readme_path`), absolute files on this computer, and signs the\nrequest with this computer's key, which PekoHub takes for the\nperson it is registered to. Refused when this computer is not\nsigned in. Local callers only. Answered with `SeedPublished`.",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "readme_path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "request_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "seed_publish",
+              "type": "string"
+            },
+            "version": {
+              "description": "Like `1.0.0`; a published version never changes.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "path",
+            "version"
           ],
           "type": "object"
         },
@@ -7008,6 +7049,13 @@
                 "null"
               ]
             },
+            "seed_from": {
+              "description": "Where `seed` came from, as the client says: a file path, or a\nPekoHub seed as `pekohub:<owner>/<name>@<version>`. Kept in the\nnew peko's `seed/origin.toml` and named by the seeds it exports\n(ADR-127 D10); nothing about it is checked.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "seed_path": {
               "description": "A seed file on this computer, read by the daemon, for a seed\ntoo large to travel in one request. Only an operator caller\nmay name one; ignored when `seed` is given.",
               "type": [
@@ -7885,6 +7933,41 @@
             "type",
             "request_id",
             "name"
+          ],
+          "type": "object",
+          "x-stability": "stable"
+        },
+        {
+          "description": "Publish a seed on PekoHub as this computer's person (ADR-127 D10):\nthe seed is theirs, under their handle, exactly as if they had\npublished it on the website. The engine reads `path` (and\n`readme_path`), absolute files on this computer, and signs the\nrequest with this computer's key, which PekoHub takes for the\nperson it is registered to. Refused when this computer is not\nsigned in. Local callers only. Answered with `SeedPublished`.",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "readme_path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "request_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "seed_publish",
+              "type": "string"
+            },
+            "version": {
+              "description": "Like `1.0.0`; a published version never changes.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "path",
+            "version"
           ],
           "type": "object",
           "x-stability": "stable"
@@ -12836,6 +12919,49 @@
             "hub",
             "runtime_did",
             "account"
+          ],
+          "type": "object",
+          "x-stability": "stable"
+        },
+        {
+          "description": "`SeedPublish` succeeded: the seed is on PekoHub as\n`<owner>/<name>@<version>`.",
+          "properties": {
+            "digest": {
+              "description": "`sha256:<hex>` of the seed text.",
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "owner": {
+              "description": "The person's handle it was published under.",
+              "type": "string"
+            },
+            "request_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "seed_published",
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            },
+            "web_url": {
+              "description": "The seed's page on the PekoHub website.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "owner",
+            "name",
+            "version",
+            "digest",
+            "web_url"
           ],
           "type": "object",
           "x-stability": "stable"

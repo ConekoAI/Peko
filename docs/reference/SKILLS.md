@@ -167,6 +167,80 @@ an aborted tool error.
 
 ---
 
+## Pages — long skills read in parts (ADR-127)
+
+A skill may have pages: Markdown files under `skills/<name>/pages/`,
+each read on its own with `Skill` `page`, so a run loads what it needs and
+no more.
+
+```
+skills/house-manual/
+├── SKILL.md            # the map: what each page covers, when to open it
+└── pages/
+    ├── kitchen.md
+    └── accounts.md
+```
+
+```markdown
+---
+description: What this page covers and when to open it (one line)
+audience: owner        # or `all`, the default
+---
+
+# Accounts
+…
+```
+
+- **The map.** `Skill { "name": "house-manual" }` returns the `SKILL.md`
+  body followed by a `## Pages` list (each page's name and
+  `description`), and `pages`, their names. The list holds only the pages
+  for the run's standing: an `owner` page is listed only for runs acting
+  for the owner.
+- **A page.** `Skill { "name": "house-manual", "page": "accounts" }`
+  returns `{name, page, audience, body}`: the page's text after its
+  frontmatter. Pages are plain text: no dynamic context, no argument
+  substitution. A page is at most 8 KB, frontmatter included; a longer one
+  is an error.
+- **Audience is not protection.** A run that is not the owner's and asks
+  for an `owner` page gets three lines instead: the page is its owner's to
+  act on, and how to raise it. Put nothing in a page that would matter if
+  read: what a run may do is decided by the trust floor and
+  `ACCESS.toml`, not by what it has read.
+- **Names** are lowercase letters, digits, `-` and `_`. An unknown page
+  is an error listing the pages for the run.
+
+## Skills that ship with the runtime
+
+Four skills are compiled into the runtime (`peko-rs/core/src/resources/skills/`,
+`extensions/skill/bundled.rs`): they describe the running version, work
+offline, and are listed in the catalog as `(ships with the runtime)`.
+`peko seed` and snapshots never carry them.
+
+| Skill | Listed for | What it is |
+|---|---|---|
+| `peko` | every run | The peko's own manual (ADR-127): how it works, its standing, changing itself, operating Peko, improving Peko, seeds. Six pages, each `all` or `owner` |
+| `coding-agents` | owner runs | Handing coding work to a coding agent CLI |
+| `computer-use` | owner runs | Using the owner's computer (`Computer`) |
+| `triage` | owner runs | Diagnosing Peko itself and drafting an issue |
+
+"Listed for" is a catalog filter only: `Skill` runs any of them for any
+run that has the tool, and the trust floor refuses the tools a skill needs
+(`Bash`, `Computer`) to runs that may not have them.
+
+A workspace skill of the same name replaces a bundled one entirely, its
+pages included. A page file alone, `skills/<name>/pages/<page>.md` with no
+`SKILL.md` beside it, adds a page to the bundled skill of that name or
+replaces the one of its name, so an owner or a seed can change one page of
+the manual by file. Whoever does that takes on keeping it current.
+
+The manual's pages are kept true by tests (ADR-127 D9): every `peko …`
+command a page names is in the parser (`peko-rs/cli`) and in
+[`CLI_REFERENCE.md`](../user-guide/CLI_REFERENCE.md), every tool it names
+is a built-in, each page declares its audience and fits in 8 KB, and the
+map fits in 2 KB.
+
+---
+
 ## Authoring guidance
 
 **Write the `description` for your future self.** It is the *only*

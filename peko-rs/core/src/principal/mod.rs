@@ -55,6 +55,7 @@ pub mod routers;
 pub mod run_failure;
 pub mod secret_requests;
 pub mod seed;
+pub mod seed_origin;
 pub mod setup_status;
 // Phase 4 of `feature/multi-model-subagents` (plan:
 // `/Users/rlsn/.claude/plans/goofy-humming-wall.md`).

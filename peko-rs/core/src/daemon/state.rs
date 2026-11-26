@@ -3042,6 +3042,22 @@ impl crate::ipc::handlers::tunnel::TunnelHost for AppState {
             .await
     }
 
+    async fn publish_seed(
+        &self,
+        seed: &str,
+        version: &str,
+        readme: Option<&str>,
+    ) -> anyhow::Result<crate::tunnel::seed_publish::Published> {
+        crate::tunnel::seed_publish::publish_seed(
+            &self.path_resolver,
+            Arc::clone(&self.vault),
+            seed,
+            version,
+            readme,
+        )
+        .await
+    }
+
     async fn connection(&self) -> crate::common::types::config::Connection {
         match self.link_router().await {
             Some(router) => router.connection(),

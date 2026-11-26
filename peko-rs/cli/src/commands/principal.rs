@@ -164,12 +164,21 @@ pub enum PrincipalCommands {
     /// it on PekoHub, or start a new peko from it with
     /// `peko create <name> -s <file>`. The new peko is its own peko,
     /// not a copy.
+    ///
+    /// `--diff` shows instead how the seed would differ from the one the
+    /// peko grew from, kept in its `seed/` folder. `peko seed publish`
+    /// puts a seed file on PekoHub as you.
+    #[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
     Seed {
+        #[command(subcommand)]
+        command: Option<SeedCommands>,
+
         /// Peko name
-        name: String,
+        #[arg(required = true)]
+        name: Option<String>,
 
         /// Write the seed here (prints it when omitted)
-        #[arg(short, long)]
+        #[arg(short, long, conflicts_with = "diff")]
         output: Option<String>,
 
         /// Also carry its MCP server files (`mcp/`). Left out by
@@ -177,6 +186,11 @@ pub enum PrincipalCommands {
         /// it
         #[arg(long)]
         with_mcp: bool,
+
+        /// Show, file by file, how the peko's seed today differs from the
+        /// seed it grew from
+        #[arg(long)]
+        diff: bool,
     },
 
     /// Import a peko from a `.peko` package
@@ -373,10 +387,26 @@ pub async fn handle_principal(
         PrincipalCommands::Remove { name, yes } => remove_principal(&name, yes, paths, json).await,
         PrincipalCommands::Export { name, output } => export_principal(&name, output).await,
         PrincipalCommands::Seed {
+            command:
+                Some(SeedCommands::Publish {
+                    file,
+                    version,
+                    readme,
+                }),
+            ..
+        } => publish_seed(&file, &version, readme.as_deref(), paths, json).await,
+        PrincipalCommands::Seed {
+            name,
+            with_mcp,
+            diff,
+            ..
+        } if diff => diff_seed(&name.unwrap_or_default(), with_mcp, paths),
+        PrincipalCommands::Seed {
             name,
             output,
             with_mcp,
-        } => export_seed(&name, output, with_mcp, paths),
+            ..
+        } => export_seed(&name.unwrap_or_default(), output, with_mcp, paths),
         PrincipalCommands::Setup { name, status } => setup_principal(&name, status, paths).await,
         PrincipalCommands::Import {
             file_path,
@@ -777,6 +807,8 @@ async fn create_principal(
             model_id: plan.model_id.clone(),
             seed: plan.seed,
             seed_path: plan.seed_file,
+            // ADR-127 D10: the new peko's origin names the file.
+            seed_from: seed_path.map(absolute_from_cwd).transpose()?,
             accept_setup: plan.accept_setup,
         })
         .await?;
@@ -1390,14 +1422,39 @@ async fn export_principal(name: &str, output: Option<String>) -> Result<()> {
     }
 }
 
-/// `peko seed` — reads the peko's `peko.toml` directly; the engine
-/// need not be running.
-fn export_seed(
+/// Subcommands of `peko seed` (ADR-127 D10).
+#[derive(Subcommand)]
+pub enum SeedCommands {
+    /// Publish a seed file on PekoHub, as you
+    ///
+    /// The seed is yours: it goes under your PekoHub handle, exactly as if
+    /// you published it on the website, and only you publish its next
+    /// version. This computer must be signed in to PekoHub (`peko auth
+    /// login`); the engine signs the request with this computer's key.
+    /// Read the seed first: it is public, and others grow pekos from it.
+    #[command(disable_version_flag = true)]
+    Publish {
+        /// The seed file (`peko seed <name> -o <file>` writes one)
+        file: String,
+
+        /// Its version, like `1.0.0`. A published version never changes
+        #[arg(long)]
+        version: String,
+
+        /// A Markdown README for the seed's page: what it is for, what
+        /// changed from the seed it grew from, and why it is better
+        #[arg(long)]
+        readme: Option<String>,
+    },
+}
+
+/// The seed `peko seed` writes for `name` now, the peko's folder, and
+/// the files left out.
+fn current_seed(
     name: &str,
-    output: Option<String>,
     with_mcp: bool,
     paths: &GlobalPaths,
-) -> Result<()> {
+) -> Result<(String, std::path::PathBuf)> {
     let config_path =
         peko_core::common::paths::peko_config_path(&paths.principals_root_dir().join(name));
     let config = std::fs::read_to_string(&config_path).with_context(|| {
@@ -1406,29 +1463,151 @@ fn export_seed(
             config_path.display()
         )
     })?;
+    let root = config_path
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_default();
     // The persona a seed gave this peko lives in its conventions; the
     // exported seed carries it again.
-    let conventions = config_path
-        .parent()
-        .map(|root| root.join("kb").join("CONVENTIONS.md"))
-        .and_then(|path| std::fs::read_to_string(path).ok());
+    let conventions = std::fs::read_to_string(root.join("kb").join("CONVENTIONS.md")).ok();
     // ADR-107: its roles, skills and workflows travel in the seed; its
     // MCP server files only when asked for, since they may hold tokens.
-    let (files, skipped) = match config_path.parent() {
-        Some(root) => peko_core::principal::seed::collect_files(root, with_mcp)?,
-        None => (Vec::new(), Vec::new()),
-    };
+    let (files, skipped) = peko_core::principal::seed::collect_files(&root, with_mcp)?;
     for path in &skipped {
         eprintln!("  left out (not a plain text file a seed can carry): {path}");
     }
-    let seed =
-        peko_core::principal::seed::seed_from_workspace(&config, conventions.as_deref(), &files)?;
+    // ADR-127 D10: the seed says what this peko grew from.
+    let origin = match peko_core::principal::seed::read_origin(&root) {
+        Ok(origin) => origin.map(|(info, _)| info),
+        Err(e) => {
+            eprintln!("  not naming what it grew from: {e:#}");
+            None
+        }
+    };
+    let seed = peko_core::principal::seed::seed_from_workspace(
+        &config,
+        conventions.as_deref(),
+        &files,
+        origin.as_ref(),
+    )?;
+    Ok((seed, root))
+}
+
+/// `peko seed <name> --diff` (ADR-127 D10): how the seed it would write
+/// today differs from the one it grew from.
+fn diff_seed(name: &str, with_mcp: bool, paths: &GlobalPaths) -> Result<()> {
+    let (current, root) = current_seed(name, with_mcp, paths)?;
+    let Some((info, origin)) = peko_core::principal::seed::read_origin(&root)? else {
+        println!(
+            "'{name}' has no recorded origin: it was created before Peko kept the seed a peko \
+             grew from."
+        );
+        return Ok(());
+    };
+    let diff = peko_core::principal::seed::origin_diff(&origin, &current, with_mcp)?;
+    let from = match &info.source {
+        peko_core::principal::seed::OriginSource::Default => "the default definition".to_string(),
+        peko_core::principal::seed::OriginSource::File { path } => path.clone(),
+        peko_core::principal::seed::OriginSource::Pekohub {
+            owner,
+            name,
+            version,
+        } => format!("{owner}/{name}@{version} on PekoHub"),
+        peko_core::principal::seed::OriginSource::Client { from } => from
+            .clone()
+            .unwrap_or_else(|| "a seed sent by an app".to_string()),
+    };
+    println!(
+        "'{name}' grew from {from} ({}), on {} with Peko {}.",
+        info.digest, info.created_at, info.runtime_version
+    );
+    if diff.parts.is_empty() {
+        println!("Its seed today is the same.");
+    }
+    for part in &diff.parts {
+        println!("\n{} ({})", part.part, part.change.as_str());
+        for line in &part.lines {
+            println!("  {line}");
+        }
+    }
+    if !diff.not_exported.is_empty() {
+        println!(
+            "\nIn the seed it grew from, and never in a seed `peko seed` writes: {}",
+            diff.not_exported.join(", ")
+        );
+    }
+    if !with_mcp {
+        println!("\nMCP server files are compared only with --with-mcp.");
+    }
+    Ok(())
+}
+
+/// `peko seed publish` (ADR-127 D10): the engine publishes as this
+/// computer's person.
+async fn publish_seed(
+    file: &str,
+    version: &str,
+    readme: Option<&str>,
+    paths: &GlobalPaths,
+    json: bool,
+) -> Result<()> {
+    let path = absolute_from_cwd(file)?;
+    let text = std::fs::read_to_string(&path).with_context(|| format!("read {path}"))?;
+    peko_core::principal::seed::parse_seed(&text).with_context(|| format!("seed {path}"))?;
+    let readme_path = readme.map(absolute_from_cwd).transpose()?;
+    ensure_daemon(paths).await?;
+    let client = DaemonClient::connect().await?;
+    match client
+        .request_response(peko_core::ipc::RequestPacket::SeedPublish {
+            request_id: 0,
+            path,
+            version: version.to_string(),
+            readme_path,
+        })
+        .await?
+    {
+        ResponsePacket::SeedPublished {
+            owner,
+            name,
+            version,
+            digest,
+            web_url,
+            ..
+        } => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "owner": owner, "name": name, "version": version,
+                        "digest": digest, "webUrl": web_url,
+                    })
+                );
+            } else {
+                println!("Published {owner}/{name}@{version} as {owner} ({digest})");
+                println!("  {web_url}");
+            }
+            Ok(())
+        }
+        ResponsePacket::Error { message, .. } => anyhow::bail!(message),
+        other => anyhow::bail!("unexpected engine response to seed publish: {other:?}"),
+    }
+}
+
+/// `peko seed` — reads the peko's `peko.toml` directly; the engine
+/// need not be running.
+fn export_seed(
+    name: &str,
+    output: Option<String>,
+    with_mcp: bool,
+    paths: &GlobalPaths,
+) -> Result<()> {
+    let (seed, _) = current_seed(name, with_mcp, paths)?;
     match output {
         Some(path) => {
             let path = absolute_from_cwd(&path)?;
             std::fs::write(&path, &seed).with_context(|| format!("write {path}"))?;
             println!("Wrote the seed for '{name}' to {path}");
-            println!("  Publish it on PekoHub: https://pekohub.ai/seeds/new");
+            println!("  Publish it on PekoHub: peko seed publish {path} --version 1.0.0");
             println!("  Or grow a peko from it: peko create <name> -s {path}");
         }
         None => print!("{seed}"),
@@ -2456,6 +2635,108 @@ mod tests {
     }
 
     /// ADR-060 cleanup: the retired `-f` / `--file` compat aliases for
+    /// ADR-127 D10: `peko seed <name>` still exports, `--diff` compares,
+    /// and `peko seed publish <file> --version <v>` publishes.
+    #[test]
+    fn seed_exports_diffs_and_publishes() {
+        let parse = |args: &[&str]| Cli::try_parse_from(args).map(|cli| cli.command);
+        match parse(&["peko", "seed", "mochi", "-o", "m.toml"]).unwrap() {
+            Commands::Peko(PrincipalCommands::Seed {
+                command: None,
+                name: Some(name),
+                output: Some(_),
+                diff: false,
+                ..
+            }) => assert_eq!(name, "mochi"),
+            _ => panic!("expected an export"),
+        }
+        assert!(matches!(
+            parse(&["peko", "seed", "mochi", "--diff"]).unwrap(),
+            Commands::Peko(PrincipalCommands::Seed { diff: true, .. })
+        ));
+        match parse(&["peko", "seed", "publish", "m.toml", "--version", "1.0.0"]).unwrap() {
+            Commands::Peko(PrincipalCommands::Seed {
+                command:
+                    Some(SeedCommands::Publish {
+                        file,
+                        version,
+                        readme: None,
+                    }),
+                ..
+            }) => assert_eq!((file.as_str(), version.as_str()), ("m.toml", "1.0.0")),
+            _ => panic!("expected a publish"),
+        }
+        assert!(
+            parse(&["peko", "seed", "publish", "m.toml"]).is_err(),
+            "needs a version"
+        );
+        assert!(parse(&["peko", "seed"]).is_err(), "needs a name");
+        assert!(parse(&["peko", "seed", "mochi", "--diff", "-o", "x"]).is_err());
+    }
+
+    /// ADR-127 D9: every `peko …` command the bundled skills name is a
+    /// command of this parser, hidden ones included; a word after a
+    /// command with subcommands must be one of them, and every `--flag`
+    /// must be one of the command's.
+    #[test]
+    fn every_command_the_manual_names_parses() {
+        use clap::CommandFactory;
+        let root = Cli::command();
+        let mut checked = 0;
+        for skill in peko_core::extensions::skill::BUNDLED_SKILLS {
+            let texts = std::iter::once(skill.text).chain(skill.pages.iter().map(|p| p.text));
+            for text in texts {
+                for span in text.split('`').skip(1).step_by(2) {
+                    let Some(rest) = span.strip_prefix("peko ") else {
+                        continue;
+                    };
+                    if rest.starts_with('<') {
+                        continue; // `peko <command> --help`
+                    }
+                    let mut command = &root;
+                    let mut words = rest.split_whitespace().peekable();
+                    let mut path = String::from("peko");
+                    // Subcommands, as far as they go.
+                    while let Some(word) = words.peek() {
+                        if !command.has_subcommands() {
+                            break;
+                        }
+                        if word.starts_with(['<', '-', '"']) {
+                            break;
+                        }
+                        let found = command.find_subcommand(word);
+                        if found.is_none() && command.get_name() == "seed" {
+                            break; // `peko seed <name>`
+                        }
+                        command = found.unwrap_or_else(|| {
+                            panic!(
+                                "{}: `{span}`: `{word}` is not a command of `{path}`",
+                                skill.name
+                            )
+                        });
+                        path = format!("{path} {word}");
+                        words.next();
+                    }
+                    for word in words {
+                        let Some(flag) = word.strip_prefix("--").filter(|f| *f != "help") else {
+                            continue;
+                        };
+                        assert!(
+                            command
+                                .get_arguments()
+                                .any(|arg| arg.get_long() == Some(flag)),
+                            "{}: `{span}`: `--{flag}` is not a flag of `{path}`",
+                            skill.name
+                        );
+                    }
+                    assert!(path != "peko", "{}: `{span}` names no command", skill.name);
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 20, "only {checked} commands");
+    }
+
     /// `--seed` no longer parse; only `-s` / `--seed` remain.
     #[test]
     fn principal_create_seed_aliases_removed() {

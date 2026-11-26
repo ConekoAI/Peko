@@ -1106,7 +1106,11 @@ mod tooling_install_tests {
             assert!(skills.contains(own));
             assert!(!skills.contains(foreign));
             assert_eq!(
-                skills.lines().filter(|line| line.starts_with("- ")).count(),
+                skills
+                    .lines()
+                    .filter(|line| line.starts_with("- "))
+                    .filter(|line| !line.ends_with("(ships with the runtime)"))
+                    .count(),
                 1,
                 "providers must register once across principals and repeated turns"
             );

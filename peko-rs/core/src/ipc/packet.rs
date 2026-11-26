@@ -171,6 +171,12 @@ pub enum RequestPacket {
         /// may name one; ignored when `seed` is given.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seed_path: Option<String>,
+        /// Where `seed` came from, as the client says: a file path, or a
+        /// PekoHub seed as `pekohub:<owner>/<name>@<version>`. Kept in the
+        /// new peko's `seed/origin.toml` and named by the seeds it exports
+        /// (ADR-127 D10); nothing about it is checked.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seed_from: Option<String>,
         /// The caller showed the seed's setup steps to the person and
         /// they accepted them (ADR-104). A seed that carries setup steps
         /// is refused with `[setup_not_accepted]` and the steps unless
@@ -521,6 +527,23 @@ pub enum RequestPacket {
     /// then reports it as `person_name`.
     #[serde(rename = "person_name_set")]
     PersonNameSet { request_id: u64, name: String },
+
+    /// Publish a seed on PekoHub as this computer's person (ADR-127 D10):
+    /// the seed is theirs, under their handle, exactly as if they had
+    /// published it on the website. The engine reads `path` (and
+    /// `readme_path`), absolute files on this computer, and signs the
+    /// request with this computer's key, which PekoHub takes for the
+    /// person it is registered to. Refused when this computer is not
+    /// signed in. Local callers only. Answered with `SeedPublished`.
+    #[serde(rename = "seed_publish")]
+    SeedPublish {
+        request_id: u64,
+        path: String,
+        /// Like `1.0.0`; a published version never changes.
+        version: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        readme_path: Option<String>,
+    },
 
     // ── Tunnel (ADR-035) ──
     #[serde(rename = "tunnel_stop")]
@@ -1561,6 +1584,7 @@ impl RequestPacket {
             | Self::RuntimeRegister { request_id, .. }
             | Self::RuntimeUnregister { request_id, .. }
             | Self::PersonNameSet { request_id, .. }
+            | Self::SeedPublish { request_id, .. }
             | Self::Status { request_id }
             | Self::InstanceSetStatus { request_id, .. }
             | Self::InstanceSetExposure { request_id, .. }
@@ -2874,6 +2898,21 @@ pub enum ResponsePacket {
         account: String,
     },
 
+    /// `SeedPublish` succeeded: the seed is on PekoHub as
+    /// `<owner>/<name>@<version>`.
+    #[serde(rename = "seed_published")]
+    SeedPublished {
+        request_id: u64,
+        /// The person's handle it was published under.
+        owner: String,
+        name: String,
+        version: String,
+        /// `sha256:<hex>` of the seed text.
+        digest: String,
+        /// The seed's page on the PekoHub website.
+        web_url: String,
+    },
+
     // ── Tunnel (ADR-035) ──
     #[serde(rename = "tunnel_status")]
     TunnelStatus {
@@ -4185,6 +4224,7 @@ impl ResponsePacket {
             | Self::PrincipalRegistrationUpdated { request_id, .. }
             | Self::TunnelStatus { request_id, .. }
             | Self::RuntimeRegistered { request_id, .. }
+            | Self::SeedPublished { request_id, .. }
             | Self::Status { request_id, .. }
             | Self::QuotaStatus { request_id, .. }
             | Self::PrincipalInviteMinted { request_id, .. }
@@ -4305,6 +4345,7 @@ impl ResponsePacket {
             Self::PrincipalPermissions { .. } => "PrincipalPermissions",
             Self::TunnelStatus { .. } => "TunnelStatus",
             Self::RuntimeRegistered { .. } => "RuntimeRegistered",
+            Self::SeedPublished { .. } => "SeedPublished",
             Self::Status { .. } => "Status",
             Self::QuotaStatus { .. } => "QuotaStatus",
             Self::PrincipalInviteMinted { .. } => "PrincipalInviteMinted",
@@ -5119,6 +5160,7 @@ mod tests {
             model_id: "gpt-4o".to_string(),
             seed: Some("name = \"ada\"\n".to_string()),
             seed_path: None,
+            seed_from: Some("pekohub:maya/ada@1.0.0".to_string()),
             accept_setup: true,
         };
         let bytes = req.to_bytes().unwrap();
@@ -5153,6 +5195,7 @@ mod tests {
             model_id: "claude-sonnet-4-5".to_string(),
             seed: None,
             seed_path: None,
+            seed_from: None,
             accept_setup: false,
         };
         let bytes = minimal.to_bytes().unwrap();

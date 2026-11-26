@@ -910,3 +910,38 @@ async fn failed_calls_are_tool_errors() {
         h.call(tool, params).await.err(expected);
     }
 }
+
+/// ADR-127 D9: every tool a bundled skill or page names (a `` `Name` ``
+/// span in CamelCase) is a built-in tool, so a renamed tool fails the
+/// build in the PR that renames it.
+#[test]
+fn every_tool_the_bundled_skills_name_is_a_builtin() {
+    // Backticked CamelCase words that are markers, not tools.
+    const NOT_TOOLS: &[&str] = &["Retracted"];
+    let names: HashSet<String> = tools().iter().map(|tool| tool.name().to_string()).collect();
+    let is_tool_like = |word: &str| {
+        word.len() > 2
+            && word.starts_with(|c: char| c.is_ascii_uppercase())
+            && word.chars().all(|c| c.is_ascii_alphabetic())
+            && word.chars().any(|c| c.is_ascii_lowercase())
+    };
+    let mut checked = 0;
+    for skill in crate::extensions::skill::BUNDLED_SKILLS {
+        let texts = std::iter::once((skill.name, skill.text))
+            .chain(skill.pages.iter().map(|page| (page.name, page.text)));
+        for (name, text) in texts {
+            for span in text.split('`').skip(1).step_by(2) {
+                if !is_tool_like(span) || NOT_TOOLS.contains(&span) {
+                    continue;
+                }
+                assert!(
+                    names.contains(span as &str),
+                    "{}/{name} names `{span}`, which is not a built-in tool",
+                    skill.name
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 20, "only {checked} tool names found");
+}

@@ -260,10 +260,13 @@ Load a SKILL.md body, resolve dynamic shell context, and substitute arguments.
 |---|---|---|---|
 | `name` | string | yes | — |
 | `args` | string[] | no | — |
+| `page` | string | no | one of the skill's pages (ADR-127 D2) |
 
 args is string[]. The body supports $ARGUMENTS, positional $0/$1/etc., named frontmatter arguments, and dynamic shell context. Presence in the principal workspace determines availability; there is no principal capability allowlist.
 
-Skills that ship with the runtime (`peko-rs/core/src/resources/skills/`) sit beneath the workspace's: a workspace skill of the same name wins. A bundled skill returns `dir: null`, since it has no files beside it. The catalog lists one as `(ships with the runtime)`, and an owner-only one (`coding-agents`, `triage`) only for runs acting for the owner.
+Skills that ship with the runtime (`peko-rs/core/src/resources/skills/`) sit beneath the workspace's: a workspace skill of the same name wins. A bundled skill returns `dir: null`, since it has no files beside it. The catalog lists one as `(ships with the runtime)`, and an owner-only one (`coding-agents`, `computer-use`, `triage`) only for runs acting for the owner; `Skill` itself does not check `owner_only`. `peko`, the peko's own manual (ADR-127), is listed for every run.
+
+Pages (ADR-127 D2, D3; [format](SKILLS.md#pages--long-skills-read-in-parts-adr-127)): a skill with pages ends its body with a `## Pages` list and returns `pages`, both holding only the pages for the run's standing (`audience: owner` pages for owner runs only). `page` returns `{name, page, audience, body}`, the page's plain text (no dynamic context or arguments, at most 8 KB). A run that is not the owner's asking for an `owner` page gets a three-line answer pointing at the `standing` page instead. A workspace page `skills/<name>/pages/<page>.md` adds to or replaces a bundled skill's page; a workspace skill with its own `SKILL.md` has only its own pages. An unknown page is an error listing the run's pages.
 
 ## Session storage
 
