@@ -45,6 +45,53 @@ pub const HOT_CONVENTIONS: &str = "kb/CONVENTIONS.md";
 /// owner. `kb/index.md` is a map of the tree and carries no claims.
 pub const SOURCED_HOT_FILES: &[&str] = &[HOT_MEMORY, HOT_CONVENTIONS];
 
+/// The tree of memory files, relative to the workspace (ADR-129). Every
+/// prompt lists each file's description, so a scheduled owner run's
+/// write there is screened like a write to the hot files.
+pub const MEMORY_FILES_DIR: &str = "kb/memory";
+
+/// Whether `relative` (a workspace-relative path) is a memory file: a
+/// `.md` file anywhere under [`MEMORY_FILES_DIR`].
+#[must_use]
+pub fn is_memory_file(relative: &str) -> bool {
+    relative
+        .strip_prefix(MEMORY_FILES_DIR)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .is_some_and(|rest| rest.ends_with(".md"))
+}
+
+/// Whether a scheduled owner run's write to `relative` is screened: one
+/// of [`SOURCED_HOT_FILES`], or a memory file.
+#[must_use]
+pub fn is_sourced(relative: &str) -> bool {
+    SOURCED_HOT_FILES.contains(&relative) || is_memory_file(relative)
+}
+
+/// A memory file as the one entry it is screened as (ADR-129 D4): its
+/// description and body on one line, ending with its frontmatter
+/// `source` as a `(source: …)` group. Empty for a file with neither
+/// description nor body, which adds nothing.
+///
+/// The lead keeps the line from reading as a heading or a list item,
+/// which [`entries`] would drop or split.
+#[must_use]
+pub fn memory_file_entry(relative: &str, text: &str) -> String {
+    use peko_engine::prompt::memory::{frontmatter_body, frontmatter_field};
+    let description = frontmatter_field(text, "description").unwrap_or_default();
+    let said = flatten(&format!("{description} {}", frontmatter_body(text)));
+    if said.is_empty() {
+        return String::new();
+    }
+    let source = frontmatter_field(text, "source")
+        .or_else(|| frontmatter_field(text, "sources"))
+        .map(str::trim)
+        .filter(|source| !source.is_empty());
+    match source {
+        Some(source) => format!("Memory {relative}: {said} (source: {source})"),
+        None => format!("Memory {relative}: {said}"),
+    }
+}
+
 /// Job id of the runtime-seeded nightly memory pass.
 pub const MEMORY_JOB_ID: &str = "memory";
 
@@ -687,6 +734,45 @@ pub fn channel_of(source: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ADR-129 D4: a memory file is screened as one entry.
+    #[test]
+    fn a_memory_file_is_one_sourced_entry() {
+        assert!(is_memory_file("kb/memory/a.md"));
+        assert!(is_memory_file("kb/memory/shop/hours.md"));
+        assert!(!is_memory_file("kb/memory"));
+        assert!(!is_memory_file("kb/memory/a.txt"));
+        assert!(!is_memory_file("kb/memoryx/a.md"));
+        assert!(!is_memory_file("kb/people/a.md"));
+        assert!(is_sourced(HOT_MEMORY) && is_sourced(HOT_CONVENTIONS));
+        assert!(is_sourced("kb/memory/a.md") && !is_sourced("kb/index.md"));
+
+        let text = "---\ndescription: When to order clay\nsource: chan_1#4, #5\n---\n\
+                    # Clay\n\n- by Wednesday\n\nSecond paragraph.\n";
+        let entry = memory_file_entry("kb/memory/clay.md", text);
+        assert_eq!(
+            entry,
+            "Memory kb/memory/clay.md: When to order clay # Clay - by Wednesday \
+             Second paragraph. (source: chan_1#4, #5)"
+        );
+        // One entry whatever the body's shape, with the frontmatter's sources.
+        assert_eq!(entries(&entry), std::slice::from_ref(&entry));
+        assert_eq!(sources(&entry), ["chan_1#4", "chan_1#5"]);
+
+        // No source: the entry is uncited, so the screen holds it.
+        let bare = memory_file_entry("kb/memory/x.md", "# Only a heading\n");
+        assert_eq!(entries(&bare).len(), 1);
+        assert!(sources(&bare).is_empty());
+        let held = screen("", &bare, &HashMap::new());
+        assert_eq!(held.len(), 1);
+
+        // Nothing said: nothing to screen. The same text again: nothing added.
+        assert_eq!(
+            memory_file_entry("kb/memory/x.md", "---\nsource: a\n---\n"),
+            ""
+        );
+        assert!(screen(&entry, &entry, &HashMap::new()).is_empty());
+    }
 
     fn guest() -> Compartment {
         Compartment::Conversation {

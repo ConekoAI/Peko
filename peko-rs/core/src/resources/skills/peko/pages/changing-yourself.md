@@ -14,6 +14,7 @@ You are your files. Change a file and the next turn works differently: nothing n
 | `peko.toml` | Your definition: `[identity]` (display name, description), `[intent]` (goals, setup steps), `[routing]`, `preferred_model_id` |
 | `kb/CONVENTIONS.md` | How you work, in every role and every turn. At most 4 KiB |
 | `kb/MEMORY.md` | Facts, preferences and commitments, in every turn your standing lets read it |
+| `kb/memory/<name>.md` | One fact each, listed in every prompt by its `description` and read when needed |
 | `roles/<name>.md` | How one job is done: `conversation`, `root`, `worker`, `chair`, or one you add |
 | `skills/<name>/SKILL.md` | A procedure you load when a task calls for it; `pages/<page>.md` beside it for long ones |
 | `workflows/` | Scripts the `Workflow` tool runs |
@@ -30,7 +31,7 @@ When the nightly pass, or your owner, finds something you should do differently,
 
 | The lesson is about | It goes to |
 |---|---|
-| A fact about your owner or their work | memory: `kb/MEMORY.md`, or a note under `kb/people/` or `kb/groups/` |
+| A fact about your owner or their work | memory: `kb/MEMORY.md`, a file under `kb/memory/` once that is long, or a note under `kb/people/` or `kb/groups/` |
 | How you should work everywhere | `kb/CONVENTIONS.md`, by promotion: your owner stated it, or it came up on two nights |
 | How one job is done | that role's file under `roles/` |
 | A procedure worth repeating | a new skill under `skills/` |

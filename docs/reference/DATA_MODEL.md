@@ -309,6 +309,20 @@ registered to, while the computer is on their device list; the answer is
   (uncited, unknown-source and reviewer-held lines under the run's own
   compartment, `internal`). Runtime-written only; at most 50 per
   compartment.
+- `<workspace>/kb/memory/**/<name>.md` (ADR-129): one memory per file, in any
+  directory under `kb/memory/`. The file opens with a frontmatter block:
+  `description` (one line, shown in every prompt, cut at 200 bytes) and
+  `source` (what a `(source: …)` group holds in `kb/MEMORY.md`,
+  comma-separated). The body is the fact. Every render lists each file that
+  has a `description` as `- <name>: <description>`, `<name>` being the path
+  under `kb/memory/` without `.md`, in a `## Your memories (kb/memory/)`
+  section of the `<runtime-context>` tail message, for runs that may read the
+  file. The lines are capped at 8 KiB; past that the most recently changed
+  files are listed and the rest counted. The tree is protected (only owner
+  runs write it), and a scheduled owner run's write is screened as one entry
+  with the frontmatter's sources (ADR-080 D4, ADR-085). Symbolic links are
+  not followed; depth is limited to 4 directories. The scaffold seeds
+  `kb/memory/README.md`, which has no `description` and is not listed.
 - `<workspace>/kb/dreams/YYYY-MM-DD.md` (ADR-080 D7): the nightly memory pass's
   reflections on how the principal worked, one file per night, each lesson
   ending with `(source: …)`. Cold: never injected into a prompt. Protected (only

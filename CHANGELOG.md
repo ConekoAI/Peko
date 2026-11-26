@@ -6,6 +6,32 @@ All notable changes to Peko.
 
 ### Added
 
+- **A memory can be a file, and every prompt lists them (ADR-129).** A peko
+  keeps one fact per file under `kb/memory/` (in directories of its own if
+  it likes), each with a `description` and a `source` in its frontmatter.
+  Every prompt carries one line per memory, `- <name>: <description>`, built
+  from the files on each render, so a memory written mid-turn is listed on
+  the next model call and nothing is kept by hand. The peko reads a file
+  when its line bears on the turn, and is told to `Grep` `kb/` for the rest.
+  - The list is a section of the `<runtime-context>` tail message. After
+    its first copy in a run, a change sends only the changed lines.
+  - It is capped at 8 KiB (about 80 memories). Past that it lists the most
+    recently changed ones and says how many it left out.
+  - A run is listed a memory only when it may read the file: a visitor sees
+    the ones under a path the owner listed in `ACCESS.toml`, and no count of
+    the rest.
+  - `kb/memory/` is a protected tree. A scheduled run's memory file is
+    screened as one entry with its frontmatter sources, like a line of
+    `kb/MEMORY.md` (ADR-080 D4, ADR-085), and held whole in `kb/inbox/`
+    when it does not pass.
+  - `kb/MEMORY.md` stays for what every turn needs. The nightly pass keeps
+    facts there while it is under 8 KiB and moves the least needed to files
+    past that. Its guaranteed share of the 32 KiB hot budget is now 8 KiB
+    (was 16 KiB); it still gets whatever the other hot files leave.
+  - Nothing is converted for existing pekos. New ones get
+    `kb/memory/README.md`; the `root`, `conversation` and `chair` roles, the
+    nightly brief and the `peko` manual describe the directory.
+
 - **The owner sees and changes how often other pekos may wake a peko
   (ADR-128 D6).** `peko channel wakes <group> --peko <name>` shows the two
   limits, what is spent and what is held; `--hour` and `--day` set them (a

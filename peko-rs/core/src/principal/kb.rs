@@ -57,6 +57,7 @@ pub const PEOPLE_README_MD: &str = "people/README.md";
 pub const GROUPS_README_MD: &str = "groups/README.md";
 pub const ROLES_README_MD: &str = "roles/README.md";
 pub const DREAMS_README_MD: &str = "dreams/README.md";
+pub const MEMORY_README_MD: &str = "memory/README.md";
 
 const MEMORY_BODY: &str = include_str!("../resources/kb/MEMORY.md");
 const INDEX_BODY: &str = include_str!("../resources/kb/index.md");
@@ -66,11 +67,12 @@ const PEOPLE_README_BODY: &str = include_str!("../resources/kb/people/README.md"
 const GROUPS_README_BODY: &str = include_str!("../resources/kb/groups/README.md");
 const ROLES_README_BODY: &str = include_str!("../resources/kb/roles/README.md");
 const DREAMS_README_BODY: &str = include_str!("../resources/kb/dreams/README.md");
+const MEMORY_README_BODY: &str = include_str!("../resources/kb/memory/README.md");
 
 /// Seed the ADR-055 kb scaffold under `workspace`.
 ///
 /// Creates `kb/`, `kb/people/`, `kb/groups/`, `kb/roles/`, `kb/journal/`,
-/// `kb/dreams/` and writes the eight convention files — each ONLY when the file does
+/// `kb/dreams/` and writes the nine convention files — each ONLY when the file does
 /// not already exist (an existing file is never overwritten; create-once
 /// semantics, matching `/tmp` + `/trash` seeding). Safe to call
 /// repeatedly. Default bodies live in `resources/kb/` (not inline) —
@@ -85,6 +87,7 @@ pub fn seed_kb_scaffold(workspace: &Path) -> Result<Vec<String>> {
     std::fs::create_dir_all(kb.join("roles"))?;
     std::fs::create_dir_all(kb.join("journal"))?;
     std::fs::create_dir_all(kb.join("dreams"))?;
+    std::fs::create_dir_all(kb.join("memory"))?;
 
     let mut created = Vec::new();
     for (relative, body) in [
@@ -96,6 +99,7 @@ pub fn seed_kb_scaffold(workspace: &Path) -> Result<Vec<String>> {
         (GROUPS_README_MD, GROUPS_README_BODY),
         (ROLES_README_MD, ROLES_README_BODY),
         (DREAMS_README_MD, DREAMS_README_BODY),
+        (MEMORY_README_MD, MEMORY_README_BODY),
     ] {
         let path = kb.join(relative);
         if path.exists() {
@@ -189,7 +193,7 @@ mod tests {
     }
 
     #[test]
-    fn seeds_all_eight_files_and_directories() {
+    fn seeds_all_nine_files_and_directories() {
         let ws = temp_workspace();
         let created = seed_kb_scaffold(ws.path()).unwrap();
         assert_eq!(
@@ -201,6 +205,7 @@ mod tests {
                 "kb/dreams/README.md",
                 "kb/groups/README.md",
                 "kb/index.md",
+                "kb/memory/README.md",
                 "kb/people/README.md",
                 "kb/roles/README.md",
             ]
@@ -241,7 +246,7 @@ mod tests {
         std::fs::write(ws.path().join("kb").join("MEMORY.md"), "curated").unwrap();
 
         let created = seed_kb_scaffold(ws.path()).unwrap();
-        assert_eq!(created.len(), 7, "only the seven missing files seed");
+        assert_eq!(created.len(), 8, "only the eight missing files seed");
         assert!(!created.contains(&"kb/MEMORY.md".to_string()));
         assert_eq!(
             std::fs::read_to_string(ws.path().join("kb").join("MEMORY.md")).unwrap(),

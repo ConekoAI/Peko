@@ -493,6 +493,73 @@ mod tests {
         assert_eq!(none, "restricted");
     }
 
+    /// ADR-129 D2: a visitor's prompt lists a memory exactly when its
+    /// `Read` of that file would be allowed. Both sides are asked here,
+    /// so the list cannot drift from the file tools.
+    #[tokio::test]
+    async fn a_visitor_is_listed_the_memories_it_may_read_and_no_others() {
+        use crate::security::floor;
+        use crate::tools::prompt_sections::PromptSectionProvider as _;
+        use peko_engine::prompt::memory::HotKb;
+        let ws = tempfile::tempdir().unwrap();
+        let memories = [
+            "private",
+            "shop/hours",
+            "shop/prices",
+            "shopping",
+            "deep/a/b",
+        ];
+        for name in memories {
+            let path = ws.path().join("kb/memory").join(format!("{name}.md"));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "---\ndescription: d\n---\nbody\n").unwrap();
+        }
+        let visitor = stamp(Trust::Untrusted);
+        let keys = crate::security::actor_keys(None);
+        for (rule, expected) in [
+            ("", vec![]),
+            (
+                "read = [\"kb/memory/shop\"]",
+                vec!["shop/hours", "shop/prices"],
+            ),
+            (
+                "read = [\"kb/memory/private.md\", \"kb/memory/deep\"]",
+                vec!["deep/a/b", "private"],
+            ),
+            ("write = [\"kb/memory/shop/hours.md\"]", vec!["shop/hours"]),
+            ("read = [\"kb\"]", {
+                let mut all = memories.to_vec();
+                all.sort_unstable();
+                all
+            }),
+        ] {
+            std::fs::write(
+                ws.path().join(access::ACCESS_FILE),
+                format!("[contact.\"user:hub:alice\"]\n{rule}\n"),
+            )
+            .unwrap();
+            let scope = KbScopePromptHandler
+                .render(&input(ws.path(), visitor.clone()))
+                .await
+                .unwrap();
+            let hot = HotKb::load(ws.path(), "", "").restricted_to(&scope);
+            let listed: Vec<&str> = hot.memories.iter().map(|m| m.name.as_str()).collect();
+            assert_eq!(listed, expected, "rule {rule:?}");
+
+            let reach = access::reach_by_keys(ws.path(), &visitor, &*keys).unwrap();
+            let root = floor::resolve(ws.path());
+            for name in memories {
+                let file = floor::resolve(&ws.path().join("kb/memory").join(format!("{name}.md")));
+                let readable = reach.path_refusal(&root, &file, false).is_none();
+                assert_eq!(
+                    listed.contains(&name),
+                    readable,
+                    "rule {rule:?}, memory {name}"
+                );
+            }
+        }
+    }
+
     /// ADR-120 D5: a turn another peko started in a group is told it may
     /// hand work that needs the owner's access up to them.
     #[test]

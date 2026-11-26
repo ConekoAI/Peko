@@ -294,6 +294,11 @@ impl PromptRenderer {
         {
             sections.push(section);
         }
+        // ADR-129 D2: one line per memory file. After its first copy
+        // in a run, a change sends only the changed lines.
+        if let Some(section) = state.take_changed_memory_list(format_memory_list_section(&hot)) {
+            sections.push(section);
+        }
         if let Some(section) = state.take_changed(
             SectionSlot::BindingNote,
             format_binding_note_section(ctx, &hot),
@@ -399,6 +404,7 @@ enum SectionSlot {
     Memory,
     Conventions,
     KbIndex,
+    MemoryList,
     BindingNote,
     RoleNote,
     ProjectContext,
@@ -441,6 +447,7 @@ impl SectionSlot {
             SectionSlot::Memory => "memory",
             SectionSlot::Conventions => "conventions",
             SectionSlot::KbIndex => "kb index",
+            SectionSlot::MemoryList => "memories",
             SectionSlot::BindingNote => "binding note",
             SectionSlot::RoleNote => "role note",
             SectionSlot::ProjectContext => "project instructions",
@@ -470,6 +477,10 @@ impl SectionSlot {
             SectionSlot::Memory => "## Your long-term memory (MEMORY.md)\n",
             SectionSlot::Conventions => "## Conventions (kb/CONVENTIONS.md)\n",
             SectionSlot::KbIndex => "## Knowledge base index (kb/index.md)\n",
+            // No newline: the changed-lines form shares this head, so a
+            // later run finds it as the newest copy and sends the list
+            // whole ([`RuntimeContextState::take_changed_memory_list`]).
+            SectionSlot::MemoryList => MEMORY_LIST_HEAD,
             SectionSlot::BindingNote => "## Group conventions (",
             SectionSlot::RoleNote => "## Your standing notes (",
             SectionSlot::ProjectContext => "## Project instructions (",
@@ -514,6 +525,7 @@ pub struct RuntimeContextState {
     memory: Option<String>,
     conventions: Option<String>,
     kb_index: Option<String>,
+    memory_list: Option<String>,
     binding_note: Option<String>,
     role_note: Option<String>,
     project_context: Option<String>,
@@ -579,6 +591,7 @@ impl RuntimeContextState {
             SectionSlot::Memory => &mut self.memory,
             SectionSlot::Conventions => &mut self.conventions,
             SectionSlot::KbIndex => &mut self.kb_index,
+            SectionSlot::MemoryList => &mut self.memory_list,
             SectionSlot::BindingNote => &mut self.binding_note,
             SectionSlot::RoleNote => &mut self.role_note,
             SectionSlot::ProjectContext => &mut self.project_context,
@@ -620,6 +633,38 @@ impl RuntimeContextState {
         }
         let cell = self.cell_mut(slot);
         take_changed_cell(cell, rendered, slot.label(), slot.notice_on_update())
+    }
+
+    /// Compare-and-record the memory list (ADR-129 D2). As
+    /// [`Self::take_changed`], except that once this run's history holds
+    /// the whole list, a change sends only the lines that changed: the
+    /// nightly pass writes several memories in one run, and resending
+    /// the list after each would fill its history with copies. The
+    /// whole list is sent when that is no longer than the changes.
+    fn take_changed_memory_list(&mut self, rendered: String) -> Option<String> {
+        let slot = SectionSlot::MemoryList;
+        if self.memory_list.is_none() && !self.carried.is_empty() {
+            self.memory_list =
+                latest_carried_copy(&self.carried, slot.head(), slot.label(), &rendered);
+        }
+        let changes = match self.memory_list.as_deref() {
+            Some(previous)
+                if !previous.is_empty()
+                    && previous != CARRIED_OTHER
+                    && !rendered.is_empty()
+                    && previous != rendered =>
+            {
+                memory_list_changes(previous, &rendered)
+            }
+            _ => None,
+        };
+        match changes {
+            Some(changes) if changes.len() < rendered.len() => {
+                self.memory_list = Some(rendered);
+                Some(changes)
+            }
+            _ => take_changed_cell(&mut self.memory_list, rendered, slot.label(), true),
+        }
     }
 
     /// ADR-052 D6: compare-and-record one custom (workspace-hook)
@@ -1077,6 +1122,81 @@ fn format_kb_index_section(hot: &HotKb) -> String {
         return String::new();
     }
     format!("## Knowledge base index (kb/index.md)\n\n{trimmed}\n")
+}
+
+/// The start of the memory list section, whole or as changed lines.
+const MEMORY_LIST_HEAD: &str = "## Your memories (kb/memory/)";
+
+/// ADR-129 D2: one line per memory file the run may read, under the
+/// list's cap, with a notice counting the ones the cap left out. Empty
+/// when there is no memory to list.
+fn format_memory_list_section(hot: &HotKb) -> String {
+    let list = hot.memory_list();
+    if list.is_empty() {
+        return String::new();
+    }
+    let mut text = format!(
+        "{MEMORY_LIST_HEAD}\n\nOne line per memory: `- <name>: <when it matters>`. Read \
+         `kb/memory/<name>.md` when a line bears on what you are doing. Grep `kb/` for \
+         anything not listed here.\n\n{}\n",
+        list.lines.join("\n")
+    );
+    if list.hidden > 0 {
+        text.push_str(&format!(
+            "\n_{} more memories do not fit this list. `Grep \"^description:\" kb/memory/` \
+             lists them all. Merge or retire some so the list fits._\n",
+            list.hidden
+        ));
+    }
+    text
+}
+
+/// The lines of a memory list render that can change: each memory's
+/// `- name: description` line keyed by name, and the trailing notice.
+fn memory_list_lines(rendered: &str) -> (std::collections::BTreeMap<&str, &str>, Option<&str>) {
+    let mut memories = std::collections::BTreeMap::new();
+    let mut notice = None;
+    for line in rendered.lines() {
+        if let Some((name, _)) = line.strip_prefix("- ").and_then(|l| l.split_once(": ")) {
+            memories.insert(name, line);
+        } else if line.starts_with('_') && line.ends_with('_') {
+            notice = Some(line);
+        }
+    }
+    (memories, notice)
+}
+
+/// What changed between two renders of the memory list, as a section
+/// of its own: `+` a new memory, `~` a changed description, `-` one
+/// that is gone. `None` when no line differs.
+fn memory_list_changes(previous: &str, rendered: &str) -> Option<String> {
+    let (before, notice_before) = memory_list_lines(previous);
+    let (after, notice_after) = memory_list_lines(rendered);
+    let mut lines: Vec<String> = Vec::new();
+    for (name, line) in &after {
+        match before.get(name) {
+            None => lines.push(format!("+ {}", &line[2..])),
+            Some(old) if old != line => lines.push(format!("~ {}", &line[2..])),
+            Some(_) => {}
+        }
+    }
+    for name in before.keys().filter(|name| !after.contains_key(*name)) {
+        lines.push(format!("- {name}"));
+    }
+    if notice_before != notice_after {
+        lines.push(notice_after.map_or_else(
+            || "_Every memory fits the list again._".to_string(),
+            str::to_string,
+        ));
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{MEMORY_LIST_HEAD}: changes\n\nThe list above stands, with these lines changed \
+         (`+` new, `~` description changed, `-` gone):\n\n{}",
+        lines.join("\n")
+    ))
 }
 
 /// ADR-055 D8 (binding note): the run's triggering channel matched a
@@ -2741,6 +2861,166 @@ mod tests {
         assert!(state.carried.is_empty());
     }
 
+    // ── The memory list (ADR-129) ─────────────────────────────────
+
+    fn write_memory_file(dir: &tempfile::TempDir, name: &str, description: Option<&str>) {
+        let path = dir.path().join("kb/memory").join(format!("{name}.md"));
+        match description {
+            Some(description) => {
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(
+                    path,
+                    format!("---\ndescription: {description}\nsource: /local-user\n---\nbody\n"),
+                )
+                .unwrap();
+            }
+            None => std::fs::remove_file(path).unwrap(),
+        }
+    }
+
+    async fn tail(
+        renderer: &PromptRenderer,
+        ctx: &TurnPromptContext,
+        state: &mut RuntimeContextState,
+    ) -> String {
+        renderer
+            .render_runtime_context(ctx, state)
+            .await
+            .unwrap_or_default()
+    }
+
+    /// ADR-129 D2: the list rides the tail, never the frozen prefix, and
+    /// a memory written mid-run is sent as one changed line.
+    #[tokio::test]
+    async fn the_memory_list_rides_the_tail_and_changes_are_sent_as_lines() {
+        let renderer = PromptRenderer::new(catalog_funnel());
+        let mut ctx = empty_ctx();
+        let dir = tempfile::tempdir().unwrap();
+        ctx.workspace = dir.path().to_path_buf();
+        write_memory_file(
+            &dir,
+            "clay-supplier",
+            Some("Clay supplier and how ordering works"),
+        );
+        write_memory_file(&dir, "shop/hours", Some("Opening hours"));
+
+        assert!(!renderer
+            .render_cache_stable(&ctx)
+            .await
+            .contains("clay-supplier"));
+
+        let mut state = RuntimeContextState::default();
+        let first = tail(&renderer, &ctx, &mut state).await;
+        assert!(
+            first.contains("## Your memories (kb/memory/)\n"),
+            "got: {first}"
+        );
+        assert!(
+            first.contains("- clay-supplier: Clay supplier and how ordering works\n- shop/hours: Opening hours"),
+            "got: {first}"
+        );
+        assert!(first.contains("Grep `kb/`"), "got: {first}");
+
+        // Unchanged: nothing of the list is sent.
+        assert!(!tail(&renderer, &ctx, &mut state)
+            .await
+            .contains("Your memories"));
+
+        // One added, one changed, one removed: three lines, not the list.
+        write_memory_file(&dir, "glaze-firing", Some("Kiln settings"));
+        write_memory_file(&dir, "shop/hours", Some("Opening hours and holidays"));
+        write_memory_file(&dir, "clay-supplier", None);
+        let changed = tail(&renderer, &ctx, &mut state).await;
+        assert!(
+            changed.contains("## Your memories (kb/memory/): changes"),
+            "got: {changed}"
+        );
+        assert!(
+            changed.contains("+ glaze-firing: Kiln settings"),
+            "got: {changed}"
+        );
+        assert!(
+            changed.contains("~ shop/hours: Opening hours and holidays"),
+            "got: {changed}"
+        );
+        assert!(changed.contains("\n- clay-supplier"), "got: {changed}");
+        assert!(
+            !changed.contains("Read `kb/memory/<name>.md`"),
+            "whole list resent: {changed}"
+        );
+
+        // The last memory gone: the section is retracted once.
+        write_memory_file(&dir, "glaze-firing", None);
+        write_memory_file(&dir, "shop/hours", None);
+        let gone = tail(&renderer, &ctx, &mut state).await;
+        assert!(
+            gone.contains("_The \"memories\" section no longer applies._"),
+            "got: {gone}"
+        );
+    }
+
+    /// A later run finds the whole list in its history and sends
+    /// nothing; when the newest copy there is a changed-lines section,
+    /// it sends the list whole once.
+    #[tokio::test]
+    async fn a_later_run_resends_the_memory_list_only_after_changes() {
+        let renderer = PromptRenderer::new(catalog_funnel());
+        let mut ctx = empty_ctx();
+        let dir = tempfile::tempdir().unwrap();
+        ctx.workspace = dir.path().to_path_buf();
+        write_memory_file(&dir, "one", Some("First"));
+        let mut run1 = RuntimeContextState::default();
+        let first = tail(&renderer, &ctx, &mut run1).await;
+
+        let mut run2 = RuntimeContextState::from_history(&history_after(&first));
+        assert!(!tail(&renderer, &ctx, &mut run2)
+            .await
+            .contains("Your memories"));
+
+        write_memory_file(&dir, "two", Some("Second"));
+        let changes = tail(&renderer, &ctx, &mut run1).await;
+        assert!(changes.contains(": changes"), "got: {changes}");
+        let mut history = history_after(&first);
+        history.push(peko_message::LlmMessage::user(changes));
+        let mut run3 = RuntimeContextState::from_history(&history);
+        let whole = tail(&renderer, &ctx, &mut run3).await;
+        assert!(
+            whole.contains("- one: First\n- two: Second"),
+            "got: {whole}"
+        );
+        assert!(
+            whole.contains("Updated — replaces the previous \"memories\" section"),
+            "got: {whole}"
+        );
+    }
+
+    /// ADR-129 D2: past the cap the notice counts what is not shown.
+    #[test]
+    fn the_memory_list_says_how_many_do_not_fit() {
+        let hot = HotKb {
+            memories: (0..120)
+                .map(|i| crate::prompt::memory::MemoryEntry {
+                    name: format!("m{i:03}"),
+                    description: "d".repeat(150),
+                    modified: std::time::SystemTime::UNIX_EPOCH,
+                })
+                .collect(),
+            ..HotKb::default()
+        };
+        let text = format_memory_list_section(&hot);
+        let hidden = hot.memory_list().hidden;
+        assert!(hidden > 0);
+        assert!(
+            text.contains(&format!("_{hidden} more memories do not fit")),
+            "got: {text}"
+        );
+        assert!(
+            text.contains("Grep \"^description:\" kb/memory/"),
+            "got: {text}"
+        );
+        assert_eq!(format_memory_list_section(&HotKb::default()), "");
+    }
+
     /// Each fixed section's render starts with the head the carried-copy
     /// lookup searches for.
     #[test]
@@ -2754,6 +3034,8 @@ mod tests {
         std::fs::write(kb.join("index.md"), "i").unwrap();
         std::fs::write(kb.join("groups").join("discord.md"), "g").unwrap();
         std::fs::write(kb.join("roles").join("test-agent.md"), "r").unwrap();
+        std::fs::create_dir_all(kb.join("memory")).unwrap();
+        std::fs::write(kb.join("memory").join("a.md"), "---\ndescription: d\n---\n").unwrap();
         let mut ctx = empty_ctx();
         ctx.workspace = dir.path().to_path_buf();
         ctx.project_instructions = Some(("/w/AGENTS.md".to_string(), "p".to_string()));
@@ -2764,6 +3046,7 @@ mod tests {
             (SectionSlot::Memory, format_memory_section(&hot)),
             (SectionSlot::Conventions, format_conventions_section(&hot)),
             (SectionSlot::KbIndex, format_kb_index_section(&hot)),
+            (SectionSlot::MemoryList, format_memory_list_section(&hot)),
             (
                 SectionSlot::BindingNote,
                 format_binding_note_section(&ctx, &hot),
