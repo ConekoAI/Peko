@@ -4294,12 +4294,22 @@ impl ChannelStore {
     }
 
     /// An author's name as this runtime knows it, else the address.
+    ///
+    /// Before signing in, this computer's person has no name on record
+    /// but "local": the name they chose here stands in (ADR-124 D2).
+    /// Their login name never does, because the line this names them in
+    /// is part of a post, and a post can leave this computer.
     async fn display_name(&self, address: &str) -> String {
-        match address.parse::<ActorRef>() {
-            Ok(actor) => self.actor_info(&actor).await.name,
-            Err(_) => None,
+        let Ok(actor) = address.parse::<ActorRef>() else {
+            return address.to_string();
+        };
+        let name = self.actor_info(&actor).await.name;
+        if actor == ActorRef::User("local".into()) && name.as_deref().is_none_or(|n| n == "local") {
+            if let Some(chosen) = self.person_chosen_name().await {
+                return chosen;
+            }
         }
-        .unwrap_or_else(|| address.to_string())
+        name.unwrap_or_else(|| address.to_string())
     }
 
     /// ADR-101: check `author`'s board change on `channel` and return it
@@ -4369,11 +4379,7 @@ impl ChannelStore {
             }
             None => None,
         };
-        let who = match author.parse::<ActorRef>() {
-            Ok(actor) => self.actor_info(&actor).await.name,
-            Err(_) => None,
-        }
-        .unwrap_or_else(|| author.to_string());
+        let who = self.display_name(author).await;
         let text = crate::board::describe(&op, &who, title.as_deref());
         Ok((op, text))
     }
@@ -7757,6 +7763,19 @@ mod tests {
 
     /// ADR-126 D1, D2: a reaction is checked, threaded onto the post it
     /// reacts to without naming it in `reply_to`, written as a readable
+    /// The line a reaction or board post carries names this computer's
+    /// person by the name they chose here, when no other name is on
+    /// record for them; an address that is no actor is shown as it is.
+    #[tokio::test]
+    async fn a_post_line_names_the_local_person_by_their_chosen_name() {
+        let store = ChannelStore::new(tmp_cfg("line-name"));
+        let unnamed = store.display_name("user:local").await;
+        assert_ne!(unnamed, "maya");
+        store.set_person_chosen_name(Some("maya")).await.unwrap();
+        assert_eq!(store.display_name("user:local").await, "maya");
+        assert_eq!(store.display_name("not an actor").await, "not an actor");
+    }
+
     /// line, and folded; a reaction can be neither reacted nor replied to.
     #[tokio::test]
     async fn reactions_are_checked_threaded_and_folded() {
