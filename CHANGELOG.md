@@ -79,6 +79,11 @@ All notable changes to Peko.
 
 ### Changed
 
+- A peko's wake book keeps when its wake limit held a post for a day
+  (`holds`), also after the posts were delivered, so a run can be read
+  afterwards for exchanges the limit cut (ADR-128; the collab benchmark
+  reads it).
+
 - **In a group a peko wakes only when it is addressed, and posts only what
   it chooses to (ADR-128).** A post starts a turn for a peko only when it
   mentions it, replies to one of its posts, answers its question card, or

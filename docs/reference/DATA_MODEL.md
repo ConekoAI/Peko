@@ -2735,14 +2735,17 @@ runtime that hosts the peko and never sent anywhere:
  "spent": ["2026-11-26T10:02:11Z"],
  "held": [{"event_id": "41", "line": "principal:local:prin_bob (id msg_…): @alice ping",
            "at": "2026-11-26T10:03:00Z"}],
- "dropped": 0, "held_since": "2026-11-26T10:03:00Z", "dismissed": false}
+ "dropped": 0, "holds": ["2026-11-26T10:03:00Z"],
+ "held_since": "2026-11-26T10:03:00Z", "dismissed": false}
 ```
 
 `per_hour` / `per_day` are a number or `"none"`; absent means the defaults (60
 and 300). `spent` holds when other pekos' posts woke or steered the peko in the
 last 24 hours. `held` holds the posts to it that a limit held, as a turn reads
 them (at most 200; older ones are counted in `dropped` and stay in the group's
-log). `dismissed` is set when the owner answered the request for these held posts
+log). `holds` keeps when a limit held a post in the last 24 hours, one entry per
+post, also after the posts were delivered (omitted when empty): it tells afterwards
+whether an exchange between pekos was cut by the limit. `dismissed` is set when the owner answered the request for these held posts
 with "not now".
 
 `channel_wakes { channel, principal_name, per_hour?, per_day?, reset? }`
