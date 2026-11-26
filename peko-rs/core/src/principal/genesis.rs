@@ -499,10 +499,20 @@ else has talked to you this week, a reviewer reading excerpts of those sources f
 the line supported; anything else is filed in `kb/inbox/` for the owner. Write what the source says, not what you infer. \
 Never record, in any kb file, what a `Retracted` line here covers, even when today's \
 conversations still show it; keep those lines as they are. It shares a 32 KiB prompt budget with the other \
-hot kb files: if it carries a truncation notice, shrink it until the notice goes away.
+hot kb files. While it is under 8 KiB, keep facts there: a fact in the prompt costs \
+no extra step. Past that, or when it carries a truncation notice, move the facts you \
+need least often to memory files before deleting any, until it is back under: one fact \
+per file, `kb/memory/<name>.md`, starting with frontmatter (`---`, a `description:` \
+line saying when the memory matters in the words a question about it would use, a \
+`source:` line as above without the brackets, `---`), then the fact and why it holds. \
+Your prompt lists every memory file by its description, so they need no line in \
+`kb/index.md`; create `kb/memory/` if it is missing. The source rule above applies to \
+each memory file as a whole. Merge memory files that say the same thing and delete the \
+ones that no longer hold; when the list in your prompt says some do not fit, do that \
+until they do.
 4. Update `kb/people/`, `kb/groups/` and `kb/roles/` notes the day touched (what you \
 learned from or about other people belongs there), and keep `kb/index.md` pointing at \
-everything you keep, `kb/dreams/` included.
+everything you keep outside `kb/memory/`, `kb/dreams/` included.
 5. Reflect on how you worked, not on what happened: what went well and what went \
 badly, corrections your owner made, mistakes you repeated, and preferences about how \
 to work (tone, length, when to ask, which tools). Write the lessons to \
@@ -718,20 +728,22 @@ pub fn seed_default_roles(workspace: &std::path::Path) -> Result<Vec<&'static st
 /// old hash, every peko seeded with it keeps that role for good
 /// (2026-11-09: four `conversation` seeds were missed this way).
 #[cfg(test)]
-const CURRENT_ROOT_SEED: &str = "1da56bd3f034ade18a2628b1caedf7340b695713944183ff2c73f92d9604d914";
+const CURRENT_ROOT_SEED: &str = "bf61b28be004aaa9cacccbd3a38658cfe4558b8bb83bab60d1dc0265c9111639";
 #[cfg(test)]
 const CURRENT_CONVERSATION_SEED: &str =
-    "5ab745cbf0b8e8425bab50c9aa9f4ed1c095e9596b44554e4529ff1eb889e197";
+    "1e148da6459fdff7a0255bae6c520e700b7c2f0e58518343ee92e7f8cb82ebde";
 #[cfg(test)]
-const CURRENT_CHAIR_SEED: &str = "0b0bf18b48207a6c1357a13fe4f05fd5722568a306444f7549f99ec32cfc0721";
+const CURRENT_CHAIR_SEED: &str = "352cf399e4fe88b2972621e8dd5f36a6df3779421ea38e4395cd068aec147098";
 /// Earlier `chair` seeds (see [`PREVIOUS_ROOT_SEEDS`]).
-const PREVIOUS_CHAIR_SEEDS: &[&str] = &[];
+const PREVIOUS_CHAIR_SEEDS: &[&str] =
+    &["0b0bf18b48207a6c1357a13fe4f05fd5722568a306444f7549f99ec32cfc0721"];
 #[cfg(test)]
 const CURRENT_WORKER_SEED: &str =
     "9c6c79e23786155bc4496bae3bbea473cae85b5f773b2f2453f0fa7bb0389615";
 const PREVIOUS_ROOT_SEEDS: &[&str] = &[
     "03d7e1bc59aff3318d60172fa77f33c4323389f614f1d9b6ffebe5f30f8dc79c",
     "089b6460434f123f50d1da68335e248758018bcf98414233bc5f17c4d1ec9d61",
+    "1da56bd3f034ade18a2628b1caedf7340b695713944183ff2c73f92d9604d914",
     "1e75e9053aa6b2b6dad23a76f30baf73c6650b77d5fd08419871b2a2f66244b9",
     "1f60fba7e4347b30897b92dd827238a8bf0a2cbdbaa9f5de7aecb474d469eaa5",
     "21ce4f827925f679b091b11db8cb993c01d5c20295b4143599247e99d8c66c79",
@@ -763,6 +775,7 @@ const PREVIOUS_CONVERSATION_SEEDS: &[&str] = &[
     "1563af2725f1d29ab820f19c5590b9b28c7b1b3a079913864e8e512a528d6374",
     "3e38f04ce0cf2c2e73050f24865abfad8675e8372adccc42c08c903ffef4c9ab",
     "5136ffd450c426d3042c03af8680242075a1f950b710c8076ab726c723519c13",
+    "5ab745cbf0b8e8425bab50c9aa9f4ed1c095e9596b44554e4529ff1eb889e197",
     "6ba9932bf553e171ca4edc124d71c4a6c8a79d650ed1b14b610351f98526a665",
     "775ffb635b6af13ec026f97881e890bb5575f1f75d7a0a8fcd0f3a6834b308e4",
     "7a5840053f3c6f6259eada69e5e36aaacf5faca6b8919194325da6d92f5ad4a9",
@@ -771,9 +784,9 @@ const PREVIOUS_CONVERSATION_SEEDS: &[&str] = &[
     "c6eeb8ed3df42aa814e2d264ae923fad67cb6437cefcbc76ce2aa10130b190a1",
     "e20a6531e91e4e79b9012820832bc22c94b07507a64a3ee361cde697273822eb",
     "e53589830a6be5f6d5da7ff740e6ac11bbf1af3224f408add720d2cf52380591",
-    "ecc575c0ef4d14d6ae1bd8b471c0558a075e791fdae497316c5ef326c02439a8",
     "e601541af9f74254026de20d69c10d0a51b08cd8b6677a05e502a5a3e73f8de3",
     "eb197ddd4ae837fdab2203009a351a08814ba0aba8722caba31c2f2616978537",
+    "ecc575c0ef4d14d6ae1bd8b471c0558a075e791fdae497316c5ef326c02439a8",
 ];
 const PREVIOUS_WORKER_SEEDS: &[&str] = &[
     "52415ea266893572a6a3d83c6234f2af8d156b13d750ee0c09154b7c8a148826",

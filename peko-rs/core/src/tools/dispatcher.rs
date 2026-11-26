@@ -1304,8 +1304,10 @@ impl ToolDispatcher {
         })
     }
 
-    /// ADR-080 D4, D8: screen a scheduled owner run's `Write` / `Edit` of
-    /// `kb/MEMORY.md` or `kb/CONVENTIONS.md`. The entries the write adds
+    /// ADR-080 D4, D8 and ADR-129 D4: screen a scheduled owner run's
+    /// `Write` / `Edit` of `kb/MEMORY.md`, `kb/CONVENTIONS.md`, or a memory
+    /// file under `kb/memory/` (one entry, sourced by its frontmatter).
+    /// The entries the write adds
     /// to the file must cite only owner-only sources and, under ADR-085,
     /// be found supported by them. When any entry is held, the whole call
     /// is filed for the owner and nothing of it is written: a write that
@@ -1320,15 +1322,16 @@ impl ToolDispatcher {
         tool_name: &str,
         params: &Value,
     ) -> MemoryScreen {
-        use crate::security::memory_gate::{self, SourceClass, HOT_MEMORY, SOURCED_HOT_FILES};
+        use crate::security::memory_gate::{self, SourceClass, HOT_CONVENTIONS};
         let workspace = crate::security::floor::resolve(workspace);
         let target = crate::security::floor::resolve(target);
         let Some(hot) = crate::security::floor::protected_relative(&workspace, &target)
-            .and_then(|relative| SOURCED_HOT_FILES.iter().find(|f| **f == relative))
-            .copied()
+            .filter(|relative| memory_gate::is_sourced(relative))
         else {
             return MemoryScreen::Pass;
         };
+        let hot = hot.as_str();
+        let memory_file = memory_gate::is_memory_file(hot);
         let existing = tokio::fs::read_to_string(&target).await.unwrap_or_default();
         // The file as the call would leave it, so an entry is judged
         // whole even when an edit touches one of its lines. An edit the
@@ -1348,6 +1351,16 @@ impl ToolDispatcher {
         };
         let Some(candidate) = candidate else {
             return MemoryScreen::Pass;
+        };
+        // A memory file is one entry: what it says, sourced by its
+        // frontmatter (ADR-129 D4).
+        let (existing, candidate) = if memory_file {
+            (
+                memory_gate::memory_file_entry(hot, &existing),
+                memory_gate::memory_file_entry(hot, &candidate),
+            )
+        } else {
+            (existing, candidate)
         };
         let gate = self.policy_gate();
         let mut classes = std::collections::HashMap::new();
@@ -1397,19 +1410,30 @@ impl ToolDispatcher {
                 h.describe()
             ));
         }
-        let elsewhere = if hot == HOT_MEMORY {
-            "Keep facts about other people in `kb/people/` notes instead."
-        } else {
+        let elsewhere = if hot == HOT_CONVENTIONS {
             "Keep lessons from conversations with others in `kb/dreams/` instead."
+        } else {
+            "Keep facts about other people in `kb/people/` notes instead."
+        };
+        let cite = if memory_file {
+            "its frontmatter `source:` names"
+        } else {
+            "the entry cites `(source: …)` naming"
+        };
+        let repeat = if memory_file {
+            "A memory file is one entry, held or written whole: write it again only with \
+             what its sources say."
+        } else {
+            "To apply the rest, repeat the change without these entries, leaving any \
+             existing entry they would replace as it is."
         };
         let note = format!(
             "Nothing was written to `{hot}`: {} entr{} in this {tool_name} could not be added, \
              so the whole {tool_name} was filed for the owner ({}) and the file is unchanged. \
-             A scheduled run adds an entry there only when the entry cites `(source: …)` \
-             naming sessions or channels that only the owner speaks in and, while others are \
-             talking to this principal, a reviewer finds it supported by them. To apply the \
-             rest, repeat the change without these entries, leaving any existing entry they \
-             would replace as it is. {elsewhere}{reasons}",
+             A scheduled run adds an entry there only when {cite} \
+             sessions or channels that only the owner speaks in and, while others are \
+             talking to this principal, a reviewer finds it supported by them. {repeat} \
+             {elsewhere}{reasons}",
             held.len(),
             if held.len() == 1 { "y" } else { "ies" },
             filed

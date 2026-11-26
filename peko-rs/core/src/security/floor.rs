@@ -182,7 +182,8 @@ pub const PROTECTED_FILES: &[&str] = &[
 /// Workspace trees only an owner run may write: the constitution (what
 /// runs and what every agent is told), the notes injected into specific
 /// agents' prompts, and the dream notebook whose lessons the nightly pass
-/// promotes into `kb/CONVENTIONS.md` (ADR-080 D7).
+/// promotes into `kb/CONVENTIONS.md` (ADR-080 D7), and the memory files
+/// every prompt lists by their descriptions (ADR-129 D4).
 pub const PROTECTED_DIRS: &[&str] = &[
     "roles",
     "skills",
@@ -193,6 +194,7 @@ pub const PROTECTED_DIRS: &[&str] = &[
     "kb/roles",
     "kb/groups",
     "kb/dreams",
+    "kb/memory",
 ];
 
 /// Where proposals land. The runtime writes here; no run may.
@@ -1140,6 +1142,19 @@ mod tests {
             ),
             PathDecision::Deny(_)
         ));
+    }
+
+    #[test]
+    fn memory_files_are_protected_in_any_directory() {
+        let ws = std::path::Path::new("/w");
+        for file in ["kb/memory/a.md", "kb/memory/shop/hours.md"] {
+            assert_eq!(
+                protected_relative(ws, &ws.join(file)).as_deref(),
+                Some(file)
+            );
+        }
+        assert_eq!(protected_relative(ws, &ws.join("kb/memoryx/a.md")), None);
+        assert_eq!(protected_relative(ws, &ws.join("kb/people/a.md")), None);
     }
 
     #[test]

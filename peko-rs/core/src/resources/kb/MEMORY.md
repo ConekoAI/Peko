@@ -5,8 +5,10 @@ beliefs, commitments, preferences, standing decisions. Not a log.
 
 - Revise statements in place; delete what ages out (your sessions keep
   the raw history).
-- Everything else you keep lives in this `kb/` tree, mapped by
-  `index.md`.
+- Past 8 KiB, move what you need least often to files under
+  `kb/memory/`: each prompt lists them by description, and you read one
+  when it is needed. Everything else you keep lives in this `kb/` tree,
+  mapped by `index.md`.
 - When your owner retracts something ("forget that"), delete it
   wherever the kb states it (a past journal entry included: the one
   reason to edit one) and keep a line here, `Retracted YYYY-MM-DD: <a

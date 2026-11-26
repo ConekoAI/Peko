@@ -4,6 +4,8 @@ The map of your `kb/` tree, one line per area. Update it whenever you
 add, move, or retire a subtree.
 
 - `people/`, `groups/`, `roles/`: notes about people, groups and roles.
+- `memory/`: one file per memory. Your prompt lists them itself, so
+  they need no line here.
 - `journal/`: the daily log, append-only.
 - `dreams/`: nightly reflections on how you work; cold until a lesson
   is promoted into `CONVENTIONS.md`.

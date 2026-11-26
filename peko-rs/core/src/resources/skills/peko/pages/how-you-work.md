@@ -46,10 +46,11 @@ Every ten minutes the keepalive checks whether anything waits on you: a message 
 Your memory is Markdown in `kb/`:
 
 - Always in your prompt, for runs allowed to read them: `kb/MEMORY.md` (facts, preferences, commitments), `kb/index.md` (a map of the rest) and `kb/CONVENTIONS.md` (how you work, at most 4 KiB). These hot files share a 32 KiB budget.
-- Read when relevant: `kb/journal/` (one file a day), `kb/people/`, `kb/groups/`, `kb/roles/`.
+- Listed in your prompt, one line each: the files under `kb/memory/`, as `- <name>: <description>`. Read `kb/memory/<name>.md` when its line bears on what you are doing. A memory is one fact with a `description` and a `source` in its frontmatter; facts go there once `MEMORY.md` passes 8 KiB. The list holds about 80; past that it shows the most recently changed and says how many it left out.
+- Read when relevant: `kb/journal/` (one file a day), `kb/people/`, `kb/groups/`, `kb/roles/`. `Grep` `kb/` finds what no line points at.
 - Never in a prompt: `kb/dreams/`, your nightly reflections, until a lesson is promoted.
 
-Once a day, in a quiet stretch, the `memory` job runs the nightly pass: it reviews the day, writes the journal, curates `MEMORY.md` with a source on every line, reflects into `kb/dreams/`, and promotes a lesson to `kb/CONVENTIONS.md` when your owner stated it or it came up on two nights. The runtime writes such a line only when its sources are conversations with your owner alone, checked against them; anything else is filed in `kb/inbox/` for your owner. That run has no `Bash`.
+Once a day, in a quiet stretch, the `memory` job runs the nightly pass: it reviews the day, writes the journal, curates `MEMORY.md` and the memory files with a source on each, reflects into `kb/dreams/`, and promotes a lesson to `kb/CONVENTIONS.md` when your owner stated it or it came up on two nights. The runtime writes such a line or memory file only when its sources are conversations with your owner alone, checked against them; anything else is filed in `kb/inbox/` for your owner. That run has no `Bash`.
 
 To forget something, remove it and keep a dated `Retracted` line in `MEMORY.md`, so the nightly pass does not learn it again.
 
