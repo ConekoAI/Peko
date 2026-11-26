@@ -344,13 +344,19 @@ async fn process_response_stream(
             ResponsePacket::PrincipalSentChunk { delta: content, .. }
             | ResponsePacket::PrincipalSent { content, .. }
             | ResponsePacket::Text { chunk: content, .. } => {
-                if !has_started_line {
-                    print!("\n{}: ", args.principal);
-                    std::io::stdout().flush()?;
+                streamed.push_str(&content);
+                if has_started_line {
+                    print!("{}", content);
+                } else {
+                    // A turn that only reacted, or has nothing to say,
+                    // ends in `NO_REPLY` and posts nothing (ADR-126): hold
+                    // the start back while it may still be that marker.
+                    if peko_core::principal::quiet_reply::may_be_marker(&streamed) {
+                        continue;
+                    }
+                    print!("\n{}: {}", args.principal, streamed);
                     has_started_line = true;
                 }
-                streamed.push_str(&content);
-                print!("{}", content);
                 std::io::stdout().flush()?;
             }
             // Final full answer. Chunks were already printed
@@ -364,10 +370,19 @@ async fn process_response_stream(
             } => {
                 options = offered;
                 asked = ask;
-                if !has_started_line && !content.is_empty() {
-                    print!("\n{}: {}", args.principal, content);
-                    std::io::stdout().flush()?;
-                    has_started_line = true;
+                if !has_started_line {
+                    // Nothing shown yet: show the reply as it is posted,
+                    // or nothing for a turn that posts nothing.
+                    let full = if streamed.is_empty() {
+                        &content
+                    } else {
+                        &streamed
+                    };
+                    if let Some(text) = peko_core::principal::quiet_reply::postable(full, false) {
+                        print!("\n{}: {}", args.principal, text);
+                        std::io::stdout().flush()?;
+                        has_started_line = true;
+                    }
                 } else {
                     // The runtime may correct what streamed (an invite
                     // link the model garbled): show the links as sent.

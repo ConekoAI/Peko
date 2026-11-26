@@ -3153,12 +3153,15 @@ async fn run_principal_send(
     let session_id_for_task = session_id.clone();
     // ADR-088 D4: the turn reads the message plus a note per file;
     // images, audio, and video go along for a model that takes them.
-    // ADR-126 D6: a reply's turn reads the start of the message it answers.
+    // ADR-126 D5, D6: the turn reads the post's id, and for a reply the
+    // start of the message it answers.
     let message = match (host.principal_manager().channel_port(), &dm_channel) {
         (Some(port), Some(dm)) => {
+            let id = crate::principal::peer_dm::posted_id(port.as_ref(), dm, &message).await;
             crate::principal::peer_dm::dm_turn_text(
                 port.as_ref(),
                 dm,
+                id.as_deref(),
                 reply_to.as_deref(),
                 &message,
             )

@@ -252,17 +252,63 @@ pub(crate) async fn replying_to(
     }
 }
 
-/// A DM post's text as its turn reads it (ADR-126 D6): `text`, or for a
-/// reply to `reply_to`, `(replying to {author}: “…”) {text}`. A DM turn's
-/// input names no author: the conversation has one other member.
+/// The id of the message a person just posted on `channel` with `text`:
+/// the newest such post in the last few lines of this copy's log, never a
+/// reaction. The turn it starts names it, so the peko can react to it or
+/// thread a reply onto it (ADR-126 D5).
+pub(crate) async fn posted_id(
+    port: &dyn ChannelPort,
+    channel: &ChannelId,
+    text: &str,
+) -> Option<String> {
+    let page = port.peek_tail(channel, 20, None).await.ok()?;
+    page.events
+        .into_iter()
+        .rev()
+        .find_map(|(_, event)| match event {
+            peko_channel::ChannelEvent::Posted {
+                text: posted,
+                msg_id: Some(id),
+                react: None,
+                ..
+            } if posted == text => Some(id),
+            _ => None,
+        })
+}
+
+/// The note in front of a post's text in its turn (ADR-126 D5, D6):
+/// `id msg_…`, `replying to …`, both, or nothing.
+pub(crate) async fn post_note(
+    port: &dyn ChannelPort,
+    channel: &ChannelId,
+    msg_id: Option<&str>,
+    reply_to: Option<&str>,
+) -> Option<String> {
+    let quote = match reply_to {
+        Some(parent) => Some(replying_to(port, channel, parent).await),
+        None => None,
+    };
+    match (msg_id, quote) {
+        (Some(id), Some(quote)) => Some(format!("id {id}; {quote}")),
+        (Some(id), None) => Some(format!("id {id}")),
+        (None, quote) => quote,
+    }
+}
+
+/// A DM post's text as its turn reads it (ADR-126 D5, D6):
+/// `(id msg_…) {text}`, and for a reply to `reply_to`
+/// `(id msg_…; replying to {author}: “…”) {text}`. The id is the one
+/// `ChannelSend` takes as `parent` to react to the post or answer it. A
+/// DM turn's input names no author: the conversation has one other member.
 pub(crate) async fn dm_turn_text(
     port: &dyn ChannelPort,
     channel: &ChannelId,
+    msg_id: Option<&str>,
     reply_to: Option<&str>,
     text: &str,
 ) -> String {
-    match reply_to {
-        Some(parent) => format!("({}) {text}", replying_to(port, channel, parent).await),
+    match post_note(port, channel, msg_id, reply_to).await {
+        Some(note) => format!("({note}) {text}"),
         None => text.to_string(),
     }
 }
@@ -499,6 +545,49 @@ mod tests {
         assert_eq!(
             store.membership(&b.channel).await.unwrap().name,
             "dm-user-foo-bar-2"
+        );
+    }
+
+    /// ADR-126 D5: a DM turn names the person's post by its id — the
+    /// newest one with that text, never a reaction — so a second request
+    /// to react lands on the second message, not the first.
+    #[tokio::test]
+    async fn a_dm_turn_names_the_post_it_answers() {
+        let (_dir, manager, _store, port, lock) = fixture().await;
+        let peer = ActorRef::User("alice".into());
+        let child_id = ensure_peer_child("root", &peer, &manager).await.unwrap();
+        let dm = ensure_peer_dm_channel(&port, &principal_id(), &peer, &child_id, &manager, &lock)
+            .await
+            .unwrap()
+            .channel;
+        let author = peer.to_string();
+        post_peer_dm_inbound(&port, &principal_id(), &dm, &author, "react only please")
+            .await
+            .unwrap();
+        let first = posted_id(port.as_ref(), &dm, "react only please")
+            .await
+            .unwrap();
+        post_peer_dm_inbound(&port, &principal_id(), &dm, &author, "react only please")
+            .await
+            .unwrap();
+        let second = posted_id(port.as_ref(), &dm, "react only please")
+            .await
+            .unwrap();
+        assert_ne!(first, second, "the newest post with that text");
+        assert_eq!(posted_id(port.as_ref(), &dm, "never said").await, None);
+
+        assert_eq!(
+            dm_turn_text(port.as_ref(), &dm, Some(&second), None, "react only please").await,
+            format!("(id {second}) react only please")
+        );
+        let reply = dm_turn_text(port.as_ref(), &dm, Some("msg_x"), Some(&first), "this one").await;
+        assert!(
+            reply.starts_with("(id msg_x; replying to ") && reply.ends_with("”) this one"),
+            "{reply}"
+        );
+        assert_eq!(
+            dm_turn_text(port.as_ref(), &dm, None, None, "hi").await,
+            "hi"
         );
     }
 
