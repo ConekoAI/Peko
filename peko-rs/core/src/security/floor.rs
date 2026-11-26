@@ -188,6 +188,10 @@ pub const PROTECTED_DIRS: &[&str] = &[
 /// Where proposals land. The runtime writes here; no run may.
 pub const INBOX_DIR: &str = "kb/inbox";
 
+/// The seed the peko grew from (ADR-127 D10). The runtime writes it once,
+/// at creation; no run's file tools may.
+pub const ORIGIN_DIR: &str = crate::principal::seed_origin::ORIGIN_DIR;
+
 /// The Peko home a peko's workspace sits in: `<home>/pekos/<name>` (or the
 /// pre-0.1.0 `<home>/principals/<name>`).
 fn peko_home(workspace: &Path) -> Option<&Path> {
@@ -479,7 +483,8 @@ pub fn protected_relative(workspace: &Path, path: &Path) -> Option<String> {
     let inside = |dir: &str| relative == dir || relative.starts_with(&format!("{dir}/"));
     let protected = PROTECTED_FILES.contains(&relative.as_str())
         || PROTECTED_DIRS.iter().any(|dir| inside(dir))
-        || inside(INBOX_DIR);
+        || inside(INBOX_DIR)
+        || inside(ORIGIN_DIR);
     protected.then_some(relative)
 }
 
@@ -595,6 +600,13 @@ pub fn check_path(
         {
             PathDecision::Deny(format!(
                 "{relative} is the proposal inbox; proposals are filed by the runtime"
+            ))
+        }
+        Some(relative)
+            if relative == ORIGIN_DIR || relative.starts_with(&format!("{ORIGIN_DIR}/")) =>
+        {
+            PathDecision::Deny(format!(
+                "{relative} is the seed this peko grew from; only the runtime writes it, once"
             ))
         }
         Some(relative) if !stamp.is_owner() => PathDecision::Propose { relative },
@@ -1140,6 +1152,29 @@ mod tests {
             ),
             PathDecision::Deny(_)
         ));
+    }
+
+    /// ADR-127 D10: the origin is the runtime's to write, once; every run
+    /// may read it, none may write it, the owner's included.
+    #[test]
+    fn no_run_writes_the_seed_it_grew_from() {
+        let t = tree();
+        for file in ["seed/origin.seed.toml", "seed/origin.toml", "seed/other.md"] {
+            let path = t.mine.join(file);
+            for trust in [Trust::Owner, Trust::Trusted, Trust::Untrusted] {
+                assert!(
+                    matches!(
+                        check_path(&stamp(trust), Some(&t.mine), &path, true, None),
+                        PathDecision::Deny(ref why) if why.contains("grew from")
+                    ),
+                    "{file} {trust:?}"
+                );
+            }
+            assert_eq!(
+                check_path(&stamp(Trust::Owner), Some(&t.mine), &path, false, None),
+                PathDecision::Allow
+            );
+        }
     }
 
     #[test]

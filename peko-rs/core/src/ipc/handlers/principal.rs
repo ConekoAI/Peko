@@ -1504,6 +1504,7 @@ impl RequestHandler for PrincipalHandler {
                 model_id,
                 seed,
                 seed_path,
+                seed_from,
                 accept_setup,
             } => {
                 use crate::common::identifiers::validate_agent_name;
@@ -1519,6 +1520,15 @@ impl RequestHandler for PrincipalHandler {
                     return Ok(());
                 }
 
+                // ADR-127 D10: where the seed came from, for its origin.
+                // A file the engine read is that file; otherwise what the
+                // client says.
+                let seed_source = match (&seed, &seed_path) {
+                    (None, Some(path)) => {
+                        crate::principal::seed::OriginSource::File { path: path.clone() }
+                    }
+                    _ => crate::principal::seed::OriginSource::named(seed_from.as_deref()),
+                };
                 // A seed too large for one request comes as a path on
                 // this computer, which only an operator may have read.
                 let seed = match (seed, seed_path) {
@@ -1536,6 +1546,7 @@ impl RequestHandler for PrincipalHandler {
                         }
                     },
                 };
+                let seed_text = seed.clone();
                 // A seed (ADR-060) is checked before anything is written.
                 let seed = match seed.as_deref().map(crate::principal::seed::parse_seed) {
                     Some(Ok(seed)) => Some(seed),
@@ -1588,6 +1599,8 @@ impl RequestHandler for PrincipalHandler {
                     model_id,
                     description,
                     seed,
+                    seed_text,
+                    seed_source,
                 };
                 let created = crate::principal::provision::provision(
                     host.principal_manager(),
@@ -1597,6 +1610,31 @@ impl RequestHandler for PrincipalHandler {
                 .await;
                 match created {
                     Ok(principal) => {
+                        // ADR-127 D10: the creation, with the digest of
+                        // the seed it grew from.
+                        if let Some(observability) = host.observability() {
+                            let origin =
+                                crate::principal::seed::read_origin(&principal.workspace_path)
+                                    .ok()
+                                    .flatten()
+                                    .map(|(info, _)| info);
+                            let details = serde_json::json!({
+                                "peko": name,
+                                "seed_digest": origin.as_ref().map(|o| o.digest.clone()),
+                                "seed_source": origin.as_ref().map(|o| o.source.clone()),
+                            });
+                            if let Err(e) = observability
+                                .audit_with_caller(
+                                    Some(&caller.subject()),
+                                    "principal.created",
+                                    None,
+                                    details,
+                                )
+                                .await
+                            {
+                                warn!("could not audit the creation of {name}: {e:#}");
+                            }
+                        }
                         let summary = principal.summary_in(host.principal_manager()).await;
                         let response = ResponsePacket::PrincipalCreated {
                             request_id,

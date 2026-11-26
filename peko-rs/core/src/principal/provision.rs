@@ -33,6 +33,10 @@ pub struct NewPeko {
     /// The seed it grows from (ADR-060), if any. Its setup steps must
     /// already have been accepted by the person creating it (ADR-104 D3).
     pub seed: Option<Seed>,
+    /// The seed's exact text and where the client said it came from,
+    /// kept as the peko's origin (ADR-127 D10). Ignored without `seed`.
+    pub seed_text: Option<String>,
+    pub seed_source: crate::principal::seed::OriginSource,
 }
 
 /// The definition of a peko created without a seed. Its display name is
@@ -93,6 +97,15 @@ fn config_for(new: &NewPeko) -> (PrincipalConfig, Option<String>) {
     }
 }
 
+/// What `peko seed` would write for a peko with `config` and the folder
+/// at `root`: its origin when it grew from no seed.
+fn default_origin(config: &PrincipalConfig, root: &std::path::Path) -> anyhow::Result<String> {
+    let definition = toml::to_string_pretty(config)?;
+    let conventions = std::fs::read_to_string(root.join("kb").join("CONVENTIONS.md")).ok();
+    let (files, _) = crate::principal::seed::collect_files(root, false)?;
+    crate::principal::seed::seed_from_workspace(&definition, conventions.as_deref(), &files, None)
+}
+
 /// Create a peko: lay down its folder, register it, and schedule its
 /// first turn.
 ///
@@ -144,6 +157,23 @@ pub async fn provision(
     crate::security::access::seed(&shared.root).map_err(|e| failed("write ACCESS.toml", &e))?;
     crate::principal::kb::seed_journal_birth_entry(&shared.root, &new.name, chrono::Utc::now())
         .map_err(|e| failed("write the journal's first entry", &e))?;
+    // ADR-127 D10: the seed it grew from, kept once. Without a seed, what
+    // `peko seed` would write for it now: the default definition.
+    let (origin_text, origin_source) = match (&new.seed, &new.seed_text) {
+        (Some(_), Some(text)) => (text.clone(), new.seed_source.clone()),
+        _ => (
+            default_origin(&config, &shared.root)
+                .map_err(|e| failed("write the default origin", &e))?,
+            crate::principal::seed::OriginSource::Default,
+        ),
+    };
+    crate::principal::seed::write_origin(
+        &shared.root,
+        &origin_text,
+        origin_source,
+        chrono::Utc::now(),
+    )
+    .map_err(|e| failed("keep the seed it grew from", &e))?;
 
     let principal = manager.create(config).await?;
 
@@ -201,6 +231,8 @@ mod tests {
             model_id: "mock".to_string(),
             description: None,
             seed: seed.map(|text| crate::principal::seed::parse_seed(text).unwrap()),
+            seed_text: seed.map(str::to_string),
+            seed_source: crate::principal::seed::OriginSource::named(Some("/tmp/x.seed.toml")),
         }
     }
 
@@ -317,6 +349,77 @@ granted_by = { kind = "user", id = "hub:seed-author" }
             "the seed's role is loaded: {:?}",
             principal.agent_prompts.keys().collect::<Vec<_>>()
         );
+    }
+
+    /// What `peko seed` writes for a peko now, as the CLI does.
+    fn export_now(root: &std::path::Path) -> String {
+        use crate::principal::seed;
+        let config = std::fs::read_to_string(root.join("peko.toml")).unwrap();
+        let conventions = std::fs::read_to_string(root.join("kb/CONVENTIONS.md")).ok();
+        let (files, _) = seed::collect_files(root, false).unwrap();
+        let origin = seed::read_origin(root).unwrap().map(|(info, _)| info);
+        seed::seed_from_workspace(&config, conventions.as_deref(), &files, origin.as_ref()).unwrap()
+    }
+
+    /// ADR-127 D10: every new peko keeps the seed it grew from, the
+    /// default definition when there was none; a fresh peko's diff
+    /// against it is empty; its export names it.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn a_new_peko_keeps_its_origin_and_a_fresh_one_differs_in_nothing() {
+        use crate::principal::seed::{self, OriginSource};
+        let temp = tempfile::TempDir::new().unwrap();
+        let (manager, paths) = manager(&temp).await;
+
+        let plain = provision(&manager, &paths, new_peko("nova", None))
+            .await
+            .expect("created");
+        let (info, text) = seed::read_origin(&plain.workspace_path).unwrap().unwrap();
+        assert_eq!(info.source, OriginSource::Default);
+        assert_eq!(info.digest, seed::seed_digest(&text));
+        assert_eq!(info.runtime_version, env!("CARGO_PKG_VERSION"));
+        assert!(seed::parse_seed(&text).is_ok(), "{text}");
+        let now = export_now(&plain.workspace_path);
+        let diff = seed::origin_diff(&text, &now, false).unwrap();
+        assert!(diff.parts.is_empty(), "{:?}", diff.parts);
+
+        let text = "name = \"ignored\"\npersona = \"Sign with a fox.\"\n\n[identity]\ndescription = \"Reads papers\"\n\n[files]\n\"roles/researcher.md\" = \"---\\nname: researcher\\ndescription: r\\n---\\nCite.\\n\"\n";
+        let grown = provision(&manager, &paths, new_peko("sprout", Some(text)))
+            .await
+            .expect("created");
+        let root = &grown.workspace_path;
+        let (info, kept) = seed::read_origin(root).unwrap().unwrap();
+        assert_eq!(kept, text, "the exact text");
+        assert_eq!(info.digest, seed::seed_digest(text));
+        assert_eq!(
+            info.source,
+            OriginSource::File {
+                path: "/tmp/x.seed.toml".into()
+            }
+        );
+        let now = export_now(root);
+        let diff = seed::origin_diff(text, &now, false).unwrap();
+        assert!(diff.parts.is_empty(), "{:?}", diff.parts);
+        // The export names its origin, and is still a seed.
+        let exported = seed::parse_seed(&now).unwrap();
+        assert!(exported
+            .files
+            .iter()
+            .any(|f| f.path == "roles/researcher.md"));
+        let table: toml::Table = toml::from_str(&now).unwrap();
+        assert_eq!(
+            table["grown_from"]["digest"].as_str(),
+            Some(info.digest.as_str())
+        );
+        // A change shows up, part by part.
+        std::fs::write(
+            root.join("roles/researcher.md"),
+            "---\nname: researcher\ndescription: r\n---\nCite, and quote.\n",
+        )
+        .unwrap();
+        let diff = seed::origin_diff(text, &export_now(root), false).unwrap();
+        assert_eq!(diff.parts.len(), 1);
+        assert_eq!(diff.parts[0].part, "roles/researcher.md");
     }
 
     /// A taken name is refused before anything is written.

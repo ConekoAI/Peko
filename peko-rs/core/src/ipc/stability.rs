@@ -21,7 +21,8 @@
 //! A new optional field on a type keeps its mark: older senders omit it
 //! and older readers ignore it (ADR-126's `reply_to` on `principal_send`,
 //! `principal_send_stream` and `channel_post`, `react` on `channel_post`,
-//! and `reactions` on `principal_log` rows and `channel_peek_result`).
+//! and `reactions` on `principal_log` rows and `channel_peek_result`;
+//! ADR-127's `seed_from` on `principal_create`).
 
 /// What a wire type promises about change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,6 +165,7 @@ pub const REQUESTS: &[(&str, Stability)] = &[
     ("secret_list", Stable),
     ("secret_provide", Stable),
     ("security_decide", Stable),
+    ("seed_publish", Stable),
     ("shutdown", Internal),
     ("status", Stable),
     ("system_clean", Stable),
@@ -280,6 +282,7 @@ pub const RESPONSES: &[(&str, Stability)] = &[
     ("runtime_registered", Stable),
     ("secret_done", Stable),
     ("secret_list_result", Stable),
+    ("seed_published", Stable),
     ("shutting_down", Internal),
     ("status", Stable),
     ("system_cleaned", Stable),

@@ -25,7 +25,9 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 
 use super::bundled::{bundled_skill, BUNDLED_SKILLS};
-use crate::tools::builtin::skill::{SkillEntry, SkillRuntime, SkillSource};
+use crate::tools::builtin::skill::{
+    is_page_name, PageSource, SkillEntry, SkillPage, SkillRuntime, SkillSource,
+};
 
 /// Skill definitions must be ordinary workspace files. Linked roots or
 /// definitions make discovery depend on another workspace and cannot be
@@ -115,6 +117,60 @@ impl WorkspaceSkillRuntime {
         })
     }
 
+    /// `skills/<name>/pages/` in the workspace, when it is an ordinary
+    /// folder under an ordinary skill folder. `name` must already have
+    /// passed [`Self::is_plain_name`].
+    fn workspace_pages_dir(&self, name: &str) -> Option<PathBuf> {
+        let skill_dir = self.skills_dir.join(name);
+        let pages = skill_dir.join("pages");
+        (self.has_ordinary_root() && is_skill_directory(&skill_dir) && is_skill_directory(&pages))
+            .then_some(pages)
+    }
+
+    /// The workspace's page file `skills/<name>/pages/<page>.md`.
+    fn workspace_page(&self, name: &str, page: &str) -> Option<SkillPage> {
+        if !Self::is_plain_name(name) || !is_page_name(page) {
+            return None;
+        }
+        let path = self.workspace_pages_dir(name)?.join(format!("{page}.md"));
+        std::fs::symlink_metadata(&path)
+            .is_ok_and(|meta| meta.is_file())
+            .then(|| SkillPage {
+                name: page.to_string(),
+                source: PageSource::File(path),
+            })
+    }
+
+    /// The names of the workspace's pages for skill `name`.
+    fn workspace_page_names(&self, name: &str) -> Vec<String> {
+        if !Self::is_plain_name(name) {
+            return Vec::new();
+        }
+        let Some(dir) = self.workspace_pages_dir(name) else {
+            return Vec::new();
+        };
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .filter_map(|entry| {
+                let file = entry.file_name().to_str()?.to_string();
+                let page = file.strip_suffix(".md")?;
+                self.workspace_page(name, page).map(|_| page.to_string())
+            })
+            .collect()
+    }
+
+    /// Whether `name` is one plain path component.
+    fn is_plain_name(name: &str) -> bool {
+        let mut components = std::path::Path::new(name).components();
+        matches!(
+            (components.next(), components.next()),
+            (Some(std::path::Component::Normal(_)), None)
+        ) && !name.contains(['/', '\\'])
+    }
+
     fn list_workspace(&self) -> Vec<String> {
         if !self.has_ordinary_root() {
             return Vec::new();
@@ -154,6 +210,42 @@ impl SkillRuntime for WorkspaceSkillRuntime {
             names.sort();
             names.dedup();
         }
+        names
+    }
+
+    /// ADR-127 D2. A workspace skill (its own `SKILL.md`) has only its
+    /// own pages. A bundled skill has its compiled pages, and a file at
+    /// `skills/<name>/pages/<page>.md` adds a page or replaces the one of
+    /// its name, so an owner or a seed can change one page by file.
+    fn resolve_page(&self, skill: &str, page: &str) -> Option<SkillPage> {
+        let entry = self.resolve_skill(skill)?;
+        if let Some(found) = self.workspace_page(skill, page) {
+            return Some(found);
+        }
+        match entry.source {
+            SkillSource::File(_) => None,
+            SkillSource::Bundled(_) => {
+                let bundled = bundled_skill(skill)?.page(page)?;
+                Some(SkillPage {
+                    name: bundled.name.to_string(),
+                    source: PageSource::Bundled(bundled.text),
+                })
+            }
+        }
+    }
+
+    fn list_pages(&self, skill: &str) -> Vec<String> {
+        let Some(entry) = self.resolve_skill(skill) else {
+            return Vec::new();
+        };
+        let mut names = self.workspace_page_names(skill);
+        if matches!(entry.source, SkillSource::Bundled(_)) {
+            if let Some(bundled) = bundled_skill(skill) {
+                names.extend(bundled.pages.iter().map(|page| page.name.to_string()));
+            }
+        }
+        names.sort();
+        names.dedup();
         names
     }
 }
@@ -303,7 +395,7 @@ mod tests {
         let layered = WorkspaceSkillRuntime::with_bundled(tmp.path().to_path_buf());
         assert_eq!(
             layered.list_skills(),
-            vec!["coding-agents", "computer-use", "docker", "triage"]
+            vec!["coding-agents", "computer-use", "docker", "peko", "triage"]
         );
         let entry = layered.resolve_skill("coding-agents").unwrap();
         assert!(matches!(entry.source, SkillSource::Bundled(_)));
@@ -314,7 +406,7 @@ mod tests {
         let empty = WorkspaceSkillRuntime::with_bundled(PathBuf::from("/no/such/path/here"));
         assert_eq!(
             empty.list_skills(),
-            vec!["coding-agents", "computer-use", "triage"]
+            vec!["coding-agents", "computer-use", "peko", "triage"]
         );
     }
 
@@ -325,7 +417,7 @@ mod tests {
         let rt = WorkspaceSkillRuntime::with_bundled(tmp.path().to_path_buf());
         assert_eq!(
             rt.list_skills(),
-            vec!["coding-agents", "computer-use", "triage"]
+            vec!["coding-agents", "computer-use", "peko", "triage"]
         );
         let entry = rt.resolve_skill("coding-agents").unwrap();
         assert!(matches!(entry.source, SkillSource::File(_)));

@@ -180,6 +180,65 @@ HKDF-SHA256, ChaCha20-Poly1305, `info` = `peko-device-notify/1`), sent as
 base64url of the encapsulated key followed by the ciphertext. Types:
 `peko-rs/core/src/tunnel/devices.rs`.
 
+## The seed a peko grew from, and a seed's ancestry (ADR-127)
+
+At creation (`principal::provision`) the runtime writes, once, into the new
+peko's workspace (`principal/seed_origin.rs`):
+
+- `seed/origin.seed.toml`: the exact seed text the peko grew from, byte for
+  byte. A peko created without a seed gets what `peko seed` would have
+  written for it at that moment (the default definition).
+- `seed/origin.toml`: what is known of it.
+
+```toml
+digest = "sha256:<64 hex>"          # of origin.seed.toml, UTF-8
+runtime_version = "0.6.0"
+created_at = "2026-11-26T10:00:00+00:00"
+
+[source]
+kind = "file"                       # default | file | pekohub | client
+path = "/Users/<me>/ada.seed.toml"  # kind = "file"
+# kind = "pekohub": owner = "maya", name = "ada", version = "1.2.0"
+# kind = "client":  from = "<what the client said>" (optional)
+```
+
+The source is what the client said (`principal_create` `seed_from`: a path,
+or `pekohub:<owner>/<name>@<version>`); a seed the engine read by
+`seed_path` is that file. Nothing about it is checked. `seed/` is written by
+the runtime only: the floor denies every run's file-tool write there, owner
+runs included (`security::floor::ORIGIN_DIR`), and no seed's `[files]` may
+fill it. Reading it is allowed. `read_origin` refuses a text whose digest no
+longer matches. Pekos created by an older runtime have no `seed/` and are
+said to have no origin. The creation audit event, `principal.created`, records
+`{peko, seed_digest, seed_source}`.
+
+A seed `peko seed` exports names its origin:
+
+```toml
+[grown_from]
+digest = "sha256:<64 hex>"   # the origin's digest
+seed = "maya/ada"            # only when the origin came from PekoHub
+version = "1.2.0"            # likewise
+```
+
+`grown_from` is a note of ancestry: `parse_seed` ignores it, a grown peko
+does not keep it, and PekoHub accepts it (checking its shape) and shows the
+published seed with that digest. It gives no one any right over the seed.
+
+`peko seed <name> --diff` compares the seed the peko would export now with
+its origin, part by part: the definition (`peko.toml` read as a seed, without
+the keys creation sets for every peko: `name`, `preferred_model_id`, and the
+existence and local keys an export drops), the persona, and each file `peko
+seed` carries (MCP files only with `--with-mcp`). Files the origin carried
+that no export does (a seed may fill any workspace file) are listed apart.
+
+`peko seed publish <file> --version <v> [--readme <file>]` sends IPC
+`seed_publish {path, version, readme_path?}` (local callers only); the
+engine reads the files and posts `POST /v1/seeds` with a `PekoRuntime`
+proof for that path. PekoHub publishes it as the person the computer is
+registered to, while the computer is on their device list; the answer is
+`seed_published {owner, name, version, digest, web_url}`.
+
 ## Peko folders, file names, and address spellings (0.1.0)
 
 - Each peko lives in `{config_dir}/pekos/<name>/` (definition `peko.toml`,

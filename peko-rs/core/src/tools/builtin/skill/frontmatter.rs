@@ -39,6 +39,46 @@ pub struct SkillFrontmatter {
     pub allowed_tools: Vec<String>,
 }
 
+/// Whom a skill page is for (ADR-127 D3). It decides which pages a
+/// run's map lists, not what a run may read: a page holds nothing a run
+/// could use beyond its own tools.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PageAudience {
+    /// Every run.
+    #[default]
+    All,
+    /// Runs acting for the owner.
+    Owner,
+}
+
+impl PageAudience {
+    /// Whether a run is shown pages for this audience.
+    #[must_use]
+    pub fn shown_to(self, owner: bool) -> bool {
+        owner || self == Self::All
+    }
+
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Owner => "owner",
+        }
+    }
+}
+
+/// YAML frontmatter of a skill page (`pages/<page>.md`, ADR-127 D2).
+#[derive(Debug, Deserialize)]
+pub struct PageFrontmatter {
+    /// One line: what the page covers and when to open it. The skill's
+    /// map lists it.
+    pub description: String,
+    /// `all` (the default) or `owner`.
+    #[serde(default)]
+    pub audience: PageAudience,
+}
+
 /// Parse a YAML frontmatter block from `content`. Returns the raw
 /// YAML text and the body that followed.
 pub fn parse_yaml_frontmatter(content: &str) -> Result<(String, String)> {

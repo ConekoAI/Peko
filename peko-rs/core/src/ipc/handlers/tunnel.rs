@@ -63,6 +63,13 @@ pub(crate) trait TunnelHost: Send + Sync {
 
     /// Set what this computer's person is called (ADR-124).
     async fn set_person_name(&self, name: &str) -> anyhow::Result<crate::tunnel::people::Person>;
+    /// Publish a seed on PekoHub as this computer's person (ADR-127 D10).
+    async fn publish_seed(
+        &self,
+        seed: &str,
+        version: &str,
+        readme: Option<&str>,
+    ) -> anyhow::Result<crate::tunnel::seed_publish::Published>;
 
     /// How this computer connects (ADR-125 D2).
     async fn connection(&self) -> crate::common::types::config::Connection;
@@ -94,6 +101,7 @@ impl RequestHandler for TunnelHandler {
                 | RequestPacket::RuntimeRegister { .. }
                 | RequestPacket::RuntimeUnregister { .. }
                 | RequestPacket::PersonNameSet { .. }
+                | RequestPacket::SeedPublish { .. }
         )
     }
 
@@ -154,6 +162,46 @@ impl RequestHandler for TunnelHandler {
                 let response = ResponsePacket::Error {
                     request_id,
                     message: "[permission_denied] only the local user sets their name".to_string(),
+                };
+                send_response(sink, response).await?;
+            }
+
+            // ADR-127 D10: a seed is published as this computer's person,
+            // so only they (and what they run here) publish one.
+            RequestPacket::SeedPublish { request_id, .. } if !caller.is_local() => {
+                let response = ResponsePacket::Error {
+                    request_id,
+                    message: "[permission_denied] only the local user publishes a seed".to_string(),
+                };
+                send_response(sink, response).await?;
+            }
+
+            RequestPacket::SeedPublish {
+                request_id,
+                path,
+                version,
+                readme_path,
+            } => {
+                let response = match publish_seed_files(
+                    self.host.as_ref(),
+                    &path,
+                    &version,
+                    readme_path.as_deref(),
+                )
+                .await
+                {
+                    Ok(published) => ResponsePacket::SeedPublished {
+                        request_id,
+                        owner: published.owner,
+                        name: published.name,
+                        version: published.version,
+                        digest: published.digest,
+                        web_url: published.web_url,
+                    },
+                    Err(e) => ResponsePacket::Error {
+                        request_id,
+                        message: format!("{e:#}"),
+                    },
                 };
                 send_response(sink, response).await?;
             }
@@ -220,6 +268,45 @@ impl RequestHandler for TunnelHandler {
     }
 }
 
+/// Read the seed (and README) a local caller named, then publish it.
+async fn publish_seed_files(
+    host: &dyn TunnelHost,
+    path: &str,
+    version: &str,
+    readme_path: Option<&str>,
+) -> anyhow::Result<crate::tunnel::seed_publish::Published> {
+    use anyhow::Context as _;
+    let read = |path: &str, limit: usize| {
+        let path = std::path::PathBuf::from(path);
+        async move {
+            anyhow::ensure!(
+                path.is_absolute(),
+                "{} is not an absolute path",
+                path.display()
+            );
+            let size = tokio::fs::metadata(&path)
+                .await
+                .with_context(|| format!("cannot read {}", path.display()))?
+                .len();
+            anyhow::ensure!(
+                size <= limit as u64,
+                "{} is larger than {} KB",
+                path.display(),
+                limit / 1024
+            );
+            tokio::fs::read_to_string(&path)
+                .await
+                .with_context(|| format!("cannot read {}", path.display()))
+        }
+    };
+    let seed = read(path, crate::principal::seed::SEED_TEXT_MAX_BYTES).await?;
+    let readme = match readme_path {
+        Some(path) => Some(read(path, crate::tunnel::seed_publish::README_MAX_BYTES).await?),
+        None => None,
+    };
+    host.publish_seed(&seed, version, readme.as_deref()).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,6 +366,24 @@ mod tests {
         }
         async fn connection(&self) -> crate::common::types::config::Connection {
             crate::common::types::config::Connection::Automatic
+        }
+        async fn publish_seed(
+            &self,
+            seed: &str,
+            version: &str,
+            _readme: Option<&str>,
+        ) -> anyhow::Result<crate::tunnel::seed_publish::Published> {
+            anyhow::ensure!(
+                self.linked.lock().unwrap().is_some(),
+                "this computer is not signed in to PekoHub"
+            );
+            Ok(crate::tunnel::seed_publish::Published {
+                owner: "maya".into(),
+                name: "ada".into(),
+                version: version.into(),
+                digest: crate::principal::seed::seed_digest(seed),
+                web_url: "https://pekohub.ai/seeds/maya/ada".into(),
+            })
         }
     }
 
@@ -448,5 +553,60 @@ mod tests {
             other => panic!("expected Error, got {other:?}"),
         }
         assert_eq!(host.person.lock().unwrap().name.as_deref(), Some("Maya"));
+    }
+
+    /// ADR-127 D10: a seed is published only by the local user, only as
+    /// the person this computer is signed in as.
+    #[tokio::test]
+    async fn only_a_signed_in_local_user_publishes_a_seed() {
+        let host = Arc::new(Host::default());
+        let dir = tempfile::tempdir().unwrap();
+        let seed = dir.path().join("ada.seed.toml");
+        std::fs::write(&seed, "name = \"ada\"\n").unwrap();
+        let publish = || RequestPacket::SeedPublish {
+            request_id: 5,
+            path: seed.display().to_string(),
+            version: "1.0.0".into(),
+            readme_path: None,
+        };
+        match send(host.clone(), CallerContext::local(), publish()).await {
+            ResponsePacket::Error { message, .. } => {
+                assert!(message.contains("not signed in"), "{message}")
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+        *host.linked.lock().unwrap() = Some(crate::tunnel::registration::LinkedAccount {
+            id: "acct".into(),
+            name: Some("Maya".into()),
+        });
+        let visitor = CallerContext::from_jwt("someone".to_string());
+        match send(host.clone(), visitor, publish()).await {
+            ResponsePacket::Error { message, .. } => {
+                assert!(message.contains("permission_denied"), "{message}")
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+        match send(host.clone(), CallerContext::local(), publish()).await {
+            ResponsePacket::SeedPublished { owner, digest, .. } => {
+                assert_eq!(owner, "maya");
+                assert_eq!(
+                    digest,
+                    crate::principal::seed::seed_digest("name = \"ada\"\n")
+                );
+            }
+            other => panic!("expected SeedPublished, got {other:?}"),
+        }
+        let relative = RequestPacket::SeedPublish {
+            request_id: 6,
+            path: "ada.seed.toml".into(),
+            version: "1.0.0".into(),
+            readme_path: None,
+        };
+        match send(host, CallerContext::local(), relative).await {
+            ResponsePacket::Error { message, .. } => {
+                assert!(message.contains("not an absolute path"), "{message}")
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
     }
 }

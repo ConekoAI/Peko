@@ -11,6 +11,10 @@ use anyhow::{Context, Result};
 use peko_auth::ActorRef;
 
 use crate::principal::config::{Exposure, PrincipalConfig};
+pub use crate::principal::seed_origin::{
+    origin_diff, read_origin, seed_digest, write_origin, OriginDiff, OriginInfo, OriginSource,
+    GROWN_FROM_KEY, ORIGIN_DIR, ORIGIN_INFO_FILE, ORIGIN_SEED_FILE,
+};
 
 /// Top-level keys that belong to one peko, not its definition. PekoHub
 /// refuses a published seed carrying any of them.
@@ -36,7 +40,7 @@ const LOCAL_KEYS: &[&str] = &["quota"];
 /// # Errors
 /// When the text is not TOML.
 pub fn seed_from_config(principal_toml: &str) -> Result<String> {
-    seed_from_workspace(principal_toml, None, &[])
+    seed_from_workspace(principal_toml, None, &[], None)
 }
 
 /// The persona a seed gave a peko, read back from its conventions: the
@@ -54,7 +58,8 @@ pub fn persona_in(conventions: &str) -> Option<String> {
 /// A seed from a peko's `peko.toml`, its `kb/CONVENTIONS.md` (so the
 /// persona it was grown with travels again) and the capability files to
 /// carry ([`collect_files`]). `peko seed` → `peko create -s` round-trips
-/// all three.
+/// all three. `grown_from` is the peko's origin, when it has one: the
+/// seed then says what it was grown from (ADR-127 D10).
 ///
 /// # Errors
 /// When `principal_toml` is not TOML.
@@ -62,6 +67,7 @@ pub fn seed_from_workspace(
     principal_toml: &str,
     conventions: Option<&str>,
     files: &[SeedFile],
+    grown_from: Option<&OriginInfo>,
 ) -> Result<String> {
     let mut doc: toml::Table =
         toml::from_str(principal_toml).context("peko.toml is not valid TOML")?;
@@ -80,6 +86,13 @@ pub fn seed_from_workspace(
     }
     if let Some(toml::Value::Table(routing)) = doc.get_mut("routing") {
         routing.remove("root_prompt");
+    }
+    doc.remove(GROWN_FROM_KEY);
+    if let Some(origin) = grown_from {
+        doc.insert(
+            GROWN_FROM_KEY.into(),
+            toml::Value::Table(origin.grown_from()),
+        );
     }
     let body = toml::to_string_pretty(&doc).context("could not write the seed")?;
     let name = doc
@@ -219,7 +232,9 @@ impl SeedFile {
 /// - `local/`: the runtime's own state for the peko (sessions, approvals,
 ///   schedules, ledger), which sits inside the folder on some layouts. A
 ///   seed that wrote there could plant an approved request;
-/// - `kb/inbox/`: proposals, which only the runtime files.
+/// - `kb/inbox/`: proposals, which only the runtime files;
+/// - `seed/`: the seed the peko grew from, which only the runtime writes
+///   (ADR-127 D10).
 fn path_refusal(path: &str) -> Option<String> {
     let parts: Vec<&str> = path.split('/').collect();
     let plain = |part: &str| {
@@ -244,6 +259,12 @@ fn path_refusal(path: &str) -> Option<String> {
     if lower == "local" || lower.starts_with("local/") {
         return Some(format!(
             "`{path}` is the runtime's own state for the peko, which a seed cannot fill"
+        ));
+    }
+    if lower == ORIGIN_DIR || lower.starts_with(&format!("{ORIGIN_DIR}/")) {
+        return Some(format!(
+            "`{path}` is where the runtime keeps the seed a peko grew from; a seed cannot \
+             fill it"
         ));
     }
     let inbox = crate::security::floor::INBOX_DIR;
@@ -632,7 +653,7 @@ name = "ada"
         assert_eq!(skipped, ["skills/greet/logo.bin"]);
         let (with_mcp, _) = collect_files(ws.path(), true).unwrap();
         assert_eq!(with_mcp.len(), 3);
-        let exported = seed_from_workspace("name = \"ada\"\n", None, &with_mcp).unwrap();
+        let exported = seed_from_workspace("name = \"ada\"\n", None, &with_mcp, None).unwrap();
         assert_eq!(parse_seed(&exported).unwrap().files, seed.files);
 
         // Nothing to accept in a plain seed.
@@ -795,7 +816,7 @@ own = "contacts/{conversation}/"
         );
 
         // And the exported seed grows again.
-        let exported = seed_from_workspace("name = \"shop\"\n", None, &files).unwrap();
+        let exported = seed_from_workspace("name = \"shop\"\n", None, &files, None).unwrap();
         assert_eq!(parse_seed(&exported).unwrap().files, files);
     }
 
@@ -813,6 +834,8 @@ own = "contacts/{conversation}/"
             ("local/cron/schedule.toml", "the runtime's own state"),
             ("Local/x", "the runtime's own state"),
             ("kb/inbox/dm_x/a.proposal.md", "files proposals"),
+            ("seed/origin.seed.toml", "the seed a peko grew from"),
+            ("Seed/origin.toml", "the seed a peko grew from"),
             ("roles/../peko.toml", "not a plain relative path"),
             ("/etc/passwd", "not a plain relative path"),
             ("roles/.hidden", "not a plain relative path"),
@@ -881,7 +904,7 @@ own = "contacts/{conversation}/"
         );
         // A later section is not part of it.
         conventions.push_str("\n## Learned\n\n- Be brief.\n");
-        let seed = seed_from_workspace(CONFIG, Some(&conventions), &[]).unwrap();
+        let seed = seed_from_workspace(CONFIG, Some(&conventions), &[], None).unwrap();
         let back = parse_seed(&seed).unwrap();
         assert_eq!(
             back.persona.as_deref(),

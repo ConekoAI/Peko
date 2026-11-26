@@ -11,7 +11,10 @@ pub mod frontmatter;
 pub mod tool;
 
 pub use body::{preprocess_dynamic_context, SHELL_TIMEOUT_MS};
-pub use frontmatter::{parse_yaml_frontmatter, parse_yaml_frontmatter_typed, SkillFrontmatter};
+pub use frontmatter::{
+    parse_yaml_frontmatter, parse_yaml_frontmatter_typed, PageAudience, PageFrontmatter,
+    SkillFrontmatter,
+};
 pub use tool::{SkillTool, ESCAPE_SENTINEL};
 
 use std::path::PathBuf;
@@ -22,6 +25,16 @@ pub const MAX_SKILL_FILE_BYTES: usize = 1024 * 1024;
 
 /// Limit the combined procedure after dynamic context and argument expansion.
 pub const MAX_SKILL_BODY_BYTES: usize = 1024 * 1024;
+
+/// Most bytes one skill page may have, frontmatter included (ADR-127
+/// D2): a run reads what it needs and no more.
+pub const MAX_SKILL_PAGE_BYTES: usize = 8 * 1024;
+
+/// Most bytes a skill's map may have when its `SKILL.md` lists pages:
+/// its body plus the page list rendered for the run (ADR-127 D1). Held
+/// by the bundled skills' tests; a workspace skill is not refused for
+/// a longer one.
+pub const MAX_SKILL_MAP_BYTES: usize = 2 * 1024;
 
 pub(crate) fn append_skill_text(output: &mut String, text: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
@@ -86,6 +99,66 @@ impl SkillEntry {
     }
 }
 
+/// One page of a skill (ADR-127 D2): `skills/<name>/pages/<page>.md` in
+/// the workspace, or a page compiled into the runtime with a bundled
+/// skill.
+#[derive(Debug, Clone)]
+pub struct SkillPage {
+    /// The page's name, its file name without `.md`.
+    pub name: String,
+    pub source: PageSource,
+}
+
+/// Where a page's text lives.
+#[derive(Debug, Clone)]
+pub enum PageSource {
+    File(PathBuf),
+    Bundled(&'static str),
+}
+
+impl SkillPage {
+    /// The page's text, refused past [`MAX_SKILL_PAGE_BYTES`].
+    pub fn read(&self) -> anyhow::Result<String> {
+        let text = match &self.source {
+            PageSource::File(path) => {
+                use std::io::Read;
+                let mut bytes = Vec::new();
+                std::fs::File::open(path)?
+                    .take((MAX_SKILL_PAGE_BYTES + 1) as u64)
+                    .read_to_end(&mut bytes)?;
+                String::from_utf8(bytes)?
+            }
+            PageSource::Bundled(text) => (*text).to_string(),
+        };
+        anyhow::ensure!(
+            text.len() <= MAX_SKILL_PAGE_BYTES,
+            "page {} exceeds {} KB",
+            self.name,
+            MAX_SKILL_PAGE_BYTES / 1024
+        );
+        Ok(text)
+    }
+
+    /// The page's frontmatter and body.
+    pub fn parse(&self) -> anyhow::Result<(PageFrontmatter, String)> {
+        let text = self.read()?;
+        let (frontmatter, body) = parse_yaml_frontmatter_typed::<PageFrontmatter>(&text)?;
+        Ok((frontmatter, body.trim_start_matches('\n').to_string()))
+    }
+}
+
+/// Whether `name` can be a page's name: one plain file-name stem of
+/// lowercase letters, digits, `-` and `_`. Anything else is no page, so
+/// a name can never reach outside `pages/`.
+#[must_use]
+pub fn is_page_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_'))
+}
+
 // ─── SkillRuntime port trait ───────────────────────────────────────
 
 /// Runtime port the `SkillTool` uses to resolve skill files.
@@ -102,6 +175,16 @@ pub trait SkillRuntime: Send + Sync {
 
     /// Return all registered skill names, sorted.
     fn list_skills(&self) -> Vec<String>;
+
+    /// The page `page` of skill `skill`, if it has one (ADR-127 D2).
+    fn resolve_page(&self, _skill: &str, _page: &str) -> Option<SkillPage> {
+        None
+    }
+
+    /// The names of skill `skill`'s pages, sorted.
+    fn list_pages(&self, _skill: &str) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// Type alias for the shared runtime handle threaded through every

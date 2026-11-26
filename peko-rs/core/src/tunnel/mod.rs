@@ -25,6 +25,7 @@ pub mod people;
 pub mod protocol;
 pub mod registration;
 pub mod seal;
+pub mod seed_publish;
 pub mod tls;
 pub mod tunnel_channel_audit;
 pub mod tunnel_channel_port;

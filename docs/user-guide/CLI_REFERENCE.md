@@ -211,7 +211,14 @@ Export a peko's seed: its definition without its identity, owner, permissions, o
 
 The seed carries its persona and, under `[files]`, its roles, skills and workflows (text files, 1 MB together at most). Share it on PekoHub, or start a new peko from it with `peko create <name> -s <file>`. The new peko is its own peko, not a copy.
 
+`--diff` shows instead how the seed would differ from the one the peko grew from, kept in its `seed/` folder. `peko seed publish` puts a seed file on PekoHub as you.
+
 Usage: peko seed [OPTIONS] <NAME>
+       peko seed <COMMAND>
+
+Commands:
+  publish  Publish a seed file on PekoHub, as you
+  help     Print this message or the help of the given subcommand(s)
 
 Arguments:
   <NAME>
@@ -223,6 +230,30 @@ Options:
 
       --with-mcp
           Also carry its MCP server files (`mcp/`). Left out by default: they may hold tokens. Read the seed before you share it
+
+      --diff
+          Show, file by file, how the peko's seed today differs from the seed it grew from
+```
+
+### `peko seed publish`
+
+```text
+Publish a seed file on PekoHub, as you
+
+The seed is yours: it goes under your PekoHub handle, exactly as if you published it on the website, and only you publish its next version. This computer must be signed in to PekoHub (`peko auth login`); the engine signs the request with this computer's key. Read the seed first: it is public, and others grow pekos from it.
+
+Usage: peko seed publish [OPTIONS] --version <VERSION> <FILE>
+
+Arguments:
+  <FILE>
+          The seed file (`peko seed <name> -o <file>` writes one)
+
+Options:
+      --version <VERSION>
+          Its version, like `1.0.0`. A published version never changes
+
+      --readme <README>
+          A Markdown README for the seed's page: what it is for, what changed from the seed it grew from, and why it is better
 ```
 
 ## `peko import`

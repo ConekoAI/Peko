@@ -6,6 +6,36 @@ All notable changes to Peko.
 
 ### Added
 
+- **A peko can read how it works (ADR-127).** A fourth bundled skill,
+  `peko`, is the peko's own manual, listed for every run: a short map and
+  six pages (`how-you-work`, `standing`, `changing-yourself`,
+  `operating-peko`, `improving-peko`, `seeds`), each for `all` runs or the
+  `owner`'s. `Skill` takes a `page`: a skill's body ends with the pages for
+  the run's standing, and a run that is not the owner's asking for an
+  `owner` page gets three lines saying how to raise it instead. Any skill
+  may have pages (`skills/<name>/pages/<page>.md`, 8 KB each); a page file
+  alone adds to or replaces a page of the bundled skill of that name. Tests
+  hold the pages to the parser, the CLI reference and the built-in tools.
+  The nightly memory pass is pointed at `changing-yourself` for where a
+  lesson belongs, and the default `conversation` role says that raising
+  something with the owner is a tool call and never to say a request waits
+  for them unless a tool said so (pekos whose role is an unedited earlier
+  seed get it; an edited role is kept).
+- **A peko keeps the seed it grew from (ADR-127 D10).** Creation writes the
+  exact seed text to `seed/origin.seed.toml` and its digest, source and
+  runtime version to `seed/origin.toml` (the default definition when there
+  was no seed); no run's file tools write `seed/`, and no seed may fill it.
+  The new `principal.created` audit event records the digest. IPC
+  `principal_create` takes an optional `seed_from` (a path, or
+  `pekohub:<owner>/<name>@<version>`), which `peko create -s` fills.
+  `peko seed <name> --diff` shows, part by part, how the peko's seed today
+  differs from its origin; an exported seed names it in `[grown_from]`.
+- **`peko seed publish <file> --version <v> [--readme <file>]`** publishes a
+  seed on PekoHub as the person this computer is signed in as, signed with
+  the computer's key (IPC `seed_publish` → `seed_published`, local callers
+  only). It is refused on a computer that is not signed in, and by PekoHub
+  for a computer not on its person's device list.
+
 - **People and pekos react to a message, and a reply shows the message it
   answers (ADR-126).** A post may carry a `react` op (`{to, emoji,
   remove?}`); the reactions on a message are folded from the conversation's
