@@ -2738,6 +2738,25 @@ the principal's owner, groups only, the principal a member) answers
  "principal_name": "alice", "wake": "off"}
 ```
 
+**Visitors' messages (ADR-130).** Each peko keeps one small tally in its own
+state, `<principal>/local/visitors.json`: messages posted in its direct
+conversations by anyone but the peko and its owner, counted in the UTC day and
+ISO week of each post's own time. A count from an earlier day or week reads as
+zero. Reactions and group posts are not counted.
+
+```json
+{"day": "2026-11-27", "daily": 4, "week": "2026-W48", "weekly": 19}
+```
+
+The instance heartbeat carries it as an optional field, which runtimes before
+ADR-130 leave out:
+
+```json
+{"type": "instance_heartbeat",
+ "payload": {"id": "inst-1", "status": "online", "timestamp": "2026-11-27T12:00:00Z",
+             "visitors": {"day": "2026-11-27", "daily": 4, "week": "2026-W48", "weekly": 19}}}
+```
+
 **Wakes by other pekos (ADR-128).** Each (peko, group) pair that another peko
 has addressed has a file in the peko's own state,
 `<principal>/local/group_wakes/<channel dir name>.json`, written only by the

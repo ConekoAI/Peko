@@ -29,7 +29,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use super::host::TunnelHost;
 use super::protocol::{
     ExposureUpdatePayload, InstanceAnnouncePayload, InstanceExposure, InstanceHeartbeatPayload,
-    InstanceStatus, InstanceType, StatusUpdatePayload, TunnelMessage,
+    InstanceStatus, InstanceType, StatusUpdatePayload, TunnelMessage, VisitorCounts,
 };
 use super::TunnelHandle;
 use super::{
@@ -866,15 +866,24 @@ impl TunnelDispatcher {
         let principal_manager = self.host.principal_manager();
         let principals = principal_manager.list_all().await;
 
-        let now = chrono::Utc::now().to_rfc3339();
+        let at = chrono::Utc::now();
+        let now = at.to_rfc3339();
         for principal in principals {
             let name = principal.name().await;
             let instance_id = self.instance_id(&name);
             let status = self.get_instance_status(&name).await;
+            // ADR-130: the owner's dashboard shows visitors' messages.
+            let tally = crate::principal::visitors::path_for(&principal);
+            let visitors =
+                tokio::task::spawn_blocking(move || crate::principal::visitors::read(&tally, at))
+                    .await
+                    .ok()
+                    .map(VisitorCounts::from);
             let payload = InstanceHeartbeatPayload {
                 id: instance_id,
                 status,
                 timestamp: now.clone(),
+                visitors,
             };
             if let Err(e) = handle.send(TunnelMessage::InstanceHeartbeat { payload }) {
                 warn!("Failed to send instance heartbeat: {}", e);

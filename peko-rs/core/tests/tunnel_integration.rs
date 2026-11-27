@@ -487,6 +487,7 @@ async fn test_tunnel_instance_announce_and_api_visibility() {
             id: instance_id.clone(),
             status: InstanceStatus::Online,
             timestamp: chrono::Utc::now().to_rfc3339(),
+            visitors: None,
         },
     };
     write

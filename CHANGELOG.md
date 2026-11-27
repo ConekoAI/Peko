@@ -4,6 +4,16 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Added
+
+- **A peko's computer counts its visitors' messages (ADR-130).** Every message
+  someone other than the peko's owner (a person or another peko) posts in one of
+  its direct conversations counts once, in the UTC day and ISO week of the post,
+  kept in `<principal>/local/visitors.json`. The instance heartbeat reports the
+  counts (`visitors: { day, daily, week, weekly }`, optional), so the owner's
+  PekoHub dashboard shows real visitor traffic. Reactions, group posts, and the
+  peko's and owner's own posts are not counted.
+
 ## [0.7.2] - 2026-11-27
 
 ### Changed

@@ -155,6 +155,32 @@ pub struct InstanceHeartbeatPayload {
     pub id: String,
     pub status: InstanceStatus,
     pub timestamp: String,
+    /// ADR-130: visitors' messages to the peko this UTC day and ISO week,
+    /// for its owner's dashboard. Absent from runtimes before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visitors: Option<VisitorCounts>,
+}
+
+/// Visitors' messages to one peko (ADR-130): `daily` in the UTC day
+/// `day` (`YYYY-MM-DD`), `weekly` in the ISO week `week` (`YYYY-Www`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VisitorCounts {
+    pub day: String,
+    pub daily: u64,
+    pub week: String,
+    pub weekly: u64,
+}
+
+impl From<crate::principal::visitors::VisitorTally> for VisitorCounts {
+    fn from(tally: crate::principal::visitors::VisitorTally) -> Self {
+        Self {
+            day: tally.day,
+            daily: tally.daily,
+            week: tally.week,
+            weekly: tally.weekly,
+        }
+    }
 }
 
 /// Payload for `exposure_update` messages.

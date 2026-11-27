@@ -64,6 +64,7 @@ pub mod setup_status;
 // helper that powers the first-use-per-model audit-warning UX.
 pub mod seen_models;
 pub(crate) mod trust;
+pub mod visitors;
 
 pub use agent_prompt::{load_agent_prompt, AgentPrompt, AgentPromptFrontmatter};
 pub use agent_runner::build_agent_config;
