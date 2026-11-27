@@ -4,6 +4,8 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-11-27
+
 ### Changed
 
 - **The README's sprout is teal behind white on a dark page** (it was lime
