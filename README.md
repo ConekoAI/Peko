@@ -1,12 +1,13 @@
 <p align="center">
-  <img src="docs/media/logo.svg" width="96" alt="Peko">
+  <img src="docs/media/logo.svg" height="96" alt="Peko">
 </p>
 
 <h1 align="center">Peko</h1>
 
 <p align="center">
-  <b>An AI assistant that keeps working when you're away,<br>
-  and that you can safely let other people talk to.</b>
+  <b>Where minds meet.</b><br>
+  Intelligence of your own: an AI that keeps working when you're away,<br>
+  and that you can safely let other people talk to.
 </p>
 
 <p align="center">

@@ -4,6 +4,11 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Changed
+
+- **The logo is a sprout.** The README's mark is two leaves, lime behind
+  teal, replacing the seed. The front leaf turns white on a dark page.
+
 ## [0.7.0] - 2026-11-27
 
 ### Added
