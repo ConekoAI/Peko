@@ -4,6 +4,8 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-27
+
 ### Added
 
 - **A memory can be a file, and every prompt lists them (ADR-129).** A peko
