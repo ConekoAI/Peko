@@ -376,7 +376,7 @@ schema = ["dep:schemars", "peko-auth/schema", "peko-channel/schema", "peko-obser
 peko-cron = { path = "../cron", features = ["test-support"] }
 tokio-test = "0.4"
 tempfile = "3.10"
-serial_test = "3.0"
+serial_test = "4.0"
 rsa = "0.9"
 
 
