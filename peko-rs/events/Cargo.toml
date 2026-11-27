@@ -1,6 +1,6 @@
 [package]
 name = "peko-events"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 authors = ["Peko <peko@coneko.ai>"]
 description = "Neutral event contract shared by Peko runtime components"
