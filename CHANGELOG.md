@@ -4,6 +4,8 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-11-27
+
 ### Changed
 
 - **The logo is a sprout.** The README's mark is two leaves, lime behind
