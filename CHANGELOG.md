@@ -4,6 +4,12 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Changed
+
+- **The README's sprout is teal behind white on a dark page** (it was lime
+  behind white), matching PekoHub and Peko Desktop, where teal is the main
+  color and lime the secondary. On a light page it is still lime behind teal.
+
 ## [0.7.1] - 2026-11-27
 
 ### Changed
