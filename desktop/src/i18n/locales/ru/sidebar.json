@@ -4,6 +4,7 @@
   "people": "Люди",
   "pekos": "Peko",
   "loading": "Загрузка…",
+  "loadFailed": "Не удалось загрузить ваших peko.",
   "wakingTitle": "Этот peko ещё настраивается",
   "waking": "просыпается…",
   "needsModel": "нужна модель",

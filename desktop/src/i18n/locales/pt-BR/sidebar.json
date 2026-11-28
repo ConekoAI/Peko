@@ -4,6 +4,7 @@
   "people": "Pessoas",
   "pekos": "Pekos",
   "loading": "Carregando…",
+  "loadFailed": "Não foi possível carregar seus pekos.",
   "wakingTitle": "Este peko ainda está se configurando",
   "waking": "acordando…",
   "needsModel": "precisa de um modelo",

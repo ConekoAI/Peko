@@ -4,6 +4,7 @@
   "people": "使用者",
   "pekos": "Peko",
   "loading": "正在載入…",
+  "loadFailed": "無法載入你的 peko。",
   "wakingTitle": "這個 peko 還在進行初始設定",
   "waking": "喚醒中…",
   "needsModel": "需要模型",
