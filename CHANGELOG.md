@@ -4,6 +4,8 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-11-28
+
 ### Changed
 
 - **Peko Desktop reads a peko's new page link.** PekoHub moved every page
@@ -13,6 +15,17 @@ All notable changes to Peko.
   link the system hands over all read `/{owner}/{name}`, and the peko's info
   card and Share copy it. The retired pages (`/@miz/ada`, `/peko/…`, `/p/…`)
   no longer parse. IDs are unchanged: a peko is still `@miz/ada`.
+
+### Fixed
+
+- A release draft keeps its tag through every edit, so a release finishes on
+  its own (#754).
+
+### Dependencies
+
+- Engine: sha2 0.11 and hmac 0.13, base64 0.23, and the Rust group (#751).
+- Desktop: TypeScript 7, jsdom 31, notify 9, qrcode 0.15, and the frontend and
+  desktop Rust groups.
 
 ## [0.8.0] - 2026-11-28
 
