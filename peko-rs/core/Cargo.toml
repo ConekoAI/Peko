@@ -190,7 +190,7 @@ rand = "0.8"
 base64 = "0.23"
 blake3 = "1.5"
 bs58 = "0.5"
-sha2 = "0.10"
+sha2 = "0.11"
 # ADR-108: pairing proof MAC, and push notifications sealed to a paired
 # phone's key (HPKE, RFC 9180: X25519, HKDF-SHA256, ChaCha20-Poly1305).
 hmac = "0.12"

@@ -55,7 +55,7 @@ cron = "0.17"
 # dir; uses sha2 for peko.toml hashing, walkdir to mirror the
 # daemon-side drift detector, and hex to format the digest.
 walkdir = "2"
-sha2 = "0.10"
+sha2 = "0.11"
 # ADR-108: `peko device pair` shows the pairing code in the terminal.
 qrcode = { version = "0.14", default-features = false }
 hex = "0.4"
