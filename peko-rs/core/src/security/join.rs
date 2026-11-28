@@ -29,7 +29,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
 use curve25519_dalek::traits::IsIdentity;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, Sha512};
 

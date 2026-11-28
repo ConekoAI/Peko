@@ -17,7 +17,7 @@ chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1.0"
 
 # ADR-065: WorkspaceFileLock keys lock files on sha256(canonical path)
-sha2 = "0.10"
+sha2 = "0.11"
 
 # ADR-065: default_workspace_lock_dir mirrors
 # peko_tools_core::paths::default_data_dir (env override, platform

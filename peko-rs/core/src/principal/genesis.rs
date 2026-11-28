@@ -851,7 +851,7 @@ fn seed_role(
     let flat = roles_dir.join(format!("{id}.md"));
     let dir_layout = roles_dir.join(id).join("ROLE.md");
     if let Ok(existing) = std::fs::read(&flat) {
-        let digest = format!("{:x}", Sha256::digest(&existing));
+        let digest = hex::encode(Sha256::digest(&existing));
         if existing != content.as_bytes() && previous.contains(&digest.as_str()) {
             std::fs::write(&flat, content)?;
             return Ok(true);
@@ -1635,7 +1635,7 @@ mod tests {
         let flat = roles.join("root.md");
         // Any content whose hash is listed counts as an earlier seed.
         let earlier = b"an earlier seed";
-        let digest = format!("{:x}", Sha256::digest(earlier));
+        let digest = hex::encode(Sha256::digest(earlier));
         assert!(seed_role(ws.path(), "root", "current", &[digest.as_str()]).is_ok());
         assert!(!flat.exists() || std::fs::read(&flat).unwrap() == b"current");
         std::fs::write(&flat, earlier).unwrap();
@@ -1662,7 +1662,7 @@ mod tests {
                 PREVIOUS_WORKER_SEEDS,
             ),
         ] {
-            let digest = format!("{:x}", Sha256::digest(current.as_bytes()));
+            let digest = hex::encode(Sha256::digest(current.as_bytes()));
             assert!(!previous.contains(&digest.as_str()));
         }
     }
@@ -1698,7 +1698,7 @@ mod tests {
                 PREVIOUS_CHAIR_SEEDS,
             ),
         ] {
-            let digest = format!("{:x}", Sha256::digest(content.as_bytes()));
+            let digest = hex::encode(Sha256::digest(content.as_bytes()));
             assert_eq!(
                 digest, pinned,
                 "the `{id}` seed changed: add {pinned} to its PREVIOUS_*_SEEDS and set its \

@@ -58,7 +58,7 @@ rand = "0.8"
 tracing = "0.1"
 
 # ChatGPT plan sharing (`chatgpt.rs`): the PKCE code challenge.
-sha2 = "0.10"
+sha2 = "0.11"
 
 [dev-dependencies]
 # Test fixtures: vault-backed `VaultCredentialProvider` needs `tempfile`,
