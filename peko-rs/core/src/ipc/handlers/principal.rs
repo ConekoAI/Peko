@@ -415,7 +415,8 @@ impl RequestHandler for PrincipalHandler {
                     },
                     Ok(principal) => {
                         let schedule = host.path_resolver().cron_schedule(&name);
-                        setup_status(request_id, name, &principal, &schedule).await
+                        let missing_model = missing_model(host, &principal).await;
+                        setup_status(request_id, name, &principal, &schedule, missing_model).await
                     }
                 };
                 send_response(sink, response).await?;
@@ -1796,6 +1797,7 @@ impl RequestHandler for PrincipalHandler {
                 };
 
                 let avatar_changed = avatar.is_some();
+                let model_changed = preferred_model_id.is_some();
                 match host
                     .principal_manager()
                     .update_config(&name, |config| {
@@ -1818,6 +1820,14 @@ impl RequestHandler for PrincipalHandler {
                     .await
                 {
                     Ok(principal) => {
+                        // A first turn that failed for want of a model
+                        // runs again with the new one, not at the next boot.
+                        if model_changed {
+                            let schedule = host.path_resolver().cron_schedule(&name);
+                            if rearm_first_turn(&principal, &schedule).await {
+                                tracing::info!(principal = %name, "model changed: first turn scheduled again");
+                            }
+                        }
                         // Best-effort publish status/exposure changes to
                         // the hub when a tunnel dispatcher is active.
                         if let Some(dispatcher) = host.tunnel_dispatcher().await {
@@ -5318,6 +5328,7 @@ async fn setup_status(
     name: String,
     principal: &Principal,
     schedule: &std::path::Path,
+    missing_model: Option<String>,
 ) -> ResponsePacket {
     use crate::principal::setup_status;
     principal.reload_config_if_changed().await;
@@ -5333,22 +5344,31 @@ async fn setup_status(
     let local = setup_status::local_root(&principal.memory.sessions_dir());
     let schedule = schedule.to_path_buf();
     let steps_listed = setup.clone();
-    let (steps, report, results, scheduled) = tokio::task::spawn_blocking(move || {
-        let mut steps = setup_status::steps(&ledger_dir);
-        let skip = steps.len().saturating_sub(SETUP_STATUS_STEPS);
-        steps.drain(..skip);
-        let scheduled = peko_cron::CronScheduler::new(&schedule)
-            .and_then(|s| s.get_job(crate::principal::genesis::SETUP_JOB_ID))
-            .is_ok_and(|job| job.is_some());
-        (
-            steps,
-            setup_status::report(&workspace),
-            setup_status::results(&workspace, &local, &steps_listed),
-            scheduled,
-        )
-    })
-    .await
-    .unwrap_or_default();
+    let organized = boot_state == crate::principal::config::BootState::Organized;
+    let (steps, report, results, scheduled, first_turn_error) =
+        tokio::task::spawn_blocking(move || {
+            let mut steps = setup_status::steps(&ledger_dir);
+            let skip = steps.len().saturating_sub(SETUP_STATUS_STEPS);
+            steps.drain(..skip);
+            let scheduler = peko_cron::CronScheduler::new(&schedule).ok();
+            let scheduled = scheduler.as_ref().is_some_and(|s| {
+                s.get_job(crate::principal::genesis::SETUP_JOB_ID)
+                    .is_ok_and(|job| job.is_some())
+            });
+            let first_turn_error = scheduler
+                .as_ref()
+                .filter(|_| !organized)
+                .and_then(crate::principal::genesis::first_turn_failure);
+            (
+                steps,
+                setup_status::report(&workspace),
+                setup_status::results(&workspace, &local, &steps_listed),
+                scheduled,
+                first_turn_error,
+            )
+        })
+        .await
+        .unwrap_or_default();
     ResponsePacket::PrincipalSetupStatus {
         request_id,
         name,
@@ -5379,7 +5399,43 @@ async fn setup_status(
                 note: result.note,
             })
             .collect(),
+        first_turn_error,
+        missing_model,
     }
+}
+
+/// The model `principal`'s turns need and this computer doesn't have: the
+/// id it is set to when that is not an enabled model of the catalog, or
+/// `""` when it is set to none. `None` when its model is there (or there
+/// is no catalog to ask).
+async fn missing_model(host: &dyn PrincipalHost, principal: &Principal) -> Option<String> {
+    let resolver = host.principal_manager().llm_resolver()?;
+    let pinned = principal.config.read().await.preferred_model_id.clone();
+    match pinned.filter(|id| !id.trim().is_empty()) {
+        None => Some(String::new()),
+        Some(id) if resolver.catalog().get_enabled(&id).await.is_none() => Some(id),
+        Some(_) => None,
+    }
+}
+
+/// Schedule the first turn again for a peko still setting itself up whose
+/// first turn failed (it is otherwise tried again only at the next boot).
+/// Whether one was scheduled.
+async fn rearm_first_turn(principal: &Principal, schedule: &std::path::Path) -> bool {
+    let config = principal.config.read().await.clone();
+    let schedule = schedule.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        peko_cron::CronScheduler::new(&schedule).and_then(|scheduler| {
+            crate::principal::genesis::rearm_first_turn(&scheduler, &config, chrono::Utc::now())
+        })
+    })
+    .await
+    .map_err(anyhow::Error::from)
+    .and_then(|r| r)
+    .unwrap_or_else(|e| {
+        warn!("could not schedule the first turn again: {e:#}");
+        false
+    })
 }
 
 /// Schedule a setup turn for `principal` (ADR-106), or say why not.
@@ -5393,6 +5449,11 @@ async fn setup_run_refusal(
     principal.reload_config_if_changed().await;
     let config = principal.config.read().await.clone();
     if config.boot_state() != crate::principal::config::BootState::Organized {
+        // A first turn that failed is tried again now; one scheduled or
+        // running is left to finish.
+        if rearm_first_turn(principal, schedule).await {
+            return None;
+        }
         return Some(format!(
             "peko '{name}' is still on its first turn; setup runs after it"
         ));

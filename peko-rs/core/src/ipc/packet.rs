@@ -703,9 +703,10 @@ pub enum RequestPacket {
 
     /// Run a peko's setup steps again (ADR-106): a setup turn that
     /// checks each step and carries out the ones that do not work yet.
-    /// Owner (or operator) only. Answers `done`; `success: false` when
-    /// the peko lists no steps, a setup turn is already scheduled, or it
-    /// is still on its first turn.
+    /// For a peko whose first turn failed and is not scheduled, that
+    /// first turn runs again instead. Owner (or operator) only. Answers
+    /// `done`; `success: false` when the peko lists no steps, a setup
+    /// turn is already scheduled, or its first turn is still to run.
     #[serde(rename = "principal_setup_run")]
     PrincipalSetupRun { request_id: u64, name: String },
 
@@ -3213,6 +3214,17 @@ pub enum ResponsePacket {
         /// report.
         #[serde(default)]
         results: Vec<SetupResultInfo>,
+        /// Why its first turn last failed, while that turn is not over
+        /// (it is tried again at the next boot, when its model changes,
+        /// or on `principal_setup_run`). Absent from older engines.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        first_turn_error: Option<String>,
+        /// The model its turns need and this computer doesn't have: the
+        /// id it is set to that isn't in the model list (or is turned
+        /// off), or `""` when it is set to none. Absent when its model is
+        /// there, and from older engines.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        missing_model: Option<String>,
     },
 
     /// The approval requests waiting for the owner, oldest first.
@@ -4606,6 +4618,8 @@ mod tests {
                 status: "pending".to_string(),
                 note: None,
             }],
+            first_turn_error: Some("no model configured for this call".to_string()),
+            missing_model: Some("mimo-v2.6-flash".to_string()),
         };
         let run = RequestPacket::PrincipalSetupRun {
             request_id: 8,
@@ -4626,6 +4640,11 @@ mod tests {
             "running: no outcome"
         );
         assert!(value.get("report").is_none(), "no report yet");
+        assert_eq!(
+            value["first_turn_error"],
+            "no model configured for this call"
+        );
+        assert_eq!(value["missing_model"], "mimo-v2.6-flash");
     }
 
     #[test]
