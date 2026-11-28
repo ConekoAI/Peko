@@ -722,7 +722,18 @@ mod tests {
             w("/Users/ada/Library/Mobile Documents/com~apple~CloudDocs/Peko").contains(&"synced")
         );
         assert!(w("/Users/ada/Library/CloudStorage/Dropbox/Peko").contains(&"synced"));
-        assert!(w("/Users/ada/Peko").is_empty());
+        // A folder on the system drive needs no warning. Windows names
+        // the drive: a path without one counts as another drive.
+        let plain = if cfg!(windows) {
+            r"C:\Users\ada\Peko"
+        } else {
+            "/Users/ada/Peko"
+        };
+        assert!(w(plain).is_empty(), "{:?}", w(plain));
+        if cfg!(windows) {
+            assert!(w(r"D:\Peko").contains(&"removable"));
+            assert!(w(r"C:\Users\ada\OneDrive\Peko").contains(&"synced"));
+        }
         if cfg!(target_os = "macos") {
             assert!(w("/Volumes/T7/Peko").contains(&"removable"));
             assert!(w("/Users/ada/Documents/Peko").contains(&"protected"));
