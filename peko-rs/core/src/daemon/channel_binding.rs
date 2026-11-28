@@ -1720,6 +1720,75 @@ impl ChannelResponder for PeerPostNudger {
     }
 }
 
+/// Wraps a DM's responder: a message from a visitor (anyone but the
+/// peko and its owner, ADR-113 D1) is counted in the peko's tally
+/// (ADR-130), then the inner responder sees the event as before.
+struct VisitorCounter {
+    inner: Arc<dyn ChannelResponder>,
+    port: Arc<dyn ChannelPort>,
+    /// Who the peko's owner is, asked per post (an owner can change).
+    trust: Arc<dyn crate::security::stamps::TrustSource>,
+    tally: PathBuf,
+}
+
+impl VisitorCounter {
+    /// When `ctx.event` is a visitor's message, the time it was posted.
+    async fn visitor_post(&self, ctx: &RespondCtx) -> Option<chrono::DateTime<chrono::Utc>> {
+        use peko_subject::ActorKeys as _;
+        // ADR-126 D2: a reaction is not a message.
+        if !ctx.event.is_message() {
+            return None;
+        }
+        let ChannelEvent::Posted { author, at, .. } = &ctx.event else {
+            return None;
+        };
+        let author = ActorRef::from_str(author).ok()?;
+        let keys = peko_channel::PortKeys(self.port.as_ref());
+        if keys.same_actor(&author, &ActorRef::from(&ctx.principal)) {
+            return None;
+        }
+        if self.trust.trust_of(&author, &keys).await == peko_tools_core::Trust::Owner {
+            return None;
+        }
+        chrono::DateTime::parse_from_rfc3339(at)
+            .ok()
+            .map(|at| at.with_timezone(&chrono::Utc))
+    }
+}
+
+#[async_trait]
+impl ChannelResponder for VisitorCounter {
+    async fn consider_response(&self, ctx: RespondCtx) -> peko_channel::Result<()> {
+        if let Some(at) = self.visitor_post(&ctx).await {
+            let path = self.tally.clone();
+            let counted = tokio::task::spawn_blocking(move || {
+                crate::principal::visitors::record(&path, at, chrono::Utc::now())
+            })
+            .await;
+            if let Ok(Err(e)) = counted {
+                warn!(channel = %ctx.channel, "visitor tally not written: {e}");
+            }
+        }
+        self.inner.consider_response(ctx).await
+    }
+}
+
+/// Wrap a DM's `inner` so visitors' messages are counted in the tally at
+/// `tally` (`principal::visitors::path_for`).
+pub(crate) fn with_visitor_count(
+    inner: Arc<dyn ChannelResponder>,
+    port: Arc<dyn ChannelPort>,
+    trust: Arc<dyn crate::security::stamps::TrustSource>,
+    tally: PathBuf,
+) -> Arc<dyn ChannelResponder> {
+    Arc::new(VisitorCounter {
+        inner,
+        port,
+        trust,
+        tally,
+    })
+}
+
 /// Wrap `inner` so peer posts reach the nudge in `slot` once it is set.
 pub(crate) fn with_peer_nudge(
     inner: Arc<dyn ChannelResponder>,
@@ -2040,12 +2109,18 @@ impl ChannelBindingSupervisor {
             }
         };
         // A DM never wakes the principal from here (see
-        // `select_responder`), so it needs no driver.
+        // `select_responder`), so it needs no driver. Its visitors'
+        // messages are counted (ADR-130).
         if kind == ConversationKind::Dm {
-            return with_peer_nudge(
-                Arc::new(NoopChannelResponder),
+            return with_visitor_count(
+                with_peer_nudge(
+                    Arc::new(NoopChannelResponder),
+                    Arc::clone(&self.port),
+                    Arc::clone(&self.peer_nudge),
+                ),
                 Arc::clone(&self.port),
-                Arc::clone(&self.peer_nudge),
+                Arc::new(crate::principal::trust::PrincipalTrust::new(principal)),
+                crate::principal::visitors::path_for(principal),
             );
         }
         let name = principal.config.read().await.name.clone();
@@ -3156,6 +3231,97 @@ mod tests {
         assert!(recorder.0.lock().unwrap().is_empty());
         deliver(peer).await;
         assert_eq!(*recorder.0.lock().unwrap(), vec![(me, channel)]);
+    }
+
+    /// ADR-130: a DM's posts by anyone but the peko and its owner are
+    /// counted in its visitor tally; reactions are not messages.
+    #[tokio::test]
+    async fn visitor_count_counts_only_others_messages() {
+        struct OwnerIsAlice;
+        #[async_trait]
+        impl crate::security::stamps::TrustSource for OwnerIsAlice {
+            async fn trust_of(
+                &self,
+                actor: &ActorRef,
+                keys: &(dyn peko_subject::ActorKeys + Sync),
+            ) -> peko_tools_core::Trust {
+                if keys.same_actor(actor, &ActorRef::User("alice".into())) {
+                    peko_tools_core::Trust::Owner
+                } else {
+                    peko_tools_core::Trust::Untrusted
+                }
+            }
+            async fn owner(&self) -> ActorRef {
+                ActorRef::User("alice".into())
+            }
+        }
+
+        let (store, tmp) = test_store("visitor-count");
+        let port = Arc::clone(&store) as Arc<dyn ChannelPort>;
+        let me = pid("prin_self");
+        let visitor = ActorRef::User("bob".into());
+        let peer = ActorRef::Principal("prin_peer".into());
+        let channel = store
+            .create(&me, CreateOpts::runtime("visits"))
+            .await
+            .unwrap();
+        for member in [&visitor, &peer, &ActorRef::User("alice".into())] {
+            store.invite(&channel, &me, member).await.unwrap();
+        }
+        let tally = tmp.path().join("local/visitors.json");
+        let responder = with_visitor_count(
+            Arc::new(NoopChannelResponder),
+            Arc::clone(&port),
+            Arc::new(OwnerIsAlice),
+            tally.clone(),
+        );
+        let deliver = |author: ActorRef, msg: PostMsg| {
+            let store = Arc::clone(&store);
+            let channel = channel.clone();
+            let me = me.clone();
+            let responder = Arc::clone(&responder);
+            async move {
+                let line = store.post(&channel, &author, msg).await.unwrap();
+                let (_, event) = store
+                    .peek_with_ids(&channel, &peko_channel::Checkpoint::default())
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .rev()
+                    .find(|(id, _)| *id == line)
+                    .unwrap();
+                let msg_id = match &event {
+                    ChannelEvent::Posted { msg_id, .. } => msg_id.clone(),
+                    _ => None,
+                };
+                responder
+                    .consider_response(respond_ctx(&me, &channel, &line, event))
+                    .await
+                    .unwrap();
+                msg_id
+            }
+        };
+
+        deliver(ActorRef::from(&me), PostMsg::root("hello")).await;
+        deliver(
+            ActorRef::User("alice".into()),
+            PostMsg::root("from the owner"),
+        )
+        .await;
+        let first = deliver(visitor.clone(), PostMsg::root("hi from bob")).await;
+        deliver(peer, PostMsg::root("hi from another peko")).await;
+        // A visitor's reaction is not a message.
+        let mut react = PostMsg::root("");
+        react.react = Some(peko_protocol::channel::ReactOp {
+            to: first.expect("posts carry a msg_id"),
+            emoji: "👍".into(),
+            remove: false,
+        });
+        deliver(visitor, react).await;
+
+        let now = chrono::Utc::now();
+        let counted = crate::principal::visitors::read(&tally, now);
+        assert_eq!((counted.daily, counted.weekly), (2, 2));
     }
 
     /// Group wake end-to-end: a user root post on a group channel

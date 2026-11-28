@@ -15,7 +15,7 @@ use super::protocol::{
     AccountDm, AccountGroup, AccountPersonDm, DmBlock, DmRoute, ExposureUpdatePayload,
     InstanceAnnouncePayload, InstanceDeregisterPayload, InstanceExposure, InstanceHeartbeatPayload,
     InstanceStatus, InstanceType, PekoApproval, PekoModel, RuntimeKeyEntry, StatusUpdatePayload,
-    TunnelMessage,
+    TunnelMessage, VisitorCounts,
 };
 use peko_protocol::channel::{
     Attachment, ChannelEvent, ChannelId, ConversationKind, InitialMember,
@@ -315,6 +315,12 @@ fn samples() -> Vec<TunnelMessage> {
                 id: "inst-1".into(),
                 status: InstanceStatus::Busy,
                 timestamp: at.clone(),
+                visitors: Some(VisitorCounts {
+                    day: "2026-11-01".into(),
+                    daily: 3,
+                    week: "2026-W44".into(),
+                    weekly: 12,
+                }),
             },
         },
         TunnelMessage::ExposureUpdate {

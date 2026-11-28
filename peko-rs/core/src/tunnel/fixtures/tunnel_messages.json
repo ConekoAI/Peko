@@ -148,7 +148,13 @@
     "payload": {
       "id": "inst-1",
       "status": "busy",
-      "timestamp": "2026-11-01T10:00:00Z"
+      "timestamp": "2026-11-01T10:00:00Z",
+      "visitors": {
+        "daily": 3,
+        "day": "2026-11-01",
+        "week": "2026-W44",
+        "weekly": 12
+      }
     },
     "type": "instance_heartbeat"
   },
