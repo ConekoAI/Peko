@@ -81,7 +81,7 @@
     "title": "peko を追加",
     "intro": "ほかの人の公開 peko の ID（<code>@alice/coding-assistant</code> など）を入力するか、PekoHub のリンクを貼り付けてください。",
     "label": "Peko ID またはリンク",
-    "invalid": "peko の ID やリンクではないようです。<code>@owner/name</code> または <code>https://pekohub.ai/@owner/name</code> の形式で入力してください。",
+    "invalid": "peko の ID やリンクではないようです。<code>@owner/name</code> または <code>https://pekohub.ai/owner/name</code> の形式で入力してください。",
     "inviteToken": "招待トークンを検出しました。この peko の所有者が、このリンクをあなただけに共有しています。",
     "ownedBy": "所有者: <owner/>（<hub/>）",
     "status": "状態: {{status}}",

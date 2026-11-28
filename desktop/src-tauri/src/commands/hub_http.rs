@@ -427,7 +427,7 @@ fn public_hub_id(answer: &serde_json::Value) -> Option<String> {
 }
 
 /// The peko's share link from the hub's directory answer: the hub's own
-/// `shareUrl` (on its website), else `<website>/@<ownerHandle>/<name>`.
+/// `shareUrl` (on its website), else `<website>/<ownerHandle>/<name>`.
 fn share_link(hub: &str, resolution: &serde_json::Value) -> Option<String> {
     if let Some(url) = resolution.get("shareUrl").and_then(|v| v.as_str()) {
         return Some(url.to_string());
@@ -437,7 +437,7 @@ fn share_link(hub: &str, resolution: &serde_json::Value) -> Option<String> {
     let handle = resolution.get("ownerHandle")?.as_str()?;
     let name = resolution.get("name")?.as_str()?;
     Some(format!(
-        "{}/@{}/{}",
+        "{}/{}/{}",
         hub.trim_end_matches('/'),
         urlencoding_segment(handle),
         urlencoding_segment(name)
@@ -575,16 +575,16 @@ mod tests {
         let resolution = serde_json::json!({ "name": "remy", "ownerHandle": "tester" });
         assert_eq!(
             share_link("https://api.pekohub.ai/", &resolution).as_deref(),
-            Some("https://pekohub.ai/@tester/remy"),
+            Some("https://pekohub.ai/tester/remy"),
             "links name the website, not the API"
         );
         let with_share_url = serde_json::json!({
             "name": "remy", "ownerHandle": "tester",
-            "shareUrl": "https://pekohub.ai/@tester/remy"
+            "shareUrl": "https://pekohub.ai/tester/remy"
         });
         assert_eq!(
             share_link("https://api.pekohub.ai", &with_share_url).as_deref(),
-            Some("https://pekohub.ai/@tester/remy")
+            Some("https://pekohub.ai/tester/remy")
         );
         // A hub that predates `ownerHandle` gives no link, not a wrong one.
         assert_eq!(

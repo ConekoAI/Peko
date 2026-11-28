@@ -53,11 +53,11 @@ export default function RemotePekoProfile({
   if (!open) return null;
 
   const badge = statusBadge(status.data?.status ?? "unknown");
-  // The peko's ID is its page on the hub's website (pekohub ADR-009). A
+  // The peko's page on the hub's website, `/owner/name` (pekohub ADR-009). A
   // private peko has no page there, so it has no link to share.
   const shareUrl =
     record && record.exposure !== "private"
-      ? `${hubWebOrigin(record.hubUrl)}/@${record.owner}/${record.principalName}`
+      ? `${hubWebOrigin(record.hubUrl)}/${record.owner}/${encodeURIComponent(record.principalName)}`
       : null;
   const removeError =
     removeMut.error instanceof Error

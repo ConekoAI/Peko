@@ -17,7 +17,7 @@ import { configuredHubUrl } from "../../lib/api";
  * `~/.peko/remote-principals.json` table.
  *
  * Flow:
- *   1. User pastes a `${hubUrl}/@{owner}/{name}` share URL, or types the
+ *   1. User pastes a `${hubUrl}/{owner}/{name}` share URL, or types the
  *      peko's ID, `@owner/name`, which names a peko on the configured
  *      hub (pekohub ADR-009). The older `/peko/...`, `/p/...` and
  *      `/v1/public/principals/...` forms are still accepted.

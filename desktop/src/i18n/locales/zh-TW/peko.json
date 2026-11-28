@@ -81,7 +81,7 @@
     "title": "新增 peko",
     "intro": "輸入他人公開 peko 的 ID，例如 <code>@alice/coding-assistant</code>，或貼上它在 PekoHub 上的連結。",
     "label": "Peko ID 或連結",
-    "invalid": "這看起來不是 peko 的 ID 或連結。應為 <code>@owner/name</code> 或 <code>https://pekohub.ai/@owner/name</code>。",
+    "invalid": "這看起來不是 peko 的 ID 或連結。應為 <code>@owner/name</code> 或 <code>https://pekohub.ai/owner/name</code>。",
     "inviteToken": "偵測到邀請權杖——這個 peko 的擁有者把這個連結私下分享給了你。",
     "ownedBy": "擁有者：<owner/>，位於 <hub/>",
     "status": "狀態：{{status}}",
