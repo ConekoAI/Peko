@@ -30,6 +30,12 @@ import EndpointForm, {
  *   3. Say hello — the first message, sent from the chat so the reply
  *      streams there (`/chat/<name>?say=…`).
  *
+ * A new install goes through these three steps inside the first-run setup
+ * (`setup/SetupWizard.tsx`), which reuses the step components below and
+ * marks onboarding seen. This overlay is for a profile with no pekos that
+ * did not come through setup (an older install, a window reloaded midway)
+ * and for "Replay onboarding".
+ *
  * It shows on a profile with no pekos unless dismissed before
  * (`localStorage[ONBOARDING_KEY] === "1"`); Skip dismisses it. Settings →
  * About → "Replay onboarding" dispatches REPLAY_EVENT to show it again.
@@ -173,7 +179,7 @@ function Onboarding({ onClose, takenNames }: { onClose: () => void; takenNames: 
 
 // ─── Step 1: connect a model ────────────────────────────────────────
 
-function ModelStep({ onNext }: { onNext: (modelId: string) => void }) {
+export function ModelStep({ onNext }: { onNext: (modelId: string) => void }) {
   const { t } = useTranslation();
   const { data: models, isLoading: modelsLoading } = useModels();
   const enabled = useMemo(() => (models ?? []).filter((m) => m.enabled), [models]);
@@ -310,7 +316,7 @@ function AddModel({ onAdded }: { onAdded: (modelId: string) => void }) {
 
 // ─── Step 2: name and avatar ────────────────────────────────────────
 
-function PekoStep({
+export function PekoStep({
   modelId,
   takenNames,
   onBack,
@@ -342,7 +348,7 @@ function PekoStep({
 
 // ─── Step 3: say hello ──────────────────────────────────────────────
 
-function HelloStep({
+export function HelloStep({
   pekoName,
   onFinish,
 }: {

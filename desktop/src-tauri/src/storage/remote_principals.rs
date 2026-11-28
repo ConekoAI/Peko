@@ -62,9 +62,9 @@ pub struct RemotePrincipalFile {
 }
 
 fn file_path() -> Result<PathBuf, String> {
-    dirs::home_dir()
-        .map(|d| d.join(".peko").join("remote-principals.json"))
-        .ok_or_else(|| "could not determine home directory".to_string())
+    crate::home::peko_home()
+        .map(|d| d.join("remote-principals.json"))
+        .ok_or_else(|| "could not determine the Peko folder".to_string())
 }
 
 /// Read the full file. Missing file returns an empty default rather

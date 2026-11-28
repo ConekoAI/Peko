@@ -1,0 +1,92 @@
+{
+  "steps": {
+    "label": "Pasos de configuración",
+    "welcome": "Bienvenida",
+    "folder": "Carpeta",
+    "privacy": "Privacidad",
+    "ready": "Listo",
+    "model": "Modelo",
+    "peko": "Tu peko",
+    "hello": "Saluda"
+  },
+  "stepOf": "Paso {{current}} de {{total}}",
+  "back": "Atrás",
+  "continue": "Continuar",
+  "skip": "Omitir por ahora",
+  "skipHint": "Puedes añadir un modelo y pekos cuando quieras.",
+  "welcome": {
+    "title": "Te damos la bienvenida a Peko",
+    "slogan": "Donde las mentes se encuentran.",
+    "body": "Los pekos son mentes que viven en tu computadora: recuerdan, trabajan para ti y hablan con personas y otros pekos. La configuración lleva un minuto.",
+    "local": "Funciona en esta computadora",
+    "localHint": "Tus pekos y sus recuerdos se quedan aquí.",
+    "keys": "Tus claves siguen bajo llave",
+    "keysHint": "Las claves de los modelos se guardan cifradas y nunca se nos envían.",
+    "together": "Mejor en compañía",
+    "togetherHint": "Habla con personas y sus pekos, estén donde estén.",
+    "language": "Idioma",
+    "system": "Sistema ({{name}})",
+    "start": "Empezar"
+  },
+  "folder": {
+    "title": "¿Dónde debe guardar Peko sus cosas?",
+    "body": "Una carpeta contiene tus pekos, sus conversaciones y recuerdos, tus modelos y tus claves (cifradas). Elige un lugar con espacio para crecer.",
+    "missingTitle": "Peko no encuentra su carpeta",
+    "missingBody": "Estaba en {{path}}. Si está en una unidad, conéctala y vuelve a intentarlo, o elige dónde debe vivir Peko ahora.",
+    "retry": "Reintentar",
+    "stillMissing": "Todavía no está. Conecta la unidad donde se encuentra y vuelve a intentarlo.",
+    "home": "Tu carpeta personal",
+    "recommended": "Recomendado",
+    "homeHint": "Una carpeta oculta en tu carpeta personal, donde Peko suele vivir.",
+    "other": "En otro lugar",
+    "otherHint": "Otra unidad o cualquier carpeta que elijas.",
+    "choose": "Elegir…",
+    "change": "Cambiar…",
+    "free": "{{size}} libres",
+    "kind": {
+      "new": "Peko creará esta carpeta.",
+      "empty": "Una carpeta vacía: lista para usar.",
+      "subfolder": "Esta carpeta ya tiene otras cosas, así que Peko creará su propia carpeta dentro.",
+      "peko_one": "Ya es una carpeta de Peko con {{count}} peko: Peko continúa donde lo dejó.",
+      "peko_many": "Ya es una carpeta de Peko con {{count}} pekos: Peko continúa donde lo dejó.",
+      "peko_other": "Ya es una carpeta de Peko con {{count}} pekos: Peko continúa donde lo dejó.",
+      "pekoEmpty": "Ya es una carpeta de Peko: Peko continúa donde lo dejó."
+    },
+    "warning": {
+      "synced": "Esta carpeta se sincroniza con la nube. Sincronizar mientras Peko funciona puede dañar sus claves y conversaciones; una carpeta que se quede en esta computadora es más segura.",
+      "removable": "Está en otra unidad. Mantenla conectada: Peko no puede iniciarse sin ella.",
+      "protected": "macOS te pedirá permiso para que Peko use esta carpeta."
+    },
+    "problem": {
+      "notAbsolute": "Elige una ruta de carpeta completa.",
+      "notFolder": "Eso es un archivo, no una carpeta.",
+      "notWritable": "Peko no puede escribir ahí. Elige una carpeta que sea tuya.",
+      "tooLong": "La ruta es demasiado larga para el motor de Peko. Elige una carpeta con una ruta más corta.",
+      "system": "Esa carpeta pertenece al sistema o se vacía sola. Elige otra.",
+      "insideApp": "Esa carpeta está dentro de la app y se eliminaría con ella. Elige otra."
+    },
+    "saving": "Creando la carpeta…"
+  },
+  "privacy": {
+    "title": "Ayuda a mejorar Peko"
+  },
+  "ready": {
+    "title": "Todo listo",
+    "body": "Peko está listo para iniciarse con esta configuración.",
+    "folder": "Carpeta",
+    "crash": "Informes de errores",
+    "usage": "Recuentos de uso",
+    "on": "Activado",
+    "off": "Desactivado",
+    "tips": "Conviene saber",
+    "tray": {
+      "macos": "Al cerrar la ventana, Peko sigue funcionando en la barra de menús, así tus pekos siguen trabajando.",
+      "windows": "Al cerrar la ventana, Peko sigue funcionando en el área de notificación, así tus pekos siguen trabajando.",
+      "linux": "Al cerrar la ventana, Peko sigue funcionando en la bandeja, si tu escritorio tiene una."
+    },
+    "terminal": "El comando peko en una terminal usa esta misma carpeta.",
+    "start": "Iniciar Peko",
+    "starting": "Iniciando el motor…",
+    "failed": "El motor no se inició: {{message}}"
+  }
+}

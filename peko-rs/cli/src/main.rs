@@ -86,6 +86,10 @@ const MAIN_STACK_BYTES: usize = 8 * 1024 * 1024;
 
 /// Peko - Lightweight Multi-Agent Runtime
 fn main() {
+    // The folder Peko Desktop's setup chose, if not `~/.peko`: the command
+    // line then reaches the same pekos and engine the app does. Before any
+    // thread starts, since it sets `PEKO_HOME`.
+    peko_core::common::paths::adopt_home_pointer();
     // Run on a thread whose stack is the same size on every system,
     // rather than on the first thread, whose size the system picks.
     let main = std::thread::Builder::new()

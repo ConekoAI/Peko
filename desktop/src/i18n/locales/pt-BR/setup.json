@@ -1,0 +1,92 @@
+{
+  "steps": {
+    "label": "Etapas de configuração",
+    "welcome": "Boas-vindas",
+    "folder": "Pasta",
+    "privacy": "Privacidade",
+    "ready": "Pronto",
+    "model": "Modelo",
+    "peko": "Seu peko",
+    "hello": "Diga oi"
+  },
+  "stepOf": "Etapa {{current}} de {{total}}",
+  "back": "Voltar",
+  "continue": "Continuar",
+  "skip": "Pular por enquanto",
+  "skipHint": "Você pode adicionar um modelo e pekos quando quiser.",
+  "welcome": {
+    "title": "Boas-vindas ao Peko",
+    "slogan": "Onde as mentes se encontram.",
+    "body": "Pekos são mentes que vivem no seu computador: eles lembram, trabalham para você e conversam com pessoas e outros pekos. A configuração leva um minuto.",
+    "local": "Funciona neste computador",
+    "localHint": "Seus pekos e as memórias deles ficam aqui.",
+    "keys": "Suas chaves ficam trancadas",
+    "keysHint": "As chaves dos modelos são guardadas criptografadas e nunca enviadas para nós.",
+    "together": "Melhor juntos",
+    "togetherHint": "Converse com pessoas e os pekos delas, onde quer que estejam.",
+    "language": "Idioma",
+    "system": "Sistema ({{name}})",
+    "start": "Começar"
+  },
+  "folder": {
+    "title": "Onde o Peko deve guardar as coisas?",
+    "body": "Uma pasta guarda seus pekos, as conversas e memórias deles, seus modelos e suas chaves (criptografadas). Escolha um lugar com espaço para crescer.",
+    "missingTitle": "O Peko não encontra a pasta dele",
+    "missingBody": "Ela estava em {{path}}. Se estiver em uma unidade, conecte-a e tente de novo, ou escolha onde o Peko deve viver agora.",
+    "retry": "Tentar de novo",
+    "stillMissing": "Ainda não está lá. Conecte a unidade em que ela está e tente de novo.",
+    "home": "Sua pasta pessoal",
+    "recommended": "Recomendado",
+    "homeHint": "Uma pasta oculta na sua pasta pessoal, onde o Peko costuma viver.",
+    "other": "Em outro lugar",
+    "otherHint": "Outra unidade ou qualquer pasta que você escolher.",
+    "choose": "Escolher…",
+    "change": "Alterar…",
+    "free": "{{size}} livres",
+    "kind": {
+      "new": "O Peko vai criar esta pasta.",
+      "empty": "Uma pasta vazia: pronta para usar.",
+      "subfolder": "Esta pasta já tem outras coisas, então o Peko vai criar a própria pasta dentro dela.",
+      "peko_one": "Já é uma pasta do Peko com {{count}} peko: o Peko continua de onde parou.",
+      "peko_many": "Já é uma pasta do Peko com {{count}} pekos: o Peko continua de onde parou.",
+      "peko_other": "Já é uma pasta do Peko com {{count}} pekos: o Peko continua de onde parou.",
+      "pekoEmpty": "Já é uma pasta do Peko: o Peko continua de onde parou."
+    },
+    "warning": {
+      "synced": "Esta pasta sincroniza com a nuvem. Sincronizar enquanto o Peko roda pode danificar as chaves e conversas dele; uma pasta que fica neste computador é mais segura.",
+      "removable": "Ela está em outra unidade. Mantenha-a conectada: o Peko não inicia sem ela.",
+      "protected": "O macOS vai pedir para você permitir que o Peko use esta pasta."
+    },
+    "problem": {
+      "notAbsolute": "Escolha o caminho completo de uma pasta.",
+      "notFolder": "Isso é um arquivo, não uma pasta.",
+      "notWritable": "O Peko não consegue gravar aí. Escolha uma pasta que seja sua.",
+      "tooLong": "Esse caminho é longo demais para o motor do Peko. Escolha uma pasta com um caminho mais curto.",
+      "system": "Essa pasta pertence ao sistema ou é esvaziada sozinha. Escolha outra.",
+      "insideApp": "Essa pasta fica dentro do app e seria removida com ele. Escolha outra."
+    },
+    "saving": "Criando a pasta…"
+  },
+  "privacy": {
+    "title": "Ajude a melhorar o Peko"
+  },
+  "ready": {
+    "title": "Tudo pronto",
+    "body": "O Peko está pronto para iniciar com estas configurações.",
+    "folder": "Pasta",
+    "crash": "Relatórios de falhas",
+    "usage": "Contagens de uso",
+    "on": "Ativado",
+    "off": "Desativado",
+    "tips": "Bom saber",
+    "tray": {
+      "macos": "Fechar a janela mantém o Peko rodando na barra de menus, para que seus pekos continuem trabalhando.",
+      "windows": "Fechar a janela mantém o Peko rodando na área de notificação, para que seus pekos continuem trabalhando.",
+      "linux": "Fechar a janela mantém o Peko rodando na bandeja, se o seu ambiente de trabalho tiver uma."
+    },
+    "terminal": "O comando peko em um terminal usa esta mesma pasta.",
+    "start": "Iniciar o Peko",
+    "starting": "Iniciando o motor…",
+    "failed": "O motor não iniciou: {{message}}"
+  }
+}

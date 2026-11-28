@@ -1,0 +1,92 @@
+{
+  "steps": {
+    "label": "Étapes de configuration",
+    "welcome": "Bienvenue",
+    "folder": "Dossier",
+    "privacy": "Confidentialité",
+    "ready": "Prêt",
+    "model": "Modèle",
+    "peko": "Votre peko",
+    "hello": "Dites bonjour"
+  },
+  "stepOf": "Étape {{current}} sur {{total}}",
+  "back": "Retour",
+  "continue": "Continuer",
+  "skip": "Passer pour l'instant",
+  "skipHint": "Vous pourrez ajouter un modèle et des pekos à tout moment.",
+  "welcome": {
+    "title": "Bienvenue dans Peko",
+    "slogan": "Là où les esprits se rencontrent.",
+    "body": "Les pekos sont des esprits qui vivent sur votre ordinateur : ils se souviennent, travaillent pour vous et discutent avec des personnes et d'autres pekos. La configuration prend une minute.",
+    "local": "Fonctionne sur cet ordinateur",
+    "localHint": "Vos pekos et leurs souvenirs restent ici.",
+    "keys": "Vos clés restent sous clé",
+    "keysHint": "Les clés des modèles sont conservées chiffrées et ne nous sont jamais envoyées.",
+    "together": "Mieux ensemble",
+    "togetherHint": "Discutez avec des personnes et leurs pekos, où qu'ils soient.",
+    "language": "Langue",
+    "system": "Système ({{name}})",
+    "start": "Commencer"
+  },
+  "folder": {
+    "title": "Où Peko doit-il ranger ses affaires ?",
+    "body": "Un seul dossier contient vos pekos, leurs conversations et souvenirs, vos modèles et vos clés (chiffrées). Choisissez un endroit avec de la place pour grandir.",
+    "missingTitle": "Peko ne trouve pas son dossier",
+    "missingBody": "Il se trouvait à {{path}}. S'il est sur un disque, branchez-le et réessayez, ou choisissez où Peko doit vivre désormais.",
+    "retry": "Réessayer",
+    "stillMissing": "Toujours absent. Branchez le disque sur lequel il se trouve, puis réessayez.",
+    "home": "Votre dossier personnel",
+    "recommended": "Recommandé",
+    "homeHint": "Un dossier masqué dans votre dossier personnel, là où Peko vit d'habitude.",
+    "other": "Ailleurs",
+    "otherHint": "Un autre disque, ou le dossier de votre choix.",
+    "choose": "Choisir…",
+    "change": "Modifier…",
+    "free": "{{size}} libres",
+    "kind": {
+      "new": "Peko créera ce dossier.",
+      "empty": "Un dossier vide : prêt à l'emploi.",
+      "subfolder": "Ce dossier contient déjà autre chose, Peko y créera donc son propre dossier.",
+      "peko_one": "Déjà un dossier Peko avec {{count}} peko : Peko reprend là où il s'était arrêté.",
+      "peko_many": "Déjà un dossier Peko avec {{count}} pekos : Peko reprend là où il s'était arrêté.",
+      "peko_other": "Déjà un dossier Peko avec {{count}} pekos : Peko reprend là où il s'était arrêté.",
+      "pekoEmpty": "Déjà un dossier Peko : Peko reprend là où il s'était arrêté."
+    },
+    "warning": {
+      "synced": "Ce dossier se synchronise avec le cloud. Synchroniser pendant que Peko fonctionne peut abîmer ses clés et ses conversations ; un dossier qui reste sur cet ordinateur est plus sûr.",
+      "removable": "Il se trouve sur un autre disque. Gardez-le branché : Peko ne peut pas démarrer sans lui.",
+      "protected": "macOS vous demandera d'autoriser Peko à utiliser ce dossier."
+    },
+    "problem": {
+      "notAbsolute": "Choisissez un chemin de dossier complet.",
+      "notFolder": "C'est un fichier, pas un dossier.",
+      "notWritable": "Peko ne peut pas écrire ici. Choisissez un dossier qui vous appartient.",
+      "tooLong": "Ce chemin est trop long pour le moteur de Peko. Choisissez un dossier au chemin plus court.",
+      "system": "Ce dossier appartient au système ou se vide tout seul. Choisissez-en un autre.",
+      "insideApp": "Ce dossier est dans l'app et serait supprimé avec elle. Choisissez-en un autre."
+    },
+    "saving": "Création du dossier…"
+  },
+  "privacy": {
+    "title": "Aidez-nous à améliorer Peko"
+  },
+  "ready": {
+    "title": "Tout est prêt",
+    "body": "Peko est prêt à démarrer avec ces réglages.",
+    "folder": "Dossier",
+    "crash": "Rapports de plantage",
+    "usage": "Statistiques d'utilisation",
+    "on": "Activé",
+    "off": "Désactivé",
+    "tips": "Bon à savoir",
+    "tray": {
+      "macos": "Fermer la fenêtre laisse Peko fonctionner dans la barre des menus, pour que vos pekos continuent de travailler.",
+      "windows": "Fermer la fenêtre laisse Peko fonctionner dans la zone de notification, pour que vos pekos continuent de travailler.",
+      "linux": "Fermer la fenêtre laisse Peko fonctionner dans la zone de notification, si votre bureau en a une."
+    },
+    "terminal": "La commande peko dans un terminal utilise ce même dossier.",
+    "start": "Démarrer Peko",
+    "starting": "Démarrage du moteur…",
+    "failed": "Le moteur n'a pas démarré : {{message}}"
+  }
+}

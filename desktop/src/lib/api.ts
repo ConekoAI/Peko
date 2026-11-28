@@ -1438,6 +1438,63 @@ export async function pekoHomeDir(): Promise<string> {
   return invoke<string>("peko_home_dir");
 }
 
+// ─── First-run setup: where Peko keeps things ─────────────────────
+
+/** Whether the setup wizard shows, and why (`src-tauri/src/home.rs`). */
+export interface AppSetupStatus {
+  needed: boolean;
+  /** `fresh`: no Peko folder yet. `missing`: the chosen one is not there. */
+  reason: "fresh" | "missing" | null;
+  /** The folder Peko uses now, or the missing one. */
+  home: string;
+  /** `~/.peko`. */
+  defaultHome: string;
+  platform: "macos" | "windows" | "linux";
+}
+
+/** What choosing a folder would do. */
+export interface FolderCheck {
+  /** Where Peko would live: the folder, or a `Peko` folder inside it. */
+  home: string;
+  kind: "new" | "empty" | "peko" | "default";
+  pekos: number | null;
+  freeBytes: number | null;
+  warnings: ("synced" | "removable" | "protected")[];
+  problem:
+    | "notAbsolute"
+    | "notFolder"
+    | "notWritable"
+    | "tooLong"
+    | "system"
+    | "insideApp"
+    | null;
+}
+
+export async function appSetupStatus(): Promise<AppSetupStatus> {
+  return invoke("setup_status");
+}
+
+export async function appSetupCheckFolder(path: string): Promise<FolderCheck> {
+  return invoke("setup_check_folder", { path });
+}
+
+/** Make the folder and remember it; `null` is `~/.peko`. Resolves to the folder. */
+export async function appSetupUseFolder(path: string | null): Promise<string> {
+  return invoke("setup_use_folder", { path });
+}
+
+/** Setup is done: start the engine. */
+export async function appSetupFinish(): Promise<void> {
+  await invoke("setup_finish");
+}
+
+/** Ask for a folder; `null` if cancelled. */
+export async function pickFolder(defaultPath?: string): Promise<string | null> {
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const picked = await open({ multiple: false, directory: true, defaultPath });
+  return !picked || Array.isArray(picked) ? null : picked;
+}
+
 export async function settingsList(): Promise<Setting[]> {
   return invoke("settings_list");
 }

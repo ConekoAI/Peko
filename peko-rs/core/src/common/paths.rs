@@ -291,6 +291,48 @@ pub fn expand_tilde(path: impl AsRef<str>) -> PathBuf {
 /// Environment variable override for Peko's home directory.
 const PEKO_HOME_ENV: &str = "PEKO_HOME";
 
+/// The file that says where Peko's folder is when `PEKO_HOME` is not set:
+/// `<local config dir>/peko/home.toml` (`~/Library/Application Support` on
+/// macOS, `%LOCALAPPDATA%` on Windows, `~/.config` on Linux). Peko Desktop's
+/// setup writes it when the owner keeps Peko somewhere other than `~/.peko`,
+/// and so does the Windows installer's `/PEKOHOME=` switch. Its one key:
+///
+/// ```toml
+/// home = "/Volumes/Data/Peko"
+/// ```
+#[must_use]
+pub fn home_pointer_path() -> Option<PathBuf> {
+    dirs::config_local_dir().map(|d| d.join("peko").join("home.toml"))
+}
+
+/// The folder a pointer file names: an absolute `home`, else `None` (no
+/// file, unreadable, malformed, or relative — a relative home would move
+/// with the working directory).
+#[must_use]
+pub fn read_home_pointer(path: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let table = text.parse::<toml::Table>().ok()?;
+    let home = table.get("home")?.as_str()?.trim();
+    let home = PathBuf::from(home);
+    home.is_absolute().then_some(home)
+}
+
+/// Make the pointer file's folder this process's `PEKO_HOME`, when
+/// `PEKO_HOME` is not already set. `peko` and `peko-daemon` call it first
+/// thing, before any other thread starts, so every resolver below
+/// (config, data, cache, run dir, the socket) sees one home and the
+/// command line reaches the engine Peko Desktop runs.
+pub fn adopt_home_pointer() {
+    if std::env::var_os(PEKO_HOME_ENV).is_some() {
+        return;
+    }
+    if let Some(home) = home_pointer_path().and_then(|p| read_home_pointer(&p)) {
+        // SAFETY: called at the top of `main`, before the process starts
+        // another thread, so nothing reads the environment concurrently.
+        unsafe { std::env::set_var(PEKO_HOME_ENV, home) };
+    }
+}
+
 /// Get the default configuration directory
 ///
 /// Checks `PEKO_HOME` environment variable first, then falls back to
@@ -1054,6 +1096,25 @@ mod tests {
         let home = dirs::home_dir().expect("should have home dir");
         assert_eq!(expand_tilde("~/foo"), home.join("foo"));
         assert_eq!(expand_tilde("~"), home);
+    }
+
+    #[test]
+    fn a_home_pointer_names_an_absolute_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("home.toml");
+        assert_eq!(read_home_pointer(&file), None, "no file");
+
+        let home = dir.path().join("Peko");
+        let quoted = toml::Value::String(home.display().to_string());
+        std::fs::write(&file, format!("# where Peko lives\nhome = {quoted}\n")).unwrap();
+        assert_eq!(read_home_pointer(&file), Some(home));
+
+        std::fs::write(&file, "home = \"relative/peko\"\n").unwrap();
+        assert_eq!(read_home_pointer(&file), None, "relative");
+        std::fs::write(&file, "home = [").unwrap();
+        assert_eq!(read_home_pointer(&file), None, "malformed");
+        std::fs::write(&file, "other = \"/x\"\n").unwrap();
+        assert_eq!(read_home_pointer(&file), None, "no home key");
     }
 
     #[test]
