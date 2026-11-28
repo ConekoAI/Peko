@@ -6,10 +6,10 @@
 //! signature against the public key in the config, stop the engine,
 //! replace the app, start again.
 //!
-//! There are two feeds while the app moves into the ConekoAI/Peko
-//! repository: Peko's first, then this repository's. The updater skips a
-//! feed with no `latest.json` and uses the first one that has it, so this
-//! app follows Peko's releases once they carry the app.
+//! The feed is ConekoAI/Peko's: each release there carries the app beside
+//! the command line. Apps up to 0.7.3 came from ConekoAI/peko-desktop;
+//! 0.7.3 reads Peko's feed first and that repository's second, and so
+//! moves over with the first Peko release that carries the app.
 //!
 //! The engine is stopped first because the update replaces its binary,
 //! which Windows won't do while it runs. An engine this app only watches

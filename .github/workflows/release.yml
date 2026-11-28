@@ -5,9 +5,28 @@ name: Build and Release
 #   python3 scripts/bump_version.py patch   # then a pull request, merged
 #
 # When peko-rs/core/Cargo.toml changes on master and the tree's version has
-# no published release, this workflow tags v<version> at that commit, builds
-# the five archives from the tag, publishes the release and runs the smoke
-# job. A merge that leaves the version alone releases nothing.
+# no published release, this workflow tags v<version> at that commit, opens a
+# draft release, builds the five command-line archives and the desktop app
+# (desktop/, with the engine from the same commit as its sidecar) into it,
+# publishes it once everything is there, and runs the smoke job. A merge that
+# leaves the version alone releases nothing.
+#
+# The draft is published last because installed desktop apps read
+# `releases/latest/download/latest.json`: a published release without the
+# app's update files would leave every app with no update to find. If a
+# build fails, the draft stays a draft; "Run workflow" retries into it.
+#
+# Desktop signing (each is optional; the app builds without it):
+#   in-app updates  TAURI_SIGNING_PRIVATE_KEY (+ _PASSWORD); the public key is
+#                   plugins.updater.pubkey in desktop/src-tauri/tauri.conf.json.
+#                   Without it the release has no update files, and installed
+#                   apps find no update.
+#   macOS           APPLE_CERTIFICATE (base64 .p12), APPLE_CERTIFICATE_PASSWORD,
+#                   APPLE_SIGNING_IDENTITY; to notarize also APPLE_ID,
+#                   APPLE_PASSWORD (app-specific), APPLE_TEAM_ID.
+#   Windows         not code-signed yet, so SmartScreen warns on first run.
+# Variables (not secrets; they ship inside the app): DESKTOP_SENTRY_DSN,
+# DESKTOP_POSTHOG_KEY.
 #
 # Run it by hand ("Run workflow" on master) to release the tree's version when
 # nothing triggered it: the first release of a version line, or a retry after
@@ -42,6 +61,7 @@ jobs:
       tag: ${{ steps.decide.outputs.tag }}
       version: ${{ steps.decide.outputs.version }}
       prerelease: ${{ steps.decide.outputs.prerelease }}
+      release_id: ${{ steps.draft.outputs.id }}
     steps:
       - uses: actions/checkout@v7
 
@@ -68,7 +88,8 @@ jobs:
             exit 1
           fi
 
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          # A draft left by a failed run is not a release: carry on into it.
+          if [ "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null)" = "false" ]; then
             echo "::notice::$TAG is already released. Nothing to do."
             echo "release=false" >> "$GITHUB_OUTPUT"
             exit 0
@@ -92,6 +113,32 @@ jobs:
             echo "prerelease=$PRERELEASE"
           } >> "$GITHUB_OUTPUT"
           echo "Releasing $TAG"
+
+      # One draft every build uploads into, made once here so the parallel
+      # jobs never race to make two.
+      - name: Find or create the draft release
+        id: draft
+        if: steps.decide.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.decide.outputs.tag }}
+          VERSION: ${{ steps.decide.outputs.version }}
+          PRERELEASE: ${{ steps.decide.outputs.prerelease }}
+        run: |
+          ID="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+            --jq ".[] | select(.tag_name == \"$TAG\") | .id" | head -n 1)"
+          if [ -z "$ID" ]; then
+            ID="$(gh api "repos/$GITHUB_REPOSITORY/releases" \
+              -f tag_name="$TAG" \
+              -f name="Peko v$VERSION" \
+              -F draft=true \
+              -F prerelease="$PRERELEASE" \
+              --jq .id)"
+            echo "Created draft release $ID for $TAG"
+          else
+            echo "Reusing release $ID for $TAG"
+          fi
+          echo "id=$ID" >> "$GITHUB_OUTPUT"
 
   # Build for Linux x86_64
   build-linux-x86_64:
@@ -312,8 +359,8 @@ jobs:
           name: peko-windows-x86_64
           path: dist/peko-windows-x86_64.zip
 
-  # Create GitHub Release
-  create-release:
+  # Attach the archives and the release notes to the draft.
+  runtime-assets:
     needs: [prepare, build-linux-x86_64, build-linux-aarch64, build-macos-x86_64, build-macos-aarch64, build-windows-x86_64]
     runs-on: ubuntu-latest
     permissions:
@@ -386,7 +433,19 @@ jobs:
           | macOS    | x86_64       | peko-macos-x86_64.tar.gz |
           | macOS    | ARM64        | peko-macos-aarch64.tar.gz |
           | Windows  | x86_64       | peko-windows-x86_64.zip |
-          
+
+          ### Peko Desktop
+
+          The desktop app, with this release's engine inside, updates itself
+          from its Settings.
+
+          | Platform | Download |
+          |----------|----------|
+          | macOS (Apple silicon) | \`Peko.Desktop_${VERSION}_aarch64.dmg\` |
+          | macOS (Intel)         | \`Peko.Desktop_${VERSION}_x64.dmg\` |
+          | Windows               | \`Peko.Desktop_${VERSION}_x64-setup.exe\` (or the \`.msi\`) |
+          | Linux                 | \`.AppImage\`, \`.deb\` or \`.rpm\` |
+
           ### Checksums
           EOF
           
@@ -396,24 +455,189 @@ jobs:
           
           cat RELEASE_NOTES.md
       
-      - name: Create Release
-        uses: softprops/action-gh-release@v3
+      - name: Attach to the draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ID: ${{ needs.prepare.outputs.release_id }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$ID" -F body=@RELEASE_NOTES.md >/dev/null
+          gh release upload "$TAG" artifacts/*.tar.gz artifacts/*.zip --clobber --repo "$GITHUB_REPOSITORY"
+
+  # The desktop app for every platform, with the engine from this commit as
+  # its sidecar, uploaded into the draft with its signed update files and
+  # `latest.json`.
+  desktop:
+    name: Desktop (${{ matrix.platform }})
+    needs: prepare
+    if: needs.prepare.outputs.release == 'true'
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            os: ubuntu-latest
+          # Native runners for both Mac architectures, so the host triple
+          # (which fetch-peko-sidecar.sh and Tauri's externalBin lookup use)
+          # is the target triple.
+          - platform: macos-aarch64
+            os: macos-latest
+          - platform: macos-x86_64
+            os: macos-15-intel
+          # Static CRT: the sidecar must not need the Visual C++ runtime
+          # DLLs, which a clean Windows install may not have.
+          - platform: windows-x86_64
+            os: windows-latest
+            sidecar_rustflags: -C target-feature=+crt-static
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        # Git Bash on Windows, so the sidecar script runs everywhere.
+        shell: bash
+    env:
+      PEKO_RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
         with:
-          tag_name: ${{ needs.prepare.outputs.tag }}
-          name: Peko v${{ steps.release_notes.outputs.version }}
-          body_path: RELEASE_NOTES.md
-          files: |
-            artifacts/*.tar.gz
-            artifacts/*.zip
-          draft: false
-          prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            desktop/src-tauri
+          shared-key: desktop-release-${{ matrix.platform }}
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install Node dependencies
+        working-directory: desktop
+        run: npm ci
+
+      # tauri.conf.json declares `bundle.externalBin: ["binaries/peko-daemon"]`,
+      # which fails the build if the host-triple-suffixed binary is missing.
+      - name: Build the engine sidecar
+        env:
+          RUSTFLAGS: ${{ matrix.sidecar_rustflags }}
+        run: |
+          cargo build --release -p peko-daemon
+          bash desktop/scripts/fetch-peko-sidecar.sh
+
+      # Only hand Tauri the Apple variables that are actually set: an empty
+      # APPLE_CERTIFICATE makes the bundler import an empty certificate and
+      # fail. With no certificate, sign ad hoc ("-").
+      - name: Configure macOS signing
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -n "$APPLE_CERTIFICATE" ]; then
+            {
+              echo "APPLE_CERTIFICATE=$APPLE_CERTIFICATE"
+              echo "APPLE_CERTIFICATE_PASSWORD=$APPLE_CERTIFICATE_PASSWORD"
+              echo "APPLE_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY"
+            } >> "$GITHUB_ENV"
+            echo "Signing with $APPLE_SIGNING_IDENTITY"
+            if [ -n "$APPLE_ID" ]; then
+              {
+                echo "APPLE_ID=$APPLE_ID"
+                echo "APPLE_PASSWORD=$APPLE_PASSWORD"
+                echo "APPLE_TEAM_ID=$APPLE_TEAM_ID"
+              } >> "$GITHUB_ENV"
+              echo "Notarizing as $APPLE_ID"
+            fi
+          else
+            echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+            echo "::warning::No APPLE_CERTIFICATE secret: the macOS app is ad-hoc signed and not notarized."
+          fi
+
+      # Update files are signed only when the key is set. The config asks for
+      # them (`bundle.createUpdaterArtifacts`), and the bundler fails without
+      # a key, so with no key that setting is turned off for this build
+      # (tauri.no-updates.conf.json). A key with no public key in the config
+      # would sign files no installed app accepts, so that fails here.
+      - name: Configure update signing
+        id: updates
+        working-directory: desktop
+        env:
+          UPDATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          UPDATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          PUBKEY="$(node -p "require('./src-tauri/tauri.conf.json').plugins.updater.pubkey")"
+          if [ -z "$UPDATE_KEY" ]; then
+            echo "args=--config src-tauri/tauri.no-updates.conf.json" >> "$GITHUB_OUTPUT"
+            echo "::warning::No TAURI_SIGNING_PRIVATE_KEY secret: this release has no update files, so installed apps won't be offered it."
+          elif [ -z "$PUBKEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is set but plugins.updater.pubkey in desktop/src-tauri/tauri.conf.json is empty. Put the public key there."
+            exit 1
+          else
+            {
+              echo "TAURI_SIGNING_PRIVATE_KEY=$UPDATE_KEY"
+              echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$UPDATE_KEY_PASSWORD"
+            } >> "$GITHUB_ENV"
+            echo "args=" >> "$GITHUB_OUTPUT"
+            echo "Signing update files"
+          fi
+
+      - name: Build the app and upload it to the draft
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Where crash reports go (pekohub ADR-014; desktop/src-tauri/src/telemetry.rs).
+          # Unset, the app is built without crash reporting.
+          PEKO_DESKTOP_SENTRY_DSN: ${{ vars.DESKTOP_SENTRY_DSN }}
+          # Where usage counts go (desktop/src-tauri/src/usage.rs). Unset, none are sent.
+          PEKO_DESKTOP_POSTHOG_KEY: ${{ vars.DESKTOP_POSTHOG_KEY }}
+        with:
+          args: ${{ steps.updates.outputs.args }}
+          # Windows updates with the NSIS installer, not the .msi.
+          updaterJsonPreferNsis: true
+          projectPath: desktop
+          tauriScript: npx tauri
+          releaseId: ${{ needs.prepare.outputs.release_id }}
+
+  # Everything is in the draft: publish it, and make it the latest release
+  # (installed apps and `peko update` read that one) unless it is a prerelease.
+  publish:
+    needs: [prepare, runtime-assets, desktop]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ID: ${{ needs.prepare.outputs.release_id }}
+          PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+        run: |
+          if [ "$PRERELEASE" = "true" ]; then LATEST=false; else LATEST=true; fi
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$ID" \
+            -F draft=false -f make_latest="$LATEST" --jq '.html_url'
 
   # Install each published archive with install.sh and run the quick start
   # on all five platforms (release-smoke.yml).
   smoke:
-    needs: [prepare, create-release]
+    needs: [prepare, publish]
     uses: ./.github/workflows/release-smoke.yml
     with:
       version: ${{ needs.prepare.outputs.tag }}
@@ -421,7 +645,7 @@ jobs:
   # Publish ghcr.io/conekoai/peko from the release's Linux binaries
   # (docker-image.yml).
   image:
-    needs: [prepare, create-release]
+    needs: [prepare, publish]
     permissions:
       contents: read
       packages: write
