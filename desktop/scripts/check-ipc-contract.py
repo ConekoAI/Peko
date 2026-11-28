@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check the desktop's IPC requests against the runtime's contract fixture.
 
-peko-runtime keeps two fixtures under `peko-rs/core/src/ipc/fixtures/`:
+The runtime keeps two fixtures under `peko-rs/core/src/ipc/fixtures/`:
 
 - `desktop_requests.json` — one sample of every request this app sends;
   a runtime test decodes each as `RequestPacket`. This script checks
@@ -14,8 +14,8 @@ peko-runtime keeps two fixtures under `peko-rs/core/src/ipc/fixtures/`:
 
 Together they keep the wire in step.
 
-Usage: scripts/check-ipc-contract.py [path/to/peko-runtime]
-(defaults to $PEKO_RUNTIME_DIR, then ../peko-runtime)
+Usage: scripts/check-ipc-contract.py [path/to/runtime]
+(defaults to $PEKO_RUNTIME_DIR, then this repository's root)
 """
 
 import json
@@ -47,7 +47,7 @@ def desktop_requests() -> dict[str, set[str]]:
 
 def main() -> int:
     runtime = Path(
-        sys.argv[1] if len(sys.argv) > 1 else os.environ.get("PEKO_RUNTIME_DIR", DESKTOP.parent / "peko-runtime")
+        sys.argv[1] if len(sys.argv) > 1 else os.environ.get("PEKO_RUNTIME_DIR", DESKTOP.parent)
     )
     fixture_path = runtime / FIXTURE
     if not fixture_path.is_file():

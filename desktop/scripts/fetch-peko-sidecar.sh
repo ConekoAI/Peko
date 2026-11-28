@@ -7,9 +7,8 @@
 # `peko-desktop` is a Tauri app that bundles the `peko-daemon`
 # runtime as a sidecar (see ADR-043). Tauri requires sidecar
 # binaries to live at `src-tauri/binaries/<name>-<rust-target-triple>`
-# so the build script can find and bundle them. The two repos
-# (peko-runtime and peko-desktop) are independent, so we need an
-# explicit copy step.
+# so the build script can find and bundle them; the engine builds into
+# the repository's own `target/`, so we need an explicit copy step.
 #
 # The supervisor invokes `peko-daemon` directly (Phase 0.Z-C removed
 # the in-process fallback the CLI used to provide, so going through
@@ -19,11 +18,10 @@
 #
 # Usage
 # -----
-#   scripts/fetch-peko-sidecar.sh [path/to/peko-runtime]
+#   scripts/fetch-peko-sidecar.sh [path/to/runtime]
 #
-# `path/to/peko-runtime` defaults to the value of $PEKO_RUNTIME_DIR if
-# set, then to `../peko-runtime` (the convention used in CI and in the
-# author's local checkout).
+# `path/to/runtime` defaults to the value of $PEKO_RUNTIME_DIR if set,
+# then to this repository's root (the directory above `desktop/`).
 #
 # Profile
 # -------
@@ -49,10 +47,11 @@
 
 set -euo pipefail
 
-# Resolve the source directory (peko-runtime checkout).
-SOURCE="${1:-${PEKO_RUNTIME_DIR:-../peko-runtime}}"
+# Resolve the source directory (the runtime: this repository's root).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SOURCE="${1:-${PEKO_RUNTIME_DIR:-$SCRIPT_DIR/../..}}"
 if [ ! -d "$SOURCE" ]; then
-    echo "❌ peko-runtime source not found at: $SOURCE" >&2
+    echo "❌ runtime source not found at: $SOURCE" >&2
     echo "   Pass it as the first arg, or set PEKO_RUNTIME_DIR." >&2
     exit 1
 fi
@@ -82,11 +81,10 @@ esac
 SOURCE_BIN="$SOURCE/target/$PROFILE/peko-daemon$EXE_SUFFIX"
 if [ ! -x "$SOURCE_BIN" ]; then
     echo "❌ peko-daemon binary not found at: $SOURCE_BIN" >&2
-    echo "   Build it first: cd $SOURCE && cargo build --$PROFILE -p peko-daemon-bin" >&2
+    echo "   Build it first: cd $SOURCE && cargo build --$PROFILE -p peko-daemon" >&2
     exit 1
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEST_DIR="$SCRIPT_DIR/../src-tauri/binaries"
 DEST_BIN="$DEST_DIR/peko-daemon-$TRIPLE$EXE_SUFFIX"
 

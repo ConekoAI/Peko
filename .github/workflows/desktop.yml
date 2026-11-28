@@ -1,16 +1,24 @@
-name: CI
+name: Desktop
+
+# The desktop app (desktop/): frontend, Rust on Linux/Windows/macOS, the
+# IPC contract against the runtime's fixtures, and a dependency audit.
+# Runtime-only changes don't start it, and desktop-only changes don't start
+# integration.yml. The `changes` job picks the jobs a pull request needs.
 
 on:
   push:
     branches: [master, main]
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
+    paths:
+      - 'desktop/**'
+      - 'peko-rs/core/src/ipc/fixtures/**'
+      - '.github/workflows/desktop.yml'
   pull_request:
     branches: [master, main]
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
+    paths:
+      - 'desktop/**'
+      - 'peko-rs/core/src/ipc/fixtures/**'
+      - '.github/workflows/desktop.yml'
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -24,15 +32,52 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      app: ${{ steps.filter.outputs.app }}
+      contract: ${{ steps.filter.outputs.contract }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            app:
+              - 'desktop/src/**'
+              - 'desktop/src-tauri/**'
+              - 'desktop/public/**'
+              - 'desktop/scripts/**'
+              - 'desktop/*.json'
+              - 'desktop/*.ts'
+              - 'desktop/*.html'
+              - 'desktop/audit.toml'
+              - 'desktop/.trivyignore'
+              - '.github/workflows/desktop.yml'
+            contract:
+              - 'desktop/src-tauri/src/ipc/**'
+              - 'desktop/scripts/check-ipc-contract.py'
+              - 'peko-rs/core/src/ipc/fixtures/**'
+              - '.github/workflows/desktop.yml'
+
   # ─────────────────────────────────────────────────────────────────
   # 1. Frontend — TypeScript type check, lint, build, unit tests
   # ─────────────────────────────────────────────────────────────────
   frontend:
     name: Frontend (Node ${{ matrix.node }})
+    needs: changes
+    if: needs.changes.outputs.app == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     strategy:
       matrix:
         node: [20, 22]
+    defaults:
+      run:
+        working-directory: desktop
     steps:
       - uses: actions/checkout@v7
 
@@ -40,7 +85,7 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
-          cache-dependency-path: package-lock.json
+          cache-dependency-path: desktop/package-lock.json
 
       - name: Install dependencies
         run: npm ci
@@ -56,39 +101,31 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────
   # IPC contract — every request the desktop sends matches the
-  # runtime's fixture (peko-runtime decodes that fixture in its own
-  # unit tests). Checked against peko-runtime master.
+  # runtime's fixture (the runtime decodes that fixture in its own unit
+  # tests), checked against the runtime in the same commit.
   # ─────────────────────────────────────────────────────────────────
   ipc-contract:
     name: IPC contract
+    needs: changes
+    if: needs.changes.outputs.contract == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
-      # A change that adds a request lands in both repos on a branch of the
-      # same name; check against that branch while it is open, else master.
-      - name: Check out peko-runtime
-        env:
-          BRANCH: ${{ github.head_ref || github.ref_name }}
-        run: |
-          if git ls-remote --exit-code --heads https://github.com/ConekoAI/Peko.git "$BRANCH" >/dev/null; then
-            git clone --depth 1 --branch "$BRANCH" https://github.com/ConekoAI/Peko.git "$RUNNER_TEMP/peko-runtime"
-          else
-            git clone --depth 1 https://github.com/ConekoAI/Peko.git "$RUNNER_TEMP/peko-runtime"
-          fi
-
       - name: Check desktop requests against the runtime fixture
-        run: python3 -I scripts/check-ipc-contract.py "$RUNNER_TEMP/peko-runtime"
+        run: python3 -I desktop/scripts/check-ipc-contract.py .
 
   # ─────────────────────────────────────────────────────────────────
   # 2. Rust — fmt, clippy, check, test (Linux)
   # ─────────────────────────────────────────────────────────────────
   rust-linux:
     name: Rust (Linux)
+    needs: changes
+    if: needs.changes.outputs.app == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: src-tauri
+        working-directory: desktop/src-tauri
     steps:
       - uses: actions/checkout@v7
 
@@ -98,7 +135,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: desktop/src-tauri
           shared-key: tauri-rust
 
       - name: Install Linux system dependencies
@@ -138,10 +175,12 @@ jobs:
   # ─────────────────────────────────────────────────────────────────
   rust-windows:
     name: Rust (Windows)
+    needs: changes
+    if: needs.changes.outputs.app == 'true' || github.event_name != 'pull_request'
     runs-on: windows-latest
     defaults:
       run:
-        working-directory: src-tauri
+        working-directory: desktop/src-tauri
     steps:
       - uses: actions/checkout@v7
 
@@ -151,7 +190,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: desktop/src-tauri
           shared-key: tauri-rust-win
 
       # See Rust (Linux) for rationale; same stub needed for Tauri's
@@ -185,10 +224,12 @@ jobs:
   # ─────────────────────────────────────────────────────────────────
   rust-macos:
     name: Rust (macOS)
+    needs: changes
+    if: needs.changes.outputs.app == 'true' || github.event_name != 'pull_request'
     runs-on: macos-latest
     defaults:
       run:
-        working-directory: src-tauri
+        working-directory: desktop/src-tauri
     steps:
       - uses: actions/checkout@v7
 
@@ -196,7 +237,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: desktop/src-tauri
           shared-key: tauri-rust-macos
 
       # See Rust (Linux) for rationale; same stub needed for Tauri's
@@ -222,11 +263,13 @@ jobs:
   # ─────────────────────────────────────────────────────────────────
   security-audit:
     name: Security Audit
+    needs: changes
+    if: needs.changes.outputs.app == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
       run:
-        working-directory: src-tauri
+        working-directory: desktop/src-tauri
     steps:
       - uses: actions/checkout@v7
 
@@ -243,7 +286,7 @@ jobs:
           # `cargo-audit` (≥0.21) appear to require `--ignore` for
           # the vulnerability (RUSTSEC-2026-0185 quinn-proto) class.
           # The CLI flag is a belt-and-suspenders fallback that
-          # matches the entries in `audit.toml` at the repo root.
+          # matches the entries in `desktop/audit.toml`.
           #
           # When any of these advisories are resolved upstream, drop
           # the matching `--ignore` from this list AND from
@@ -268,7 +311,7 @@ jobs:
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
-          scan-ref: .
+          scan-ref: desktop
           severity: HIGH,CRITICAL
           exit-code: 1
-          trivyignores: .trivyignore
+          trivyignores: desktop/.trivyignore
