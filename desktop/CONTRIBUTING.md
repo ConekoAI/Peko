@@ -28,16 +28,15 @@ covers this app too.
 ## Run it from source
 
 ```bash
-# 0. Check out Peko beside this repo, under the folder name the scripts expect
-git clone https://github.com/ConekoAI/Peko ../peko-runtime
+# From desktop/ in a checkout of ConekoAI/Peko
 
 # 1. Install JS dependencies
 npm ci
 
-# 2. Build the engine from ../peko-runtime and copy it in
+# 2. Build the engine from this repository and copy it in
 npm run sidecar:build-and-fetch
 # (or, if you've already built it elsewhere:)
-#   npm run sidecar:fetch /path/to/peko-runtime
+#   npm run sidecar:fetch /path/to/runtime
 
 # 3. Launch the desktop app in dev mode (Vite + Tauri)
 npm run tauri dev
@@ -86,7 +85,7 @@ it has to exist first.
 ## Project layout
 
 ```
-peko-desktop/
+desktop/
 ├── src/                    # React + TanStack Router frontend
 │   ├── routes/             # File-based routes (TanStack Router)
 │   ├── components/         # Shared UI components
