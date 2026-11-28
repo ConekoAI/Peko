@@ -296,8 +296,54 @@ let network = {
   directPeers: [] as string[],
 };
 
+// First-run setup (src-tauri/src/home.rs): `?setup=fresh` or
+// `?setup=missing` shows the wizard; the folder picker answers with a
+// sample folder each time it is asked.
+const setupMode =
+  typeof location !== "undefined" ? new URLSearchParams(location.search).get("setup") : null;
+let setupHeld = setupMode === "fresh" || setupMode === "missing";
+let setupHome = setupMode === "missing" ? "/Volumes/T7/Peko" : "/Users/you/.peko";
+const PICKS = ["/Users/you/Documents", "/Volumes/T7", "/Users/you/Library/Mobile Documents/com~apple~CloudDocs/Peko", "/usr/local"];
+let pickIndex = 0;
+
+function mockFolderCheck(path: string) {
+  const base = { pekos: null as number | null, freeBytes: 412_000_000_000, warnings: [] as string[], problem: null as string | null };
+  if (path === "/Users/you/.peko") return { ...base, home: path, kind: "default" };
+  if (path === "/Volumes/T7/Peko") {
+    return setupMode === "missing"
+      ? { ...base, home: path, kind: "new", freeBytes: null, problem: "notWritable" }
+      : { ...base, home: path, kind: "peko", pekos: 3, freeBytes: 1_800_000_000_000, warnings: ["removable"] };
+  }
+  if (path === "/Volumes/T7") return { ...base, home: "/Volumes/T7/Peko", kind: "peko", pekos: 3, freeBytes: 1_800_000_000_000, warnings: ["removable"] };
+  if (path.endsWith("/Peko")) return { ...base, home: path, kind: "new" };
+  if (path.startsWith("/usr")) return { ...base, home: path, kind: "new", problem: "system" };
+  if (path.includes("Mobile Documents")) return { ...base, home: path, kind: "new", warnings: ["synced"] };
+  return { ...base, home: `${path}/Peko`, kind: "new", warnings: path.includes("/Documents") ? ["protected"] : [] };
+}
+
 function handle(cmd: string, args: Record<string, unknown> = {}): unknown {
   switch (cmd) {
+    case "setup_status":
+      return {
+        needed: setupHeld,
+        reason: setupHeld ? setupMode : null,
+        home: setupHome,
+        defaultHome: "/Users/you/.peko",
+        platform: "macos",
+      };
+    case "setup_check_folder":
+      return mockFolderCheck(String(args.path));
+    case "setup_use_folder": {
+      const check = mockFolderCheck(String(args.path ?? "/Users/you/.peko"));
+      if (check.problem) throw new Error(check.problem);
+      setupHome = check.home;
+      return setupHome;
+    }
+    case "setup_finish":
+      setupHeld = false;
+      return null;
+    case "plugin:dialog|open":
+      return PICKS[pickIndex++ % PICKS.length];
     case "network_status":
       return network;
     case "network_settings_set": {
@@ -511,7 +557,7 @@ function handle(cmd: string, args: Record<string, unknown> = {}): unknown {
     case "settings_get":
       return settings.find((s) => s.key === args.key)?.value ?? null;
     case "peko_home_dir":
-      return "/Users/you/.peko";
+      return setupHome;
     case "credential_list_generic":
       return [
         { id: "cred_1", namespace: "anthropic", name: "Anthropic key", kind: "api_key", hasKey: true, lastTestedOk: true },

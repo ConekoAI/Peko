@@ -22,6 +22,28 @@ This document defines every on-disk and in-memory data format used by the Peko r
 
 ---
 
+## Where the Peko folder is (`home.toml`)
+
+Peko's folder is `PEKO_HOME` when that is set, else the folder named in a
+pointer file, else `~/.peko`. The pointer file is
+`<local config dir>/peko/home.toml` (`dirs::config_local_dir`:
+`~/Library/Application Support` on macOS, `%LOCALAPPDATA%` on Windows,
+`~/.config` on Linux), written by Peko Desktop's first-run setup when the
+owner keeps Peko somewhere other than `~/.peko`, and absent otherwise:
+
+```toml
+home = "/Volumes/Data/Peko"
+```
+
+`home` must be absolute; a missing, malformed or relative file is ignored.
+`peko` and `peko-daemon` read it first thing and set `PEKO_HOME` from it
+(`paths::adopt_home_pointer`), so the command line, the engine and the app
+agree on one folder; with a pointer the layout is `PEKO_HOME`'s (data under
+`<home>/data`, the socket at `<home>/run/daemon.sock`). Peko Desktop also
+passes the folder to the engine it starts as `PEKO_HOME`. While there is no
+folder yet, or the named one is gone (a drive not connected), the app holds
+its engine and shows setup instead.
+
 ## Sealed envelopes (ADR-110)
 
 **On the wire.** Every `tunnel_*` envelope one computer sends another

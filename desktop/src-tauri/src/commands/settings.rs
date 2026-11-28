@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
 fn config_path() -> Result<PathBuf, String> {
-    dirs::home_dir()
-        .map(|d| d.join(".peko").join("config.toml"))
-        .ok_or_else(|| "could not determine home directory".to_string())
+    crate::home::peko_home()
+        .map(|d| d.join("config.toml"))
+        .ok_or_else(|| "could not determine the Peko folder".to_string())
 }
 
 fn read_config() -> Result<toml::Table, String> {

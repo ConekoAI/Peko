@@ -4,6 +4,29 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Added
+
+- **Peko Desktop sets itself up on first start, and you choose where Peko
+  keeps things.** A new install opens on a four-step setup (welcome and
+  language, folder, privacy, ready) before anything is written. The folder
+  step offers `~/.peko` or any folder you pick, and says what picking it
+  does: a folder that is already Peko's brings its pekos along, a folder with
+  other things in it gets a `Peko` folder inside, and a cloud-synced folder,
+  another drive or a macOS-protected folder each get a word of warning.
+  System folders, temp folders, the app's own folder and paths too long for
+  the engine's socket are refused. The choice is kept in
+  `<local config>/peko/home.toml`, which `peko` and the engine read too, so
+  the command line reaches the same pekos as the app. If the chosen folder
+  goes missing (a drive not connected), the app says so and waits instead of
+  starting an empty Peko. Computers that already have `~/.peko` see no
+  change.
+
+### Fixed
+
+- Peko Desktop finds the engine, its settings and remote pekos under
+  `PEKO_HOME` when that is set: the socket, `config.toml` and
+  `remote-principals.json` were read from `~/.peko` regardless.
+
 ## [0.8.1] - 2026-11-28
 
 ### Changed

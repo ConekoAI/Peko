@@ -1,7 +1,7 @@
 //! The desktop's connection to the daemon's local IPC endpoint.
 //!
 //! - **Unix**: a datagram socket bound at a per-client temp path. Each
-//!   request is sent to `~/.peko/run/daemon.sock`, and the daemon replies
+//!   request is sent to `<Peko folder>/run/daemon.sock`, and the daemon replies
 //!   to the path it came from.
 //! - **Windows**: the daemon's named pipe (runtime ADR-038), `PEKO_DAEMON_PIPE`
 //!   or `\\.\pipe\peko-{user}`. Each `send` opens a fresh connection for one

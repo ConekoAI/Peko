@@ -260,6 +260,13 @@ impl Supervisor {
     /// blocks the caller for at most ~200 ms (the socket read
     /// timeout) before falling through to the spawn path.
     pub fn start(&self) -> Result<u32> {
+        // No Peko folder yet: setup chooses one, then starts the engine
+        // (`home::setup_finish`). Starting now would make `~/.peko`.
+        if crate::home::engine_held() {
+            return Err(SupervisorError::Spawn(
+                "Peko's setup has not chosen a folder yet".into(),
+            ));
+        }
         // Fast-path + spawn-slot claim. The fast-path matches
         // `Running` (owned) AND `Starting` / `Restarting` so
         // concurrent callers arriving during the startup window
@@ -331,7 +338,7 @@ impl Supervisor {
         }
 
         let app_handle = self.app_handle.clone();
-        let (rx, child) = app_handle
+        let mut command = app_handle
             .shell()
             .sidecar("peko-daemon")
             .map_err(|e| SupervisorError::Spawn(e.to_string()))?
@@ -349,10 +356,14 @@ impl Supervisor {
             // `--foreground` is accepted by `peko-daemon` as a no-op
             // (the binary is foreground by definition). `PEKO_HOME` /
             // `PEKO_CONFIG_DIR` are inherited from the desktop's own
-            // env, so the resolver inside the daemon lands on the
-            // same `~/.peko` (or user-overridden) dir the desktop
-            // already points at.
-            .args(["--foreground", "--sidecar-mode"])
+            // env; the folder setup chose is passed below.
+            .args(["--foreground", "--sidecar-mode"]);
+        // The folder setup chose, named outright: the engine would find it
+        // in the pointer file too, but an explicit `PEKO_HOME` cannot drift.
+        if let Some(home) = crate::home::home_for_engine() {
+            command = command.env("PEKO_HOME", home);
+        }
+        let (rx, child) = command
             .spawn()
             .map_err(|e| SupervisorError::Spawn(e.to_string()))?;
 
@@ -900,15 +911,10 @@ fn push_log_inner(g: &mut Inner, line: String) {
 /// relocated the peko home. Falls back to `~/.peko` like the
 /// runtime's resolver.
 pub fn lockfile_path() -> PathBuf {
-    let config_dir = std::env::var("PEKO_CONFIG_DIR")
-        .ok()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            dirs::home_dir()
-                .map(|d| d.join(".peko"))
-                .unwrap_or_else(|| PathBuf::from(".peko"))
-        });
-    config_dir.join("run").join("desktop.lock")
+    crate::home::peko_home()
+        .unwrap_or_else(|| PathBuf::from(".peko"))
+        .join("run")
+        .join("desktop.lock")
 }
 
 /// IPC socket path the runtime binds in sidecar mode. The runtime
@@ -923,9 +929,7 @@ pub fn socket_path() -> PathBuf {
     }
     #[cfg(unix)]
     {
-        dirs::home_dir()
-            .map(|d| d.join(".peko").join("run").join("daemon.sock"))
-            .unwrap_or_else(|| PathBuf::from(".peko").join("run").join("daemon.sock"))
+        crate::home::run_dir().join("daemon.sock")
     }
 }
 

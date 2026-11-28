@@ -27,39 +27,19 @@ pub struct CheckResult {
     pub message: String,
 }
 
-/// The folder the engine keeps pekos, models, and keys in: `PEKO_HOME`,
-/// else `PEKO_CONFIG_DIR`, else `~/.peko` — the env the sidecar inherits.
+/// The folder the engine keeps pekos, models, and keys in
+/// (`crate::home::peko_home`).
 #[tauri::command]
 pub fn peko_home_dir() -> Result<String, String> {
-    peko_home_from(
-        std::env::var("PEKO_HOME").ok(),
-        std::env::var("PEKO_CONFIG_DIR").ok(),
-        dirs::home_dir(),
-    )
-    .map(|p| p.display().to_string())
-    .ok_or_else(|| "could not determine the peko folder".to_string())
+    peko_home()
+        .map(|p| p.display().to_string())
+        .ok_or_else(|| "could not determine the peko folder".to_string())
 }
 
 /// [`peko_home_dir`] as a path, for commands that confine file access
 /// to the engine's folder.
 pub(crate) fn peko_home() -> Option<std::path::PathBuf> {
-    peko_home_from(
-        std::env::var("PEKO_HOME").ok(),
-        std::env::var("PEKO_CONFIG_DIR").ok(),
-        dirs::home_dir(),
-    )
-}
-
-fn peko_home_from(
-    peko_home: Option<String>,
-    config_dir: Option<String>,
-    home: Option<std::path::PathBuf>,
-) -> Option<std::path::PathBuf> {
-    peko_home
-        .or(config_dir)
-        .filter(|v| !v.trim().is_empty())
-        .map(std::path::PathBuf::from)
-        .or_else(|| home.map(|h| h.join(".peko")))
+    crate::home::peko_home()
 }
 
 #[tauri::command]
@@ -224,28 +204,5 @@ pub async fn system_clean(
         crate::state::RuntimeConnectionType::Remote => {
             Err("System clean is not supported for remote runtimes yet".to_string())
         }
-    }
-}
-
-#[cfg(test)]
-mod peko_home_tests {
-    use super::peko_home_from;
-    use std::path::PathBuf;
-
-    #[test]
-    fn env_wins_then_home() {
-        let home = Some(PathBuf::from("/Users/a"));
-        assert_eq!(
-            peko_home_from(Some("/x".into()), Some("/y".into()), home.clone()),
-            Some(PathBuf::from("/x"))
-        );
-        assert_eq!(
-            peko_home_from(None, Some("/y".into()), home.clone()),
-            Some(PathBuf::from("/y"))
-        );
-        assert_eq!(
-            peko_home_from(Some(" ".into()), None, home),
-            Some(PathBuf::from("/Users/a/.peko"))
-        );
     }
 }

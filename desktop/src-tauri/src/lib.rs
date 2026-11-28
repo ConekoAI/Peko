@@ -4,6 +4,7 @@ pub mod clients;
 pub mod commands;
 pub mod computer;
 pub mod fs;
+pub mod home;
 pub mod ipc;
 pub mod sidecar;
 pub mod state;
@@ -75,30 +76,8 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .manage(tauri::async_runtime::block_on(state::init_state()))
         .setup(|app| {
-            // Attached audio and video play from the engine's copies
-            // through the asset protocol (WebKit streams them with range
-            // requests). Only the pekos' folders are reachable, and the
-            // conversations' file stores, where files from other computers
-            // are kept (runtime ADR-094) — the webview already reads those
-            // conversations over IPC.
-            if let Some(home) = crate::commands::system::peko_home() {
-                use tauri::Manager;
-                // `principals/` is where pekos lived before the runtime
-                // moved them to `pekos/`; it stays allowed until a runtime
-                // that still uses it has migrated.
-                for dir in [
-                    home.join("pekos"),
-                    home.join("principals"),
-                    home.join("runtime").join("channels"),
-                ] {
-                    if let Err(e) = app.asset_protocol_scope().allow_directory(&dir, true) {
-                        eprintln!(
-                            "[peko-desktop] attachment playback unavailable in {}: {e}",
-                            dir.display()
-                        );
-                    }
-                }
-            }
+            allow_attachment_dirs(app.handle());
+
             // PR #6: register the desktop scheme(s) so the OS routes
             // share links into the running app. Windows and Linux register
             // at runtime (`register_all` writes the registry / the
@@ -159,10 +138,16 @@ pub fn run() {
             supervisor.set_expected_version(expected_engine_version());
 
             // Kick off the first spawn from setup() so the engine is
-            // up by the time the UI mounts.
+            // up by the time the UI mounts — unless there is no Peko
+            // folder yet: then the setup wizard chooses one first and
+            // starts the engine itself (`home::setup_finish`).
+            home::evaluate_at_boot();
             let supervisor_for_spawn = supervisor.clone();
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
+                if home::engine_held() {
+                    return;
+                }
                 if let Err(e) = supervisor_for_spawn.start() {
                     eprintln!("[peko-desktop] sidecar spawn failed: {e}");
                     let _ = app_handle.emit(
@@ -270,6 +255,33 @@ pub fn run() {
                 }
             }
         });
+}
+
+/// Attached audio and video play from the engine's copies through the
+/// asset protocol (WebKit streams them with range requests). Only the
+/// pekos' folders are reachable, and the conversations' file stores, where
+/// files from other computers are kept (runtime ADR-094) — the webview
+/// already reads those conversations over IPC. Called at start and again
+/// when setup has chosen the Peko folder.
+pub(crate) fn allow_attachment_dirs(app: &AppHandle) {
+    let Some(home) = home::peko_home() else {
+        return;
+    };
+    // `principals/` is where pekos lived before the runtime moved them to
+    // `pekos/`; it stays allowed until a runtime that still uses it has
+    // migrated.
+    for dir in [
+        home.join("pekos"),
+        home.join("principals"),
+        home.join("runtime").join("channels"),
+    ] {
+        if let Err(e) = app.asset_protocol_scope().allow_directory(&dir, true) {
+            eprintln!(
+                "[peko-desktop] attachment playback unavailable in {}: {e}",
+                dir.display()
+            );
+        }
+    }
 }
 
 /// Map a supervisor `EngineState` to the AppState's `RuntimeStatus`.

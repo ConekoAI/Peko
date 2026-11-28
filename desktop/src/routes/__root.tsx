@@ -1,5 +1,6 @@
 import { createRootRouteWithContext, Outlet } from "@tanstack/react-router";
 import Layout from "../components/Layout";
+import SetupGate from "../components/setup/SetupGate";
 
 export const Route = createRootRouteWithContext<{
   // intentionally empty: no router context yet
@@ -10,8 +11,10 @@ export const Route = createRootRouteWithContext<{
 
 function Root() {
   return (
-    <Layout>
-      <Outlet />
-    </Layout>
+    <SetupGate>
+      <Layout>
+        <Outlet />
+      </Layout>
+    </SetupGate>
   );
 }

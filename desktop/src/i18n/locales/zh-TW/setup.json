@@ -1,0 +1,85 @@
+{
+  "steps": {
+    "label": "設定步驟",
+    "welcome": "歡迎",
+    "folder": "資料夾",
+    "privacy": "隱私",
+    "ready": "就緒"
+  },
+  "stepOf": "第 {{current}} 步，共 {{total}} 步",
+  "back": "返回",
+  "continue": "繼續",
+  "welcome": {
+    "title": "歡迎使用 Peko",
+    "slogan": "心智相遇之處。",
+    "body": "peko 是住在你電腦裡的心智：它們會記憶、為你工作，並與人和其他 peko 交談。設定只需一分鐘。",
+    "local": "在這台電腦上執行",
+    "localHint": "你的 peko 和它們的記憶都留在這裡。",
+    "keys": "金鑰安全上鎖",
+    "keysHint": "模型金鑰加密保存，絕不會傳送給我們。",
+    "together": "在一起更好",
+    "togetherHint": "無論身在何處，都能與人和他們的 peko 交談。",
+    "language": "語言",
+    "system": "跟隨系統（{{name}}）",
+    "start": "開始"
+  },
+  "folder": {
+    "title": "Peko 應該把東西放在哪裡？",
+    "body": "一個資料夾存放你的 peko、它們的對話和記憶、你的模型以及金鑰（已加密）。請選一個留有成長空間的位置。",
+    "missingTitle": "Peko 找不到它的資料夾",
+    "missingBody": "它原本在 {{path}}。如果它在某個磁碟上，請連接後重試，或者選擇 Peko 現在住在哪裡。",
+    "retry": "重試",
+    "stillMissing": "還是找不到。請連接它所在的磁碟，然後重試。",
+    "home": "你的家目錄",
+    "recommended": "推薦",
+    "homeHint": "家目錄中的一個隱藏資料夾，Peko 通常住在這裡。",
+    "other": "其他位置",
+    "otherHint": "另一個磁碟，或你選擇的任何資料夾。",
+    "choose": "選擇…",
+    "change": "更改…",
+    "free": "可用 {{size}}",
+    "kind": {
+      "new": "Peko 將建立這個資料夾。",
+      "empty": "空資料夾：可以直接使用。",
+      "subfolder": "這個資料夾裡已有其他內容，Peko 會在其中建立自己的資料夾。",
+      "peko_other": "這已是一個 Peko 資料夾，裡面有 {{count}} 個 peko —— Peko 會從上次停下的地方繼續。",
+      "pekoEmpty": "這已是一個 Peko 資料夾 —— Peko 會從上次停下的地方繼續。"
+    },
+    "warning": {
+      "synced": "這個資料夾會同步到雲端。Peko 執行時同步可能損壞它的金鑰和對話；留在這台電腦上的資料夾更安全。",
+      "removable": "它位於另一個磁碟上。請保持連接：沒有它 Peko 無法啟動。",
+      "protected": "macOS 會請你允許 Peko 使用這個資料夾。"
+    },
+    "problem": {
+      "notAbsolute": "請選擇完整的資料夾路徑。",
+      "notFolder": "這是一個檔案，不是資料夾。",
+      "notWritable": "Peko 無法寫入那裡。請選擇屬於你的資料夾。",
+      "tooLong": "這個路徑對 Peko 引擎來說太長了。請選擇路徑較短的資料夾。",
+      "system": "這個資料夾屬於系統，或會被自動清空。請換一個。",
+      "insideApp": "這個資料夾在 App 內部，會隨 App 一起被刪除。請換一個。"
+    },
+    "saving": "正在建立資料夾…"
+  },
+  "privacy": {
+    "title": "協助改進 Peko"
+  },
+  "ready": {
+    "title": "一切就緒",
+    "body": "Peko 可以依這些設定啟動了。",
+    "folder": "資料夾",
+    "crash": "當機報告",
+    "usage": "使用統計",
+    "on": "開",
+    "off": "關",
+    "tips": "小提醒",
+    "tray": {
+      "macos": "關閉視窗後，Peko 會在選單列中繼續執行，你的 peko 也會繼續工作。",
+      "windows": "關閉視窗後，Peko 會在通知區域中繼續執行，你的 peko 也會繼續工作。",
+      "linux": "關閉視窗後，如果你的桌面有系統匣，Peko 會在系統匣中繼續執行。"
+    },
+    "terminal": "終端機裡的 peko 指令也使用這個資料夾。",
+    "start": "啟動 Peko",
+    "starting": "正在啟動引擎…",
+    "failed": "引擎沒有啟動：{{message}}"
+  }
+}

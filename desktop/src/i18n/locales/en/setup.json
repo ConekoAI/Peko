@@ -1,0 +1,86 @@
+{
+  "steps": {
+    "label": "Setup steps",
+    "welcome": "Welcome",
+    "folder": "Folder",
+    "privacy": "Privacy",
+    "ready": "Ready"
+  },
+  "stepOf": "Step {{current}} of {{total}}",
+  "back": "Back",
+  "continue": "Continue",
+  "welcome": {
+    "title": "Welcome to Peko",
+    "slogan": "Where minds meet.",
+    "body": "Pekos are minds that live on your computer: they remember, work for you, and talk with people and other pekos. Setting up takes a minute.",
+    "local": "Runs on this computer",
+    "localHint": "Your pekos and their memories stay here.",
+    "keys": "Your keys stay locked",
+    "keysHint": "Model keys are kept encrypted, never sent to us.",
+    "together": "Better together",
+    "togetherHint": "Talk with people and their pekos, wherever they are.",
+    "language": "Language",
+    "system": "System ({{name}})",
+    "start": "Get started"
+  },
+  "folder": {
+    "title": "Where should Peko keep things?",
+    "body": "One folder holds your pekos, their conversations and memories, your models, and your keys (encrypted). Pick a place with room to grow.",
+    "missingTitle": "Peko can't find its folder",
+    "missingBody": "It was at {{path}}. If it is on a drive, connect the drive and try again, or choose where Peko should live now.",
+    "retry": "Try again",
+    "stillMissing": "Not there yet. Connect the drive it is on, then try again.",
+    "home": "Your home folder",
+    "recommended": "Recommended",
+    "homeHint": "A hidden folder in your home folder, where Peko usually lives.",
+    "other": "Somewhere else",
+    "otherHint": "Another drive, or any folder you choose.",
+    "choose": "Choose…",
+    "change": "Change…",
+    "free": "{{size}} free",
+    "kind": {
+      "new": "Peko will make this folder.",
+      "empty": "An empty folder: ready to use.",
+      "subfolder": "This folder has other things in it, so Peko will keep its own folder inside it.",
+      "peko_one": "Already a Peko folder with {{count}} peko — Peko picks up where it left off.",
+      "peko_other": "Already a Peko folder with {{count}} pekos — Peko picks up where it left off.",
+      "pekoEmpty": "Already a Peko folder — Peko picks up where it left off."
+    },
+    "warning": {
+      "synced": "This folder syncs to the cloud. Syncing while Peko runs can damage its keys and conversations; a folder that stays on this computer is safer.",
+      "removable": "This is on another drive. Keep it connected: Peko can't start without it.",
+      "protected": "macOS will ask you to let Peko use this folder."
+    },
+    "problem": {
+      "notAbsolute": "Choose a full folder path.",
+      "notFolder": "That is a file, not a folder.",
+      "notWritable": "Peko can't write there. Choose a folder you own.",
+      "tooLong": "That path is too long for Peko's engine. Choose a folder with a shorter path.",
+      "system": "That folder belongs to the system or is emptied on its own. Choose another.",
+      "insideApp": "That folder is inside the app and would be removed with it. Choose another."
+    },
+    "saving": "Making the folder…"
+  },
+  "privacy": {
+    "title": "Help make Peko better"
+  },
+  "ready": {
+    "title": "You're all set",
+    "body": "Peko is ready to start with these settings.",
+    "folder": "Folder",
+    "crash": "Crash reports",
+    "usage": "Usage counts",
+    "on": "On",
+    "off": "Off",
+    "tips": "Good to know",
+    "tray": {
+      "macos": "Closing the window keeps Peko running in the menu bar, so your pekos keep working.",
+      "windows": "Closing the window keeps Peko running in the notification area, so your pekos keep working.",
+      "linux": "Closing the window keeps Peko running in the tray, if your desktop has one."
+    },
+    "terminal": "The peko command in a terminal uses this same folder.",
+    "start": "Start Peko",
+    "starting": "Starting the engine…",
+    "failed": "The engine didn't start: {{message}}"
+  }
+}

@@ -492,15 +492,10 @@ pub fn current_app_handle() -> Option<tauri::AppHandle> {
 /// `DaemonProcessService::pid_file_path(sidecar_mode=false)`: `<config>/run/
 /// daemon.pid`. Honours `PEKO_CONFIG_DIR` like the runtime's resolver.
 pub fn headless_pid_file_path() -> std::path::PathBuf {
-    let config_dir = std::env::var("PEKO_CONFIG_DIR")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            dirs::home_dir()
-                .map(|d| d.join(".peko"))
-                .unwrap_or_else(|| std::path::PathBuf::from(".peko"))
-        });
-    config_dir.join("run").join("daemon.pid")
+    crate::home::peko_home()
+        .unwrap_or_else(|| std::path::PathBuf::from(".peko"))
+        .join("run")
+        .join("daemon.pid")
 }
 
 impl IpcClient {
@@ -2888,13 +2883,9 @@ fn now_millis_string() -> String {
 
 #[cfg(unix)]
 fn default_socket_path() -> std::path::PathBuf {
-    dirs::home_dir()
-        .map(|d| d.join(".peko").join("run").join("daemon.sock"))
-        .unwrap_or_else(|| {
-            std::path::PathBuf::from(".peko")
-                .join("run")
-                .join("daemon.sock")
-        })
+    // The runtime's `default_run_dir`: `PEKO_HOME` (or the folder setup
+    // chose), else `~/.peko`.
+    crate::home::run_dir().join("daemon.sock")
 }
 
 /// Public re-export of the unix socket path so the supervisor's

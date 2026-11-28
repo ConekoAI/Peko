@@ -1,0 +1,86 @@
+{
+  "steps": {
+    "label": "Einrichtungsschritte",
+    "welcome": "Willkommen",
+    "folder": "Ordner",
+    "privacy": "Datenschutz",
+    "ready": "Fertig"
+  },
+  "stepOf": "Schritt {{current}} von {{total}}",
+  "back": "Zurück",
+  "continue": "Weiter",
+  "welcome": {
+    "title": "Willkommen bei Peko",
+    "slogan": "Wo sich Köpfe begegnen.",
+    "body": "Pekos sind Köpfe, die auf deinem Computer leben: Sie erinnern sich, arbeiten für dich und sprechen mit Menschen und anderen Pekos. Die Einrichtung dauert eine Minute.",
+    "local": "Läuft auf diesem Computer",
+    "localHint": "Deine Pekos und ihre Erinnerungen bleiben hier.",
+    "keys": "Deine Schlüssel bleiben verschlossen",
+    "keysHint": "Modellschlüssel werden verschlüsselt aufbewahrt und nie an uns gesendet.",
+    "together": "Gemeinsam besser",
+    "togetherHint": "Sprich mit Menschen und ihren Pekos, wo immer sie sind.",
+    "language": "Sprache",
+    "system": "System ({{name}})",
+    "start": "Los geht's"
+  },
+  "folder": {
+    "title": "Wo soll Peko seine Sachen aufbewahren?",
+    "body": "Ein Ordner enthält deine Pekos, ihre Unterhaltungen und Erinnerungen, deine Modelle und deine Schlüssel (verschlüsselt). Wähle einen Ort mit Platz zum Wachsen.",
+    "missingTitle": "Peko findet seinen Ordner nicht",
+    "missingBody": "Er war unter {{path}}. Wenn er auf einem Laufwerk liegt, schließe es an und versuche es erneut – oder wähle, wo Peko jetzt leben soll.",
+    "retry": "Erneut versuchen",
+    "stillMissing": "Noch nicht da. Schließe das Laufwerk an, auf dem er liegt, und versuche es erneut.",
+    "home": "Dein Benutzerordner",
+    "recommended": "Empfohlen",
+    "homeHint": "Ein versteckter Ordner in deinem Benutzerordner, wo Peko normalerweise lebt.",
+    "other": "Woanders",
+    "otherHint": "Ein anderes Laufwerk oder ein beliebiger Ordner.",
+    "choose": "Auswählen…",
+    "change": "Ändern…",
+    "free": "{{size}} frei",
+    "kind": {
+      "new": "Peko legt diesen Ordner an.",
+      "empty": "Ein leerer Ordner: bereit.",
+      "subfolder": "Dieser Ordner enthält schon anderes, daher legt Peko darin einen eigenen Ordner an.",
+      "peko_one": "Bereits ein Peko-Ordner mit {{count}} Peko – Peko macht dort weiter, wo es aufgehört hat.",
+      "peko_other": "Bereits ein Peko-Ordner mit {{count}} Pekos – Peko macht dort weiter, wo es aufgehört hat.",
+      "pekoEmpty": "Bereits ein Peko-Ordner – Peko macht dort weiter, wo es aufgehört hat."
+    },
+    "warning": {
+      "synced": "Dieser Ordner wird mit der Cloud synchronisiert. Synchronisieren, während Peko läuft, kann seine Schlüssel und Unterhaltungen beschädigen; ein Ordner, der auf diesem Computer bleibt, ist sicherer.",
+      "removable": "Er liegt auf einem anderen Laufwerk. Lass es angeschlossen: Ohne es kann Peko nicht starten.",
+      "protected": "macOS fragt dich, ob Peko diesen Ordner verwenden darf."
+    },
+    "problem": {
+      "notAbsolute": "Wähle einen vollständigen Ordnerpfad.",
+      "notFolder": "Das ist eine Datei, kein Ordner.",
+      "notWritable": "Peko kann dort nicht schreiben. Wähle einen Ordner, der dir gehört.",
+      "tooLong": "Der Pfad ist zu lang für Pekos Engine. Wähle einen Ordner mit kürzerem Pfad.",
+      "system": "Dieser Ordner gehört dem System oder wird von selbst geleert. Wähle einen anderen.",
+      "insideApp": "Dieser Ordner liegt in der App und würde mit ihr entfernt. Wähle einen anderen."
+    },
+    "saving": "Ordner wird angelegt…"
+  },
+  "privacy": {
+    "title": "Hilf mit, Peko besser zu machen"
+  },
+  "ready": {
+    "title": "Alles bereit",
+    "body": "Peko kann mit diesen Einstellungen starten.",
+    "folder": "Ordner",
+    "crash": "Absturzberichte",
+    "usage": "Nutzungszahlen",
+    "on": "An",
+    "off": "Aus",
+    "tips": "Gut zu wissen",
+    "tray": {
+      "macos": "Wenn du das Fenster schließt, läuft Peko in der Menüleiste weiter, damit deine Pekos weiterarbeiten.",
+      "windows": "Wenn du das Fenster schließt, läuft Peko im Infobereich weiter, damit deine Pekos weiterarbeiten.",
+      "linux": "Wenn du das Fenster schließt, läuft Peko im Tray weiter, sofern deine Arbeitsumgebung einen hat."
+    },
+    "terminal": "Der Befehl peko im Terminal verwendet denselben Ordner.",
+    "start": "Peko starten",
+    "starting": "Engine wird gestartet…",
+    "failed": "Die Engine ist nicht gestartet: {{message}}"
+  }
+}
