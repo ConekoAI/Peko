@@ -1,0 +1,269 @@
+// src/__tests__/MemberList.test.tsx
+//
+// PR-1 / feature/desktop-channels: read-only member list. Validates:
+//   • loading spinner while members are in-flight
+//   • empty-state copy
+//   • local section rendering (each member gets a runtime badge + testid)
+//   • row uses the principal DID as the visible label
+
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+
+const useChannelMembersMock = vi.fn();
+const infoState: { data: unknown } = { data: undefined };
+const setWakeState = {
+  mutate: vi.fn(),
+  isPending: false,
+  variables: undefined as unknown,
+  error: null as Error | null,
+};
+
+const wakesState: { data: unknown } = { data: undefined };
+const changeWakesState = {
+  mutate: vi.fn(),
+  isPending: false,
+  error: null as Error | null,
+};
+
+vi.mock("../hooks/useChannels", () => ({
+  useChannelWakes: () => wakesState,
+  useChangeChannelWakes: () => changeWakesState,
+  useChannels: () => ({ data: [] }),
+  useChannel: () => ({ data: undefined }),
+  useChannelMembers: (...args: unknown[]) => useChannelMembersMock(...args),
+  useChannelInfo: () => infoState,
+  useSetChannelWake: () => setWakeState,
+}));
+
+import MemberList from "../components/MemberList";
+
+function renderList() {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <MemberList channelId="chan_alpha" runtimeId="local" />
+    </QueryClientProvider>,
+  );
+}
+
+describe("MemberList", () => {
+  beforeEach(() => {
+    useChannelMembersMock.mockReset();
+    infoState.data = undefined;
+    setWakeState.mutate.mockReset();
+    setWakeState.isPending = false;
+    setWakeState.error = null;
+    wakesState.data = undefined;
+    changeWakesState.mutate.mockReset();
+    changeWakesState.error = null;
+  });
+
+  // Runtime ADR-128: how often other pekos may wake one of yours here.
+  it("shows a peko's wake limit and saves the two numbers", () => {
+    useChannelMembersMock.mockReturnValue({
+      data: { members: ["principal:prin_a", "user:local"] },
+      isLoading: false,
+    });
+    infoState.data = {
+      kind: "group",
+      pekos: [{ name: "alice", localId: "prin_a", wake: "mention" }],
+    };
+    wakesState.data = { perHour: "60", perDay: "none", spentHour: 12, spentDay: 40, held: 0, freeAt: null };
+    renderList();
+    const button = screen.getByTestId("wake-limit-alice");
+    expect(button).toHaveTextContent("12/60 an hour");
+    fireEvent.click(button);
+    const hour = screen.getByRole("textbox", { name: "Per hour" });
+    const day = screen.getByRole("textbox", { name: "Per day" });
+    expect(hour).toHaveValue("60");
+    // No limit shows as an empty field.
+    expect(day).toHaveValue("");
+    expect(screen.getByTestId("wake-limit-form-alice")).toHaveTextContent("Used: 12 this hour, 40 today");
+    fireEvent.change(hour, { target: { value: "" } });
+    fireEvent.change(day, { target: { value: "200" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(changeWakesState.mutate).toHaveBeenCalledWith(
+      { pekoName: "alice", perHour: "none", perDay: "200" },
+      expect.anything(),
+    );
+    // Not a whole number: nothing is saved.
+    changeWakesState.mutate.mockReset();
+    fireEvent.change(day, { target: { value: "lots" } });
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+  });
+
+  it("shows no wake limit on an engine that does not know it", () => {
+    useChannelMembersMock.mockReturnValue({
+      data: { members: ["principal:prin_a"] },
+      isLoading: false,
+    });
+    infoState.data = {
+      kind: "group",
+      pekos: [{ name: "alice", localId: "prin_a", wake: "mention" }],
+    };
+    renderList();
+    expect(screen.queryByTestId("wake-limit-alice")).toBeNull();
+    expect(screen.getByRole("combobox", { name: "When alice replies" })).toBeInTheDocument();
+  });
+
+  // Found live: members on other computers showed as raw ids.
+  it("lists everyone once by name, here and elsewhere", () => {
+    useChannelMembersMock.mockReturnValue({ data: { members: [] }, isLoading: false });
+    infoState.data = {
+      kind: "group",
+      pekos: [],
+      people: [
+        { address: "user:local:local", aliases: ["user:hub:6666"], kind: "user", name: "Frank", you: true, here: true },
+        { address: "principal:hub:b1ec", aliases: ["did:key:z6Mk"], kind: "principal", name: "ada", you: false, here: false },
+        { address: "user:hub:7777", aliases: [], kind: "user", name: "Gina", handle: "gina-r", you: false, here: false },
+      ],
+    };
+    renderList();
+    // No engine to name you in this test: the old "You" stands in.
+    expect(screen.getByTestId("channel-members-local")).toHaveTextContent("You");
+    const elsewhere = screen.getByTestId("channel-members-remote");
+    expect(elsewhere).toHaveTextContent("ada");
+    expect(elsewhere).toHaveTextContent("Gina");
+    // Runtime ADR-124: a person's handle beside their name.
+    expect(screen.getByTestId("member-handle")).toHaveTextContent("@gina-r");
+    expect(elsewhere).not.toHaveTextContent("did:key");
+  });
+
+  it("lets you choose when each of your pekos replies in a group", () => {
+    useChannelMembersMock.mockReturnValue({
+      data: { members: ["principal:prin_a", "user:local"] },
+      isLoading: false,
+    });
+    infoState.data = {
+      kind: "group",
+      pekos: [{ name: "alice", localId: "prin_a", wake: "mention" }],
+    };
+    renderList();
+    const picker = screen.getByRole("combobox", { name: "When alice replies" });
+    expect(picker).toHaveValue("mention");
+    // Only pekos get a picker; the person does not.
+    expect(screen.getAllByRole("combobox")).toHaveLength(1);
+    fireEvent.change(picker, { target: { value: "off" } });
+    expect(setWakeState.mutate).toHaveBeenCalledWith({ pekoName: "alice", wake: "off" });
+  });
+
+  it("offers no picker in a DM, which always wakes", () => {
+    useChannelMembersMock.mockReturnValue({
+      data: { members: ["principal:prin_a", "user:local"] },
+      isLoading: false,
+    });
+    infoState.data = {
+      kind: "dm",
+      pekos: [{ name: "alice", localId: "prin_a", wake: "human" }],
+    };
+    renderList();
+    expect(screen.queryByRole("combobox")).toBeNull();
+  });
+
+  it("shows why a change was refused", () => {
+    useChannelMembersMock.mockReturnValue({
+      data: { members: ["principal:prin_a"] },
+      isLoading: false,
+    });
+    infoState.data = {
+      kind: "group",
+      pekos: [{ name: "alice", localId: "prin_a", wake: "mention" }],
+    };
+    setWakeState.error = new Error("[forbidden] only alice's owner can change how it wakes");
+    renderList();
+    expect(screen.getByRole("alert")).toHaveTextContent("only alice's owner");
+  });
+
+  it("renders the loading spinner while members are in-flight", () => {
+    useChannelMembersMock.mockReturnValue({ data: undefined, isLoading: true });
+    renderList();
+    expect(screen.getByText(/Loading members/)).toBeInTheDocument();
+  });
+
+  it("renders the empty-state copy when no members exist", async () => {
+    useChannelMembersMock.mockReturnValue({
+      data: { members: [] },
+      isLoading: false,
+    });
+    renderList();
+    await waitFor(() => {
+      expect(screen.getByText(/No members yet/)).toBeInTheDocument();
+    });
+  });
+
+  it("renders one row per member under the Local section with testid", async () => {
+    useChannelMembersMock.mockReturnValue({
+      data: { members: ["alice", "bob"] },
+      isLoading: false,
+    });
+    renderList();
+    await waitFor(() => {
+      expect(screen.getByTestId("channel-member-alice")).toBeInTheDocument();
+      expect(screen.getByTestId("channel-member-bob")).toBeInTheDocument();
+    });
+    // Each row carries the local runtime badge.
+    expect(screen.getAllByTestId("runtime-badge-local")).toHaveLength(2);
+  });
+
+  // PR-3b / P1.2 attribution: when the IPC surfaces `memberProvenance`,
+  // principals whose `runtimeId !== null` render under the Remote
+  // section with a Globe icon + a per-runtime badge. Local rows keep
+  // the Monitor icon + "local" badge. Pre-PR-3b runtimes omit the
+  // field and fall back to the all-local rendering.
+  it("splits local and remote members when memberProvenance is present", async () => {
+    useChannelMembersMock.mockReturnValue({
+      data: {
+        members: ["alice", "bob", "carol"],
+        memberProvenance: [
+          { principal: "alice", runtimeId: null },
+          { principal: "bob", runtimeId: "did:key:zRuntimeB" },
+          { principal: "carol", runtimeId: "did:key:zRuntimeC" },
+        ],
+      },
+      isLoading: false,
+    });
+    renderList();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("channel-members-local")).toBeInTheDocument();
+      expect(screen.getByTestId("channel-members-remote")).toBeInTheDocument();
+    });
+
+    // Local section: only the principal with runtimeId === null.
+    const localSection = screen.getByTestId("channel-members-local");
+    expect(localSection).toHaveTextContent("alice");
+    expect(localSection).not.toHaveTextContent("bob");
+    expect(localSection).not.toHaveTextContent("carol");
+
+    // Remote section: every principal with a non-null runtimeId.
+    const remoteSection = screen.getByTestId("channel-members-remote");
+    expect(remoteSection).toHaveTextContent("bob");
+    expect(remoteSection).toHaveTextContent("carol");
+    expect(remoteSection).not.toHaveTextContent("alice");
+
+    // Per-runtime badges present; the local badge appears once.
+    expect(
+      screen.getByTestId("runtime-badge-did:key:zRuntimeB"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("runtime-badge-did:key:zRuntimeC"),
+    ).toBeInTheDocument();
+    expect(screen.getAllByTestId("runtime-badge-local")).toHaveLength(1);
+  });
+
+  // Back-compat: pre-PR-3b runtimes don't surface `memberProvenance`,
+  // so the list still renders all members as local.
+  it("falls back to all-local rendering when memberProvenance is missing", async () => {
+    useChannelMembersMock.mockReturnValue({
+      data: { members: ["alice", "bob"] },
+      isLoading: false,
+    });
+    renderList();
+    await waitFor(() => {
+      expect(screen.getByTestId("channel-members-local")).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId("channel-members-remote")).not.toBeInTheDocument();
+    expect(screen.getAllByTestId("runtime-badge-local")).toHaveLength(2);
+  });
+});

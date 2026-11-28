@@ -1,0 +1,184 @@
+{
+  "title": "Settings",
+  "sectionsLabel": "Settings sections",
+  "sections": {
+    "general": "General",
+    "models": "Models",
+    "advanced": "Advanced",
+    "about": "About"
+  },
+  "yourName": {
+    "title": "Your name",
+    "hintSignedIn": "What people and pekos call you. It's your PekoHub name, so your other computers follow it; your handle @{{handle}} stays the same.",
+    "hintSignedOut": "What your pekos call you. It stays on this computer until you sign in to PekoHub.",
+    "placeholder": "Your name",
+    "saving": "Saving…"
+  },
+  "appearance": {
+    "title": "Appearance",
+    "hint": "Dark matches PekoHub.",
+    "theme": "Theme",
+    "light": "Light",
+    "dark": "Dark",
+    "system": "System"
+  },
+  "keys": {
+    "title": "Stored keys",
+    "hint": "Every secret in the engine's vault. Model keys are managed from Models; this list is for keys other tools use.",
+    "add": "Add a key",
+    "namespace": "Namespace",
+    "namePlaceholder": "e.g. github",
+    "kind": "Kind",
+    "kinds": {
+      "api_key": "API key",
+      "bearer_token": "Bearer token",
+      "oauth_token": "OAuth token",
+      "basic_auth": "Basic auth",
+      "private_key": "Private key",
+      "generic_secret": "Other secret"
+    },
+    "secret": "Secret",
+    "save": "Save key",
+    "loading": "Loading credentials…",
+    "empty": "No stored keys",
+    "emptyHint": "Keys you add for models or tools appear here.",
+    "hide": "Hide secret",
+    "reveal": "Reveal secret"
+  },
+  "models": {
+    "intro": "The endpoints your pekos think with. Each model keeps its own API key; change it under Edit.",
+    "add": "Add model",
+    "usePlan": "Use ChatGPT plan",
+    "loading": "Loading models…",
+    "empty": "No models configured yet",
+    "emptyHint": "Add an endpoint and its API key to start talking to your pekos.",
+    "addFirst": "Add your first model",
+    "unavailable": "Model catalog unavailable",
+    "unavailableHint": "Couldn't load the model catalog. Check that the engine is running and reload this tab."
+  },
+  "folder": {
+    "title": "Peko folder",
+    "hint": "Where the engine keeps your pekos, models, and keys.",
+    "unknown": "Unknown",
+    "show": "Show folder"
+  },
+  "about": {
+    "appVersion": "App version",
+    "engineVersion": "Engine version",
+    "notRunning": "Not running",
+    "help": "Help",
+    "gettingStarted": "Getting started",
+    "report": "Report a problem",
+    "onboarding": "Onboarding",
+    "onboardingHint": "Walk through connecting a model and creating a peko again.",
+    "replay": "Replay onboarding",
+    "updates": "Updates",
+    "checkUpdates": "Check for updates",
+    "checking": "Checking…",
+    "upToDate": "You have the newest version.",
+    "updateAvailable": "Version {{version}} is available.",
+    "checkFailed": "Couldn't check for updates. Check your connection and try again."
+  },
+  "language": {
+    "title": "Language",
+    "hint": "The language Peko Desktop is shown in.",
+    "system": "System default"
+  },
+  "devices": {
+    "title": "Devices",
+    "hint": "Your computers and phones on your PekoHub account. A device on this list reads and acts as you; nothing joins it without a code shown on a device already on it.",
+    "notSignedIn": "Sign in to PekoHub first. Your devices find each other through PekoHub.",
+    "notOnList": "This computer is not on your account's devices yet.",
+    "joinHow": "On a computer or phone already on your account, choose Add a device, then type the code it shows here.",
+    "codeLabel": "Code",
+    "join": "Join",
+    "joining": "Joining…",
+    "computer": "Computer",
+    "phone": "Phone",
+    "thisComputer": "this computer",
+    "addedAt": "added {{when}}",
+    "lastSeen": "last used {{when}}",
+    "remove": "Remove",
+    "removeConfirm": "Remove it? It can no longer act as you.",
+    "removeThisConfirm": "Remove this computer? It stops acting as you until it joins again.",
+    "add": "Add a device",
+    "scanOrType": "Scan this with Peko on your phone, or type the code on your other computer.",
+    "warning": "Whoever uses it acts as you. Show it only to your own device.",
+    "expires": "It works once, until {{time}}.",
+    "expired": "That code has expired.",
+    "codeAlt": "Code to add a device",
+    "joined": "{{name}} joined your account.",
+    "waiting": "Waiting for you",
+    "devicesReset": "PekoHub says someone you talk with set up all their devices again. Approve only if they told you so; until then nothing goes to their new devices.",
+    "approve": "Approve",
+    "deny": "Deny",
+    "ownerChange": "PekoHub says {{peko}} now belongs to another account. Hand it over? If you didn't give it away, deny: it stays yours.",
+    "keyChange": "PekoHub says a peko you talk with has a new identity. A peko keeps its identity when it moves to another computer, so approve only if its owner told you they set it up again. Until you decide, nothing you send reaches it.",
+    "codePlaceholder": "ABCD-EFGH-JKMN",
+    "accountCode": "Your account's code",
+    "accountCodeHint": "Someone who wants to be sure they reach you can ask you to read it. It changes only if all your devices are set up again.",
+    "itsCode": "Its code",
+    "untilNow": "Until now",
+    "compare": "Ask its owner to read you the code on their screen. Approve only if it matches.",
+    "path": {
+      "direct": "Direct",
+      "relay": "Through PekoHub",
+      "waiting": "Waiting for the same network",
+      "offline": "Offline"
+    }
+  },
+  "privacy": {
+    "title": "Privacy",
+    "noticeTitle": "What Peko sends us",
+    "noticeBody": "Peko can send us two things to help fix and improve it. Neither includes your messages, names, files or keys.",
+    "crash": {
+      "title": "Send crash reports",
+      "hint": "When Peko stops working: the error, the app version and your operating system."
+    },
+    "usage": {
+      "title": "Send usage counts",
+      "hint": "Which features are used, as counts. Never what you or your pekos write."
+    },
+    "changeLater": "You can change this any time in Settings.",
+    "continue": "Continue"
+  },
+  "network": {
+    "title": "Network",
+    "hint": "How this computer reaches your other computers and the people you talk with. Messages are sealed either way; a direct connection also keeps PekoHub from seeing who talks with whom.",
+    "how": "How this computer connects",
+    "automatic": {
+      "label": "Automatic",
+      "hint": "Directly when the other computer is on the same network, through PekoHub otherwise."
+    },
+    "pekohub": {
+      "label": "PekoHub only",
+      "hint": "Everything goes through PekoHub."
+    },
+    "direct": {
+      "label": "Direct only",
+      "hint": "Never through PekoHub. Messages wait until the other computer is on the same network."
+    },
+    "listenError": "This computer can't accept direct connections: {{reason}}. It still connects to others.",
+    "accepts": "This computer will accept connections from your computers on this network. macOS or Windows may ask you to allow it.",
+    "directStops": "With Direct only, nothing of a conversation goes through PekoHub:",
+    "stopsWait": "Messages to computers on other networks wait until they are on the same network.",
+    "stopsPhones": "Your phones get no answers and no notifications.",
+    "stopsWebChat": "Web chat with your public pekos stops.",
+    "turnOnDirect": "Turn on Direct only",
+    "turnOnAutomatic": "Turn on Automatic",
+    "with": {
+      "title": "Connect directly with",
+      "mine": "My computers",
+      "people": "People I talk with"
+    },
+    "advanced": {
+      "title": "Advanced",
+      "listen": "Listen on",
+      "listenHint": "An address and port on this computer (default 0.0.0.0:11438). Now: {{listening}}",
+      "tell": "Addresses to tell others",
+      "tellHint": "One per line, host:port. Empty: this computer's own network addresses ({{told}}).",
+      "try": "Addresses to try",
+      "tryHint": "One per line, host:port: computers to connect to without being told where they are."
+    }
+  }
+}

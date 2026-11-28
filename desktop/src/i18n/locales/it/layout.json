@@ -1,0 +1,92 @@
+{
+  "rail": {
+    "chats": "Chat",
+    "groups": "Gruppi",
+    "settings": "Impostazioni",
+    "newGroup": "Nuovo gruppo",
+    "invitationLabel": "Invito: {{name}}",
+    "invitation": "Invito",
+    "invitationSummary_one": "{{count}} membro · da {{inviter}}",
+    "invitationSummary_many": "{{count}} membri · da {{inviter}}",
+    "invitationSummary_other": "{{count}} membri · da {{inviter}}",
+    "joining": "Ingresso in corso…",
+    "joinGroup": "Entra in un gruppo",
+    "joinHint": "Incolla un link di invito, oppure l'ID di un gruppo pubblico.",
+    "joinAsked": "Richiesta di ingresso in {{name}} inviata. Comparirà qui quando il computer del proprietario ti farà entrare.",
+    "asking": "Richiesta in corso…"
+  },
+  "titleBar": {
+    "minimize": "Riduci a icona",
+    "maximize": "Ingrandisci",
+    "restore": "Ripristina",
+    "close": "Chiudi"
+  },
+  "engineFailure": {
+    "title": "Il motore non è riuscito ad avviarsi",
+    "body": "La chat e le altre funzioni che dipendono dal motore non funzioneranno finché non sarà in esecuzione.",
+    "restart": "Riavvia il motore",
+    "restarting": "Riavvio…",
+    "hideDetails": "Nascondi dettagli",
+    "showDetails": "Mostra dettagli"
+  },
+  "statusBar": {
+    "failed": "{{label}}: {{detail}}",
+    "failedFallback": "il motore è in stato di errore"
+  },
+  "keepAwake": {
+    "title": "Tieni attivo questo computer mentre un peko lavora",
+    "hint": "Così i peko di questo computer possono finire quello che chiedi loro dagli altri tuoi computer. La sospensione viene impedita solo mentre un peko lavora e per un minuto dopo. Chiudendo il coperchio di un portatile, questo va comunque in sospensione."
+  },
+  "runtimeBadge": {
+    "local": "Locale"
+  },
+  "versionMismatch": {
+    "newerTitle": "Questa app è più vecchia del tuo Peko",
+    "newerBody": "È in esecuzione Peko <running/>, mentre questa app è stata realizzata per <needed/>. Alcune cose potrebbero non funzionare. Aggiorna Peko Desktop.",
+    "olderTitle": "Il tuo Peko è più vecchio di quanto serve a questa app",
+    "olderBody": "È in esecuzione Peko <running/>, mentre a questa app serve <needed/> o successivo. Alcune cose potrebbero non funzionare.",
+    "unknownTitle": "Impossibile capire se il tuo Peko è adatto a questa app",
+    "unknownBody": "Peko riporta la versione <running/>, mentre a questa app serve <needed/> o successivo. Alcune cose potrebbero non funzionare.",
+    "dismiss": "Chiudi l'avviso sulle versioni"
+  },
+  "tray": {
+    "open": "Apri",
+    "quit": "Esci"
+  },
+  "update": {
+    "available": "Peko Desktop {{version}} è disponibile. I tuoi peko si fermano un momento durante il riavvio.",
+    "install": "Aggiorna e riavvia",
+    "downloading": "Download in corso…",
+    "downloadingPercent": "Download in corso… {{percent}}%",
+    "installing": "Installazione…",
+    "failed": "L'aggiornamento non è andato a buon fine. Scarica la nuova versione dalla pagina di download.",
+    "downloadPage": "Apri la pagina di download",
+    "dismiss": "Chiudi"
+  },
+  "deviceList": {
+    "notOn": "Questo computer non è ancora tra i dispositivi del tuo account, quindi ciò che invia a tuo nome resta in attesa.",
+    "join": "Aggiungilo"
+  },
+  "computer": {
+    "strip": {
+      "using": "{{peko}} sta usando questo computer",
+      "paused": "{{peko}} è in pausa: hai usato il computer",
+      "stop": "Ferma",
+      "continue": "Lascialo continuare",
+      "somePeko": "Un peko"
+    },
+    "setting": {
+      "title": "Lascia che i peko usino questo computer",
+      "hint": "Un peko che lavora per te può vedere lo schermo, fare clic e scrivere nelle app, per ciò che nessun altro strumento sa fare. Se muovi il mouse o scrivi, va in pausa; {{shortcut}} lo ferma da qualsiasi app.",
+      "permissions": "Permessi per {{app}}",
+      "permissionsPlain": "Permessi",
+      "screenRecording": "Registrazione schermo",
+      "accessibility": "Accessibilità",
+      "granted": "Concesso",
+      "notGranted": "Non concesso",
+      "ask": "Chiedi i permessi",
+      "restartHint": "La registrazione dello schermo vale dopo il riavvio di Peko.",
+      "unavailable": "Non disponibile su questo computer: {{why}}"
+    }
+  }
+}

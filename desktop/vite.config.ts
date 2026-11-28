@@ -1,0 +1,62 @@
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
+import { TanStackRouterVite } from "@tanstack/router-plugin/vite";
+
+// @ts-expect-error process is a nodejs global
+const host = process.env.TAURI_DEV_HOST;
+
+// https://vite.dev/config/
+export default defineConfig(async () => ({
+  plugins: [
+    // MUST come before react() — rewrites src/routeTree.gen.ts before React's HMR boundary runs.
+    TanStackRouterVite({
+      target: "react",
+      autoCodeSplitting: false,
+      routesDirectory: "./src/routes",
+      generatedRouteTree: "./src/routeTree.gen.ts",
+      routeFileIgnorePrefix: "-",
+      quoteStyle: "single",
+    }),
+    react(),
+    tailwindcss(),
+  ],
+  // Two pages: the app, and the strip shown while a peko uses this
+  // computer (runtime ADR-123).
+  build: {
+    rollupOptions: {
+      input: {
+        main: "index.html",
+        "computer-strip": "computer-strip.html",
+      },
+    },
+  },
+  test: {
+    globals: true,
+    environment: "jsdom",
+    include: ["src/__tests__/**/*.test.{ts,tsx}"],
+    setupFiles: ["./src/__tests__/setup.ts"],
+  },
+
+  // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
+  //
+  // 1. prevent Vite from obscuring rust errors
+  clearScreen: false,
+  // 2. tauri expects a fixed port, fail if that port is not available
+  server: {
+    port: 1420,
+    strictPort: true,
+    host: host || false,
+    hmr: host
+      ? {
+          protocol: "ws",
+          host,
+          port: 1421,
+        }
+      : undefined,
+    watch: {
+      // 3. tell Vite to ignore watching `src-tauri`
+      ignored: ["**/src-tauri/**"],
+    },
+  },
+}));

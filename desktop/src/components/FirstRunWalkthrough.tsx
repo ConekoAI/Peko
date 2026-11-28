@@ -1,0 +1,396 @@
+import { track } from "../lib/usage";
+import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "@tanstack/react-router";
+import { ArrowLeft, ArrowRight, Check, Loader2 } from "lucide-react";
+import { useTranslation } from "react-i18next";
+
+import { usePrincipals } from "../hooks/usePrincipals";
+import { useAddModel, useModels, useTestModel } from "../hooks/useModels";
+import NewPekoForm, { PrimaryButton } from "./peko/NewPekoForm";
+import EndpointForm, {
+  EMPTY_ENDPOINT,
+  endpointArgs,
+  isEndpointValid,
+  type EndpointDraft,
+} from "./models/EndpointForm";
+
+/**
+ * First-run onboarding: from a fresh install to talking with a peko in
+ * three steps.
+ *
+ *   1. Connect a model — the base URL and API format from the
+ *      provider's docs and a key (ADR-068 has no vendor presets); the
+ *      model is then picked from the list the endpoint itself offers.
+ *      With models already set up, pick one of those instead. The model is added and
+ *      tested; its name and keyless/stored-credential options sit under
+ *      "Advanced".
+ *   2. Name your peko — a name and an avatar; the description and the
+ *      model it uses sit under "Advanced". Creating it runs the runtime's
+ *      genesis turn, which can take a minute.
+ *   3. Say hello — the first message, sent from the chat so the reply
+ *      streams there (`/chat/<name>?say=…`).
+ *
+ * It shows on a profile with no pekos unless dismissed before
+ * (`localStorage[ONBOARDING_KEY] === "1"`); Skip dismisses it. Settings →
+ * About → "Replay onboarding" dispatches REPLAY_EVENT to show it again.
+ * PekoHub sign-in is not part of first run; it lives in the profile menu.
+ */
+export const ONBOARDING_KEY = "peko.onboarding.seen";
+export const REPLAY_EVENT = "peko:replay-onboarding";
+
+type Step = 1 | 2 | 3;
+
+const STEPS: Step[] = [1, 2, 3];
+
+/** Names offered by default, first free one wins. */
+const FIRST_MESSAGES = ["hello", "stretch", "plan"] as const;
+
+export default function FirstRunWalkthrough() {
+  const { data: principals, isLoading: principalsLoading } = usePrincipals();
+  const [dismissed, setDismissed] = useState(false);
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (principalsLoading || dismissed) return;
+    if (localStorage.getItem(ONBOARDING_KEY) === "1") return;
+    if (!principals || principals.length > 0) return;
+    setVisible(true);
+  }, [principals, principalsLoading, dismissed]);
+
+  // Settings → About → "Replay onboarding".
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    function handle() {
+      setDismissed(false);
+      setVisible(true);
+    }
+    window.addEventListener(REPLAY_EVENT, handle);
+    return () => window.removeEventListener(REPLAY_EVENT, handle);
+  }, []);
+
+  function close() {
+    if (typeof window !== "undefined") localStorage.setItem(ONBOARDING_KEY, "1");
+    setDismissed(true);
+    setVisible(false);
+  }
+
+  if (!visible) return null;
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="first-run-walkthrough-title"
+      data-testid="first-run-walkthrough"
+      className="modal-backdrop"
+    >
+      <Onboarding onClose={close} takenNames={(principals ?? []).map((p) => p.name)} />
+    </div>
+  );
+}
+
+function Onboarding({ onClose, takenNames }: { onClose: () => void; takenNames: string[] }) {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const [step, setStep] = useState<Step>(1);
+  const [modelId, setModelId] = useState<string | null>(null);
+  const [pekoName, setPekoName] = useState<string | null>(null);
+
+  function finish(firstMessage: string | null) {
+    track("onboarding_step", { step: "done" });
+    onClose();
+    if (!pekoName) return;
+    navigate({
+      to: "/chat/$pekoName",
+      params: { pekoName },
+      search: firstMessage ? { say: firstMessage } : {},
+    });
+  }
+
+  return (
+    <div className="modal-panel flex max-h-[90vh] max-w-xl flex-col overflow-hidden">
+      <div className="flex items-start justify-between px-6 pt-5">
+        <div>
+          <p className="eyebrow text-brand-text">{t("firstRun.welcome")}</p>
+          <h2 id="first-run-walkthrough-title" className="mt-0.5 text-lg font-semibold text-fg">
+            {t(`firstRun.steps.${step}`)}
+          </h2>
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            track("onboarding_step", { step: "skipped" });
+            onClose();
+          }}
+          className="btn-ghost btn-xs"
+        >
+          {t("firstRun.skip")}
+        </button>
+      </div>
+
+      <ol className="flex gap-2 px-6 pt-3" aria-label={t("firstRun.progress")}>
+        {STEPS.map((s) => (
+          <li
+            key={s}
+            data-testid={`onboarding-step-${s}`}
+            aria-current={s === step ? "step" : undefined}
+            className={[
+              "h-1 flex-1 rounded-full",
+              s <= step ? "bg-brand" : "bg-surface-sunken",
+            ].join(" ")}
+          />
+        ))}
+      </ol>
+
+      <div className="overflow-y-auto px-6 py-5">
+        {step === 1 && (
+          <ModelStep
+            onNext={(id) => {
+              setModelId(id);
+              track("onboarding_step", { step: "model" });
+              setStep(2);
+            }}
+          />
+        )}
+        {step === 2 && modelId && (
+          <PekoStep
+            modelId={modelId}
+            takenNames={takenNames}
+            onBack={() => setStep(1)}
+            onNext={(name) => {
+              setPekoName(name);
+              track("onboarding_step", { step: "peko" });
+              setStep(3);
+            }}
+          />
+        )}
+        {step === 3 && pekoName && <HelloStep pekoName={pekoName} onFinish={finish} />}
+      </div>
+    </div>
+  );
+}
+
+// ─── Step 1: connect a model ────────────────────────────────────────
+
+function ModelStep({ onNext }: { onNext: (modelId: string) => void }) {
+  const { t } = useTranslation();
+  const { data: models, isLoading: modelsLoading } = useModels();
+  const enabled = useMemo(() => (models ?? []).filter((m) => m.enabled), [models]);
+  const [addingNew, setAddingNew] = useState(false);
+  const [existing, setExisting] = useState<string>("");
+
+  useEffect(() => {
+    if (!existing && enabled.length > 0) setExisting(enabled[0].id);
+  }, [enabled, existing]);
+
+  if (modelsLoading) {
+    return <Loader2 className="h-5 w-5 animate-spin text-fg-subtle" />;
+  }
+
+  if (enabled.length > 0 && !addingNew) {
+    return (
+      <div className="space-y-4">
+        <p className="text-sm text-fg-muted">
+          {t("firstRun.pickModel")}
+        </p>
+        <label className="block">
+          <span className="field-label mb-1.5 block">{t("common.model")}</span>
+          <select
+            value={existing}
+            onChange={(e) => setExisting(e.target.value)}
+            className="select"
+          >
+            {enabled.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.displayName || m.id}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="flex items-center justify-between">
+          <button
+            type="button"
+            onClick={() => setAddingNew(true)}
+            className="text-xs text-fg-muted hover:text-fg-soft"
+          >
+            {t("firstRun.addAnother")}
+          </button>
+          <PrimaryButton onClick={() => onNext(existing)} disabled={!existing}>
+            {t("firstRun.continue")} <ArrowRight className="h-4 w-4" />
+          </PrimaryButton>
+        </div>
+      </div>
+    );
+  }
+
+  return <AddModel onAdded={onNext} />;
+}
+
+/**
+ * The endpoint from your provider's docs — base URL, API format, model
+ * id, key (ADR-068: no vendor presets). The model is added and tested;
+ * a failed test shows the provider's message and can be passed.
+ */
+function AddModel({ onAdded }: { onAdded: (modelId: string) => void }) {
+  const { t } = useTranslation();
+  const addMut = useAddModel();
+  const testMut = useTestModel();
+  const [draft, setDraft] = useState<EndpointDraft>(EMPTY_ENDPOINT);
+  const [addedId, setAddedId] = useState<string | null>(null);
+  const [testError, setTestError] = useState<string | null>(null);
+
+  const busy = addMut.isPending || testMut.isPending;
+  const ready = isEndpointValid(draft) && !busy;
+
+  async function connect() {
+    setTestError(null);
+    try {
+      const info = await addMut.mutateAsync(endpointArgs(draft));
+      setAddedId(info.id);
+      const result = await testMut.mutateAsync(info.id);
+      if (result.ok) onAdded(info.id);
+      else setTestError(result.message || t("firstRun.noAnswer"));
+    } catch {
+      // `addMut.error` / `testMut.error` render below.
+    }
+  }
+
+  const failure = addMut.error ?? testMut.error;
+  const failureText =
+    failure instanceof Error ? failure.message : failure ? String(failure) : testError;
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-fg-muted">
+        {t("firstRun.addModelIntro")}
+      </p>
+
+      <EndpointForm
+        value={draft}
+        onChange={(next) => {
+          setDraft(next);
+          setTestError(null);
+        }}
+        disabled={busy}
+      />
+
+      {failureText && (
+        <div
+          data-testid="onboarding-model-error"
+          className="note-danger text-xs"
+        >
+          <p className="font-medium">{t("firstRun.unreachable")}</p>
+          <p className="mt-0.5 break-words">{failureText}</p>
+          {addedId && (
+            <button type="button" onClick={() => onAdded(addedId)} className="mt-1 underline">
+              {t("firstRun.continueAnyway")}
+            </button>
+          )}
+        </div>
+      )}
+
+      <div className="flex justify-end">
+        <PrimaryButton onClick={connect} disabled={!ready}>
+          {busy ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" />
+              {addMut.isPending ? t("firstRun.adding") : t("firstRun.checking")}
+            </>
+          ) : (
+            <>
+              {t("firstRun.connect")} <ArrowRight className="h-4 w-4" />
+            </>
+          )}
+        </PrimaryButton>
+      </div>
+    </div>
+  );
+}
+
+// ─── Step 2: name and avatar ────────────────────────────────────────
+
+function PekoStep({
+  modelId,
+  takenNames,
+  onBack,
+  onNext,
+}: {
+  modelId: string;
+  takenNames: string[];
+  onBack: () => void;
+  onNext: (name: string) => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <NewPekoForm
+      modelId={modelId}
+      takenNames={takenNames}
+      onCreated={onNext}
+      secondary={
+        <button
+          type="button"
+          onClick={onBack}
+          className="inline-flex items-center gap-1 text-xs text-fg-muted hover:text-fg-soft"
+        >
+          <ArrowLeft className="h-3.5 w-3.5" /> {t("common.back")}
+        </button>
+      }
+    />
+  );
+}
+
+// ─── Step 3: say hello ──────────────────────────────────────────────
+
+function HelloStep({
+  pekoName,
+  onFinish,
+}: {
+  pekoName: string;
+  onFinish: (firstMessage: string | null) => void;
+}) {
+  const { t } = useTranslation();
+  const firstMessages = FIRST_MESSAGES.map((key) => t(`firstRun.firstMessages.${key}`));
+  const [text, setText] = useState(firstMessages[0]);
+  return (
+    <div className="space-y-4">
+      <p className="flex items-center gap-1.5 text-sm text-fg-muted">
+        <Check className="h-4 w-4 text-brand-text" />
+        {t("firstRun.awake", { name: pekoName })}
+      </p>
+      <textarea
+        aria-label={t("firstRun.firstMessage")}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        rows={3}
+        className="input"
+      />
+      <div className="flex flex-wrap gap-1.5">
+        {firstMessages.map((m) => (
+          <button
+            key={m}
+            type="button"
+            onClick={() => setText(m)}
+            className="rounded-full border border-line px-3 py-1 text-xs text-fg-soft hover:bg-surface-sunken"
+          >
+            {m}
+          </button>
+        ))}
+      </div>
+      <div className="flex items-center justify-between">
+        <button
+          type="button"
+          onClick={() => onFinish(null)}
+          className="text-xs text-fg-muted hover:text-fg-soft"
+        >
+          {t("firstRun.skipMessage")}
+        </button>
+        <PrimaryButton onClick={() => onFinish(text.trim())} disabled={!text.trim()}>
+          {t("common.send")} <ArrowRight className="h-4 w-4" />
+        </PrimaryButton>
+      </div>
+    </div>
+  );
+}
+
+// ─── Shared ─────────────────────────────────────────────────────────

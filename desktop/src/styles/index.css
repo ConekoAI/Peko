@@ -1,0 +1,501 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+/* Manual dark mode toggle via .dark class on <html> */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+ * Peko design system, shared with the hub (pekohub/frontend): neutral
+ * grays (`ink`), hairline borders, Inter, and the logo's two leaves for
+ * color. Peko teal (`peko`, #008880 on light, #4eb8af on dark) is the main
+ * color: primary actions, links, selected items, focus rings. Peko lime
+ * (#b7dd6b) is the secondary: signs of life and things to look at, never
+ * actions: the online dot and unread counts. Components should reach for
+ * the semantic tokens below so one class serves both themes.
+ */
+@theme {
+  --font-sans: "Inter Variable", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --color-ink-950: #0a0a0a;
+  --color-ink-900: #111111;
+  --color-ink-850: #161616;
+  --color-ink-800: #1c1c1c;
+  --color-ink-750: #222222;
+  --color-ink-700: #2b2b2b;
+  --color-ink-600: #3a3a3a;
+  --color-ink-500: #525252;
+
+  --color-peko-50: #e5fdfa;
+  --color-peko-100: #dbf3f0;
+  --color-peko-200: #b7e6e0;
+  --color-peko-300: #7ed3ca;
+  --color-peko-400: #4eb8af;
+  --color-peko-500: #309f97;
+  --color-peko-600: #008880;
+  --color-peko-700: #006f67;
+  --color-peko-800: #00554f;
+  --color-peko-900: #003f3b;
+  --color-peko-950: #002a27;
+
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1rem;
+
+  --shadow-lifted: 0 16px 40px -20px rgb(0 0 0 / 0.7);
+  --shadow-pop: 0 12px 32px -8px rgb(0 0 0 / 0.45), 0 0 0 1px rgb(0 0 0 / 0.04);
+
+  --animate-fade-up: fade-up 0.35s cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-fade-in: fade-in 0.2s ease-out both;
+  --animate-scale-in: scale-in 0.16s cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-shimmer: shimmer 1.8s infinite;
+
+  @keyframes fade-up {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes scale-in {
+    from { opacity: 0; transform: scale(0.97); }
+    to { opacity: 1; transform: scale(1); }
+  }
+  @keyframes shimmer {
+    100% { transform: translateX(100%); }
+  }
+}
+
+/*
+ * Semantic tokens. They switch under .dark, so a component uses one class
+ * (`bg-surface`, `text-fg`, `border-line`) for both themes.
+ *
+ *   surface         page and conversation background
+ *   surface-rail    the far-left app rail
+ *   surface-card    modals, popovers, cards on the page
+ *   surface-raised  sidebars, composer, subtle fills
+ *   surface-sunken  hover and pressed fills, code headers
+ *   line / line-strong   hairlines; control borders
+ *   fg / fg-soft / fg-muted / fg-subtle   text, by emphasis
+ *   brand           primary fills (buttons): Peko teal
+ *   brand-text      emphasised text and icons (links, active items): teal
+ *   brand-soft      a teal tint for selected and active rows
+ *   accent(-soft)   focus rings (teal)
+ *   lime(-text/-soft/-fg)   Peko lime, the secondary: online, unread
+ *   danger(-soft) / warn(-soft) / ok(-soft)   status
+ *
+ * Dark matches the hub; light is its daytime counterpart.
+ */
+:root {
+  --surface: #fafafa;
+  --surface-rail: #efefef;
+  --surface-card: #ffffff;
+  --surface-raised: #f4f4f4;
+  --surface-sunken: #e9e9e9;
+  --line: #e4e4e4;
+  --line-strong: #d0d0d0;
+  --fg: #0a0a0a;
+  --fg-soft: #2b2b2b;
+  --fg-muted: #5f5f5f;
+  --fg-subtle: #8a8a8a;
+  --brand: #008880;
+  --brand-hover: #006f67;
+  --brand-soft: #e2f3f1;
+  --brand-fg: #ffffff;
+  --brand-text: #006f67;
+  --accent: #008880;
+  --accent-soft: rgb(0 136 128 / 0.2);
+  --lime: #b7dd6b;
+  --lime-fg: #1d2a0b;
+  --lime-text: #5b8a17;
+  --lime-soft: #eef7d6;
+  --danger: #c8344f;
+  --danger-soft: #fdeef1;
+  --warn: #a35c06;
+  --warn-soft: #fdf5e6;
+  --ok: #17845e;
+  --ok-soft: #e7f6ef;
+  --scrollbar: #d0d0d0;
+  color-scheme: light;
+}
+
+/* Dark surfaces are grey, not black: the same ramp as PekoHub's `ink`
+   scale and the phone app's dark palette. */
+.dark {
+  --surface: #17181b;
+  --surface-rail: #121316;
+  --surface-card: #1d1e22;
+  --surface-raised: #1a1b1e;
+  --surface-sunken: #28292e;
+  --line: #2e2f35;
+  --line-strong: #37383f;
+  --fg: #f5f5f5;
+  --fg-soft: #d4d4d4;
+  --fg-muted: #a3a3a3;
+  --fg-subtle: #868686;
+  --brand: #4eb8af;
+  --brand-hover: #7ed3ca;
+  --brand-soft: rgb(78 184 175 / 0.14);
+  --brand-fg: #17181b;
+  --brand-text: #7ed3ca;
+  --accent: #4eb8af;
+  --accent-soft: rgb(78 184 175 / 0.25);
+  --lime: #b7dd6b;
+  --lime-fg: #17181b;
+  --lime-text: #c9e68c;
+  --lime-soft: rgb(183 221 107 / 0.14);
+  --danger: #fb7185;
+  --danger-soft: rgb(251 113 133 / 0.1);
+  --warn: #fbbf24;
+  --warn-soft: rgb(251 191 36 / 0.1);
+  --ok: #34d399;
+  --ok-soft: rgb(52 211 153 / 0.1);
+  --scrollbar: #37383f;
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-surface: var(--surface);
+  --color-surface-rail: var(--surface-rail);
+  --color-surface-card: var(--surface-card);
+  --color-surface-raised: var(--surface-raised);
+  --color-surface-sunken: var(--surface-sunken);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-fg: var(--fg);
+  --color-fg-soft: var(--fg-soft);
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-subtle: var(--fg-subtle);
+  --color-brand: var(--brand);
+  --color-brand-hover: var(--brand-hover);
+  --color-brand-soft: var(--brand-soft);
+  --color-brand-fg: var(--brand-fg);
+  --color-brand-text: var(--brand-text);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-lime: var(--lime);
+  --color-lime-fg: var(--lime-fg);
+  --color-lime-text: var(--lime-text);
+  --color-lime-soft: var(--lime-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+}
+
+/*
+ * Peko accents: each peko gets one hue (from its id) for its avatar and
+ * reply accents — a soft fill and a strong foreground, per theme.
+ */
+:root {
+  --peko-emerald-soft: #d1fae5; --peko-emerald-fg: #047857;
+  --peko-sky-soft: #e0f2fe;     --peko-sky-fg: #0369a1;
+  --peko-violet-soft: #ede9fe;  --peko-violet-fg: #6d28d9;
+  --peko-amber-soft: #fef3c7;   --peko-amber-fg: #b45309;
+  --peko-rose-soft: #ffe4e6;    --peko-rose-fg: #be123c;
+  --peko-teal-soft: #ccfbf1;    --peko-teal-fg: #0f766e;
+  --peko-indigo-soft: #e0e7ff;  --peko-indigo-fg: #4338ca;
+  --peko-orange-soft: #ffedd5;  --peko-orange-fg: #c2410c;
+}
+
+.dark {
+  --peko-emerald-soft: rgb(16 185 129 / 0.14);  --peko-emerald-fg: #6ee7b7;
+  --peko-sky-soft: rgb(56 189 248 / 0.14);      --peko-sky-fg: #7dd3fc;
+  --peko-violet-soft: rgb(139 92 246 / 0.16);   --peko-violet-fg: #c4b5fd;
+  --peko-amber-soft: rgb(245 158 11 / 0.14);    --peko-amber-fg: #fcd34d;
+  --peko-rose-soft: rgb(244 63 94 / 0.14);      --peko-rose-fg: #fda4af;
+  --peko-teal-soft: rgb(20 184 166 / 0.14);     --peko-teal-fg: #5eead4;
+  --peko-indigo-soft: rgb(99 102 241 / 0.16);   --peko-indigo-fg: #a5b4fc;
+  --peko-orange-soft: rgb(249 115 22 / 0.14);   --peko-orange-fg: #fdba74;
+}
+
+/* ── Base ─────────────────────────────────────────────────────────────── */
+
+html {
+  font-family: var(--font-sans);
+  font-feature-settings: "cv11" 1, "ss01" 1;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* Global pointer cursor for all interactive elements */
+button, [role="button"], a, input[type="submit"], input[type="button"], label[for], select, summary {
+  cursor: pointer;
+}
+button:disabled, [aria-disabled="true"] {
+  cursor: default;
+}
+
+body {
+  @apply bg-surface text-fg;
+}
+
+#root {
+  @apply h-screen w-screen overflow-hidden;
+}
+
+::selection {
+  background: rgb(0 136 128 / 0.25);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+input:focus-visible, textarea:focus-visible, select:focus-visible {
+  outline: none;
+}
+
+input::placeholder, textarea::placeholder {
+  color: var(--fg-subtle);
+}
+
+select option {
+  background: var(--surface-card);
+  color: var(--fg);
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--line-strong);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+
+/* ── Components ───────────────────────────────────────────────────────────
+   The hub's component classes, so pages compose instead of re-deriving
+   colour math. Kept as utilities so variants (`hover:`, `sm:`) compose.
+   ─────────────────────────────────────────────────────────────────────── */
+
+/* Type */
+@utility h-page {
+  @apply text-xl font-semibold tracking-tight text-fg;
+}
+@utility h-section {
+  @apply text-[15px] font-semibold tracking-tight text-fg;
+}
+@utility eyebrow {
+  @apply text-2xs font-semibold uppercase tracking-[0.08em] text-fg-subtle;
+}
+@utility field-label {
+  @apply text-[13px] font-medium text-fg-soft;
+}
+@utility field-hint {
+  @apply text-xs leading-relaxed text-fg-subtle;
+}
+@utility link {
+  @apply text-brand-text underline-offset-4 transition-colors hover:underline;
+}
+@utility kbd {
+  @apply inline-flex min-w-[1.25rem] items-center justify-center rounded border border-line-strong bg-surface-sunken px-1 py-px font-mono text-2xs text-fg-muted;
+}
+
+/* Buttons */
+@utility btn {
+  @apply inline-flex select-none items-center justify-center gap-2 whitespace-nowrap rounded-lg px-3.5 py-2 text-sm font-medium leading-5 transition-colors duration-150 disabled:pointer-events-none disabled:opacity-40;
+}
+@utility btn-primary {
+  @apply btn bg-brand text-brand-fg shadow-sm hover:bg-brand-hover;
+}
+@utility btn-secondary {
+  @apply btn border border-line-strong bg-surface-card text-fg-soft hover:border-fg-subtle/40 hover:bg-surface-sunken hover:text-fg;
+}
+@utility btn-ghost {
+  @apply btn text-fg-muted hover:bg-surface-sunken hover:text-fg;
+}
+@utility btn-danger {
+  @apply btn text-danger hover:bg-danger-soft;
+}
+@utility btn-danger-solid {
+  @apply btn bg-rose-600 text-white shadow-sm hover:bg-rose-500;
+}
+@utility btn-sm {
+  @apply gap-1.5 rounded-md px-2.5 py-1.5 text-xs;
+}
+@utility btn-xs {
+  @apply gap-1 rounded-md px-2 py-1 text-xs;
+}
+@utility btn-icon {
+  @apply btn-ghost p-1.5;
+}
+
+/* Form controls */
+@utility input {
+  @apply block w-full rounded-lg border border-line-strong bg-surface-card px-3 py-2 text-sm text-fg transition-colors outline-none hover:border-fg-subtle/50 focus:border-accent focus:ring-2 focus:ring-accent-soft disabled:opacity-50;
+}
+@utility input-sm {
+  @apply rounded-md px-2.5 py-1.5 text-xs;
+}
+@utility textarea {
+  @apply input resize-none leading-relaxed;
+}
+@utility select {
+  @apply input cursor-pointer appearance-none bg-[length:0.75rem] bg-[right_0.65rem_center] bg-no-repeat pr-8;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%2394a3b8' stroke-width='1.5' stroke-linecap='round'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5'/%3E%3C/svg%3E");
+}
+
+/* Surfaces */
+@utility card {
+  @apply rounded-xl border border-line bg-surface-card;
+}
+@utility card-hover {
+  @apply transition-colors duration-150 hover:border-line-strong hover:bg-surface-sunken/60;
+}
+@utility rows {
+  @apply divide-y divide-line overflow-hidden rounded-xl border border-line bg-surface-card;
+}
+@utility tile {
+  @apply flex shrink-0 items-center justify-center rounded-lg border border-line-strong bg-surface-sunken font-medium text-brand-text;
+}
+@utility popover {
+  @apply animate-scale-in rounded-xl border border-line bg-surface-card p-1 shadow-pop;
+}
+@utility menu-item {
+  @apply flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm text-fg-soft transition-colors hover:bg-surface-sunken hover:text-fg disabled:pointer-events-none disabled:opacity-40;
+}
+@utility menu-item-danger {
+  @apply menu-item text-danger hover:bg-danger-soft hover:text-danger;
+}
+@utility modal-backdrop {
+  @apply fixed inset-0 z-50 flex animate-fade-in items-center justify-center bg-black/60 p-4 backdrop-blur-[2px];
+}
+@utility modal-panel {
+  @apply w-full animate-scale-in rounded-2xl border border-line bg-surface-card shadow-lifted;
+}
+@utility modal-header {
+  @apply flex items-center gap-3 border-b border-line px-5 py-4;
+}
+@utility modal-title {
+  @apply text-[15px] font-semibold tracking-tight text-fg;
+}
+@utility modal-footer {
+  @apply flex items-center justify-end gap-2 border-t border-line px-5 py-3.5;
+}
+
+/* Sidebar navigation rows */
+@utility nav-item {
+  @apply flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm text-fg-muted transition-colors hover:bg-surface-sunken hover:text-fg;
+}
+@utility nav-item-active {
+  @apply bg-brand-soft text-fg hover:bg-brand-soft;
+}
+
+/* Tabs (underline) */
+@utility tab {
+  @apply relative flex items-center gap-2 px-1 py-3 text-sm text-fg-muted transition-colors hover:text-fg;
+}
+@utility tab-active {
+  @apply text-fg after:absolute after:inset-x-0 after:-bottom-px after:h-0.5 after:rounded-full after:bg-fg after:content-[''];
+}
+
+/* Segmented control */
+@utility segmented {
+  @apply inline-flex rounded-lg border border-line bg-surface-sunken/60 p-0.5;
+}
+@utility segment {
+  @apply inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium text-fg-muted transition-colors hover:text-fg;
+}
+@utility segment-active {
+  @apply bg-surface-card text-fg shadow-sm;
+}
+
+/* Badges */
+@utility badge {
+  @apply inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-2xs font-medium;
+}
+@utility badge-neutral {
+  @apply badge bg-surface-sunken text-fg-muted;
+}
+@utility badge-accent {
+  @apply badge bg-brand-soft text-brand-text;
+}
+@utility badge-danger {
+  @apply badge bg-danger-soft text-danger;
+}
+@utility badge-warn {
+  @apply badge bg-warn-soft text-warn;
+}
+@utility badge-ok {
+  @apply badge bg-ok-soft text-ok;
+}
+@utility count-badge {
+  @apply inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-lime px-1 text-[10px] font-semibold leading-none text-lime-fg;
+}
+
+/* Notes */
+@utility note {
+  @apply flex items-start gap-2.5 rounded-lg border px-3.5 py-2.5 text-sm;
+}
+@utility note-danger {
+  @apply note border-danger/25 bg-danger-soft text-danger;
+}
+@utility note-warn {
+  @apply note border-warn/25 bg-warn-soft text-warn;
+}
+@utility note-info {
+  @apply note border-line-strong bg-brand-soft text-fg-soft;
+}
+
+/* Code */
+@utility code-inline {
+  @apply rounded bg-surface-sunken px-1.5 py-0.5 font-mono text-[0.85em] text-fg-soft;
+}
+
+@utility skeleton {
+  @apply relative overflow-hidden rounded-md bg-surface-sunken after:absolute after:inset-0 after:-translate-x-full after:animate-shimmer after:bg-gradient-to-r after:from-transparent after:via-white/5 after:to-transparent after:content-[''];
+}
+
+/* ANSI color classes for Terminal */
+.ansi-black { color: #000000; }
+.ansi-red { color: #ef4444; }
+.ansi-green { color: #22c55e; }
+.ansi-yellow { color: #eab308; }
+.ansi-blue { color: #3b82f6; }
+.ansi-magenta { color: #a855f7; }
+.ansi-cyan { color: #06b6d4; }
+.ansi-white { color: #ffffff; }
+.ansi-bright-black { color: #64748b; }
+.ansi-bright-red { color: #f87171; }
+.ansi-bright-green { color: #4ade80; }
+.ansi-bright-yellow { color: #facc15; }
+.ansi-bright-blue { color: #60a5fa; }
+.ansi-bright-magenta { color: #c084fc; }
+.ansi-bright-cyan { color: #22d3ee; }
+.ansi-bright-white { color: #f8fafc; }
+
+/* Code highlighting (rehype-highlight / highlight.js classes), GitHub-like,
+   light and dark. Kept here so it follows the app's .dark toggle. */
+.hljs-comment, .hljs-quote { color: #6a737d; font-style: italic; }
+.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-type, .hljs-doctag { color: #d73a49; }
+.hljs-string, .hljs-regexp, .hljs-addition, .hljs-meta .hljs-string { color: #032f62; }
+.hljs-number, .hljs-built_in, .hljs-symbol, .hljs-variable, .hljs-template-variable, .hljs-attr { color: #005cc5; }
+.hljs-title, .hljs-title.function_, .hljs-section, .hljs-name, .hljs-selector-id, .hljs-selector-class { color: #6f42c1; }
+.hljs-meta, .hljs-params, .hljs-attribute { color: #e36209; }
+.hljs-deletion { color: #b31d28; }
+.dark .hljs-comment, .dark .hljs-quote { color: #8b949e; }
+.dark .hljs-keyword, .dark .hljs-selector-tag, .dark .hljs-literal, .dark .hljs-type, .dark .hljs-doctag { color: #ff7b72; }
+.dark .hljs-string, .dark .hljs-regexp, .dark .hljs-addition, .dark .hljs-meta .hljs-string { color: #a5d6ff; }
+.dark .hljs-number, .dark .hljs-built_in, .dark .hljs-symbol, .dark .hljs-variable, .dark .hljs-template-variable, .dark .hljs-attr { color: #79c0ff; }
+.dark .hljs-title, .dark .hljs-title.function_, .dark .hljs-section, .dark .hljs-name, .dark .hljs-selector-id, .dark .hljs-selector-class { color: #d2a8ff; }
+.dark .hljs-meta, .dark .hljs-params, .dark .hljs-attribute { color: #ffa657; }
+.dark .hljs-deletion { color: #ffa198; }
+
+input[type="checkbox"], input[type="radio"], input[type="range"] {
+  accent-color: var(--brand);
+}

@@ -1,0 +1,894 @@
+import type { ReactOp, Reaction } from "../lib/reactions";
+export interface RuntimeConnection {
+  id: string;
+  name: string;
+  connectionType: "local" | "remote";
+  status: "connected" | "disconnected" | "connecting" | "error";
+  ipcPath?: string;
+  pekohubUrl?: string;
+}
+
+export interface DaemonStatus {
+  running: boolean;
+  pid?: number;
+  uptime?: number;
+  version: string;
+}
+
+// ─── Engine (ADR-043) ─────────────────────────────────────────────
+//
+// The engine is the bundled `peko` sidecar, owned by the desktop's
+// `SidecarSupervisor`. EngineState is the canonical source of truth
+// for the engine lifecycle: Stopped / Starting / Running / Restarting
+// / Failed. Anything that needs to know if the engine is up should
+// poll this, not the legacy DaemonStatus shape (which is now a
+// projection from EngineState kept only for backwards compatibility).
+//
+// Diagnostics is the power-user bundle surfaced from Settings →
+// Daemon. It is intentionally verbose (PID, version parity, log
+// ring, restart count, ownership mode, etc.) and only renders when
+// the user has explicitly navigated to the diagnostics surface
+// (ADR-043 §adoption — engine status is invisible on the happy
+// path, so the diagnostics panel is opt-in by route, not by an
+// arm-and-reveal toggle).
+
+export type EngineState =
+  | { kind: "stopped" }
+  | { kind: "starting" }
+  | { kind: "running"; pid: number; version: string; uptime_secs: number }
+  | { kind: "restarting"; attempt: number }
+  | { kind: "failed"; message: string };
+
+export interface EngineDiagnostics {
+  state: EngineState;
+  pid: number | null;
+  version: string | null;
+  expected_version: string | null;
+  /** `true` when actual == expected, `false` when both present and
+   *  different, `null` when one side is unknown (engine still
+   *  starting). */
+  version_matches: boolean | null;
+  uptime_secs: number;
+  lockfile_path: string;
+  socket_path: string;
+  log_ring: string[];
+  restart_count: number;
+  last_error: string | null;
+  /** ADR-043 §adoption: `true` when the supervisor owns the engine
+   *  process (spawned a child sidecar), `false` when it adopted a
+   *  foreign daemon already on the IPC socket. The diagnostics
+   *  panel disables the Restart button on borrowed engines — they
+   *  are not the desktop's to restart. */
+  owns_process: boolean;
+  /** Launch mode of the running engine (`"sidecar"` or `"headless"`).
+   *  `null` when the supervisor owns the engine and hasn't learned
+   *  the mode yet, or when the foreign daemon is from a build that
+   *  doesn't report it. */
+  mode: string | null;
+}
+
+/** Which side has to move when the running runtime doesn't fit this app. */
+export type RuntimeFitReason = "older" | "newer" | "unknown";
+
+export interface EngineVersionMismatch {
+  /** The version the running runtime reports. */
+  actual: string;
+  /** The runtime version this app needs (it accepts later ones in the same line). */
+  expected: string;
+  reason: RuntimeFitReason;
+}
+
+// ─── Principal (ADR-041) ────────────────────────────────────────
+//
+// Principal is the only top-level runtime actor. Agent is a thin
+// markdown prompt file inside a Principal and is not a top-level
+// entity; sessions are internal storage and are not surfaced.
+//
+// The `PrincipalSummary` interface lives in `lib/api.ts` next to
+// the IPC wrappers that produce it. A richer `PrincipalDetail`
+// projection was retired alongside the agent→principal migration
+// (ADR-041) — the runtime does not currently expose per-principal
+// agent-prompt lists or config snapshots over IPC.
+
+/**
+ * Where a peko can be reached.
+ *
+ * Local pekos carry the runtime's registration state (ADR-081):
+ * - `local_only` — not on PekoHub.
+ * - `private`    — registered on PekoHub; reachable by its contacts.
+ * - `public`     — registered and discoverable in the hub directory.
+ *
+ * Remote pekos listed from PekoHub may also carry the hub's own modes
+ * (pekohub ADR-005): `unexposed` and `unlisted` (reachable by share
+ * link, not listed).
+ */
+export type PrincipalExposure =
+  | "local_only"
+  | "private"
+  | "public"
+  | "unexposed"
+  | "unlisted";
+
+/** Registration states a local peko can be set to (`principal_register`). */
+export type PekoRegistration = "local_only" | "private" | "public";
+
+/**
+ * Genesis pipeline state of a principal (peko-runtime ADR-054).
+ * `peko create` now runs a genesis boot sequence after the workspace
+ * is provisioned, so a freshly created principal can appear on
+ * `principal_list` / `principal_get` before it is ready to chat:
+ *
+ *   provisioned → defined → genesis_pending → organized
+ *
+ * Only `organized` principals are fully booted. The field is optional
+ * on the wire — runtimes older than the genesis pipeline omit it, and
+ * those principals should be treated as already organized.
+ */
+export type BootState = "provisioned" | "defined" | "genesis_pending" | "organized";
+
+// ─── peko log / ChatLogMessage (ADR-042, post-F30) ──────────────
+
+/**
+ * One consumer-visible chat message from the runtime-owned chat log.
+ *
+ * The runtime splits principal session JSONL (mutable working memory,
+ * internal execution detail) from chat logs (runtime-owned,
+ * append-only, the only user-visible record of what was actually
+ * exchanged). A `ChatLogMessage` is the only shape the desktop ever
+ * projects onto a chat bubble — no session ids, tool calls,
+ * thinking, compactions, or provider roles.
+ *
+ * `sender` is a `Subject` string the runtime renders in tagged form
+ * on the wire (`user:<id>` for end users, `principal:<did>` for
+ * principal-to-principal exchanges). The Chat page treats any
+ * non-`user:*` sender as the principal.
+ */
+export interface ChatLogMessage {
+  /** Chat-log schema version; always `1` for now. */
+  schemaVersion: number;
+  /** Stable per-message id (UUID, formatted as `chat_<simple>`). */
+  id: string;
+  /** Subject string of the message sender. */
+  sender: string;
+  /** RFC 3339 timestamp. */
+  timestamp: string;
+  /** Plain-text message body. Markdown is rendered at the bubble. */
+  text: string;
+  /** Optional A2A correlation id pairing request and response lines. */
+  correlationId?: string;
+  /** Files attached to the message (runtime ADR-088). */
+  attachments?: ChatLogAttachment[];
+  /**
+   * Suggested replies the sender offered (runtime ADR-093): text you may
+   * send with a tap instead of typing. Shown only while this is the
+   * thread's latest message; they carry no authority.
+   */
+  options?: string[];
+  /**
+   * A remote peko's message: the post's own id, the same on every copy
+   * (row `id`s are this copy's line or a live stand-in). What the
+   * runtime names a message still waiting to be delivered by.
+   */
+  msgId?: string | null;
+  /** Questions the sender asks with the message (runtime ADR-114). */
+  ask?: Ask;
+  /** Your answers to an earlier message's questions (runtime ADR-114). */
+  answers?: Answers;
+  /** The `msg_id` of the message this one replies to (runtime ADR-126). */
+  replyTo?: string | null;
+  /** The emoji on the message, with who put them there (runtime ADR-126). */
+  reactions?: Reaction[];
+}
+
+/**
+ * Questions a peko asks with a message (runtime ADR-114): one card the
+ * person answers together. They carry no authority; an answer is only
+ * the person's message.
+ */
+export interface Ask {
+  /** In a group: the member who should answer (an actor address). */
+  for?: string;
+  questions: Question[];
+}
+
+/** One question on an {@link Ask} card. */
+export interface Question {
+  text: string;
+  /** 2–4 choices; absent for a free-text question. */
+  options?: string[];
+  /** Whether several options may be chosen. */
+  multi?: boolean;
+}
+
+/** A person's answers to the questions of the message `to` (its msg id). */
+export interface Answers {
+  to: string;
+  /** One per question, in order. */
+  picks: Pick[];
+}
+
+/** The answer to one {@link Question}. */
+export interface Pick {
+  chosen?: string[];
+  other?: string;
+}
+
+/**
+ * A file attached to a message. `path` is the engine's copy in the
+ * peko's workspace, absolute on this computer.
+ */
+export interface ChatLogAttachment {
+  name: string;
+  path: string;
+  mime: string;
+  size: number;
+}
+
+/**
+ * Bounded, oldest-to-newest page of chat messages returned by
+ * `principal_log`. `nextCursor` is opaque; pass it back as
+ * `--cursor` (CLI) or `cursor` (IPC) to read the next older page.
+ */
+export interface ChatLogPage {
+  principal: string;
+  /** Subject string the response was scoped to (owner-root or peer). */
+  peer: string;
+  messages: ChatLogMessage[];
+  /** Opaque token for the next older page; absent on the final page. */
+  nextCursor: string | null;
+  /** True when older pages remain (i.e. `nextCursor` is usable). */
+  hasMore: boolean;
+  /**
+   * The last run in this conversation that did not go through (runtime
+   * ADR-089), shown beside the thread, never in it. Absent once a run
+   * succeeds.
+   */
+  runFailure?: RunFailure | null;
+  /** The DM this thread is (runtime ADR-126), for reacting on it. */
+  channel?: string | null;
+}
+
+/** Why the peko's last run in a conversation did not go through. */
+export interface RunFailure {
+  /** RFC 3339. */
+  at: string;
+  /** `peko_limit`, `provider_quota`, `provider_unreachable`, or `failed`. */
+  kind: string;
+  message: string;
+  /** Set while the run waits: it continues on its own at this time. */
+  nextAttemptAt?: string | null;
+}
+
+/** A request from someone else that waits for the owner (runtime ADR-078). */
+/** One file a turn changed (runtime ADR-117). */
+export interface ChangedFile {
+  /** Relative to the peko's workspace when inside it. */
+  path: string;
+  change: "added" | "modified" | "deleted";
+}
+
+/** A peko's turn that changed files, which its owner can undo (runtime ADR-117). */
+export interface TurnChanges {
+  turn: string;
+  updatedAt: string;
+  files: ChangedFile[];
+  /** It ran shell commands: changes outside the workspace aren't listed. */
+  shell: boolean;
+  undoneAt: string | null;
+}
+
+/** What undoing a turn did. */
+export interface UndoResult {
+  restored: string[];
+  skipped: { path: string; why: string }[];
+}
+
+/**
+ * A secret a peko asked its owner for (runtime ADR-116). Names only: the
+ * value is typed into the card and goes to the engine's vault.
+ */
+/** A peko's browser as a viewer sees it (runtime ADR-119). */
+export interface BrowserState {
+  running: boolean;
+  /** Whether the peko's computer has a browser to start. */
+  available: boolean;
+  tabs: { tab: string; url: string; title: string }[];
+  /** Who holds control: `local`, `device:<id>` or `computer:<id>`. */
+  controller: { viewer: string; since: string } | null;
+  /** The peko waits for you to step in. */
+  handoff: { why: string; tab: string; url: string; at: string } | null;
+}
+
+export interface SecretRequest {
+  /** `sec_…` */
+  id: string;
+  /** `GITHUB_TOKEN`, or `notion/api_token` for an MCP server's slot. */
+  secret: string;
+  /** `peko` (an environment variable for its commands) or `mcp`. */
+  kind: string;
+  /** What the peko needs it for. */
+  why: string;
+  createdAt: string;
+  expiresAt: string;
+}
+
+export interface ApprovalRequest {
+  id: string;
+  /** Address of whoever asked (`user:hub:…`, `principal:local:…`). */
+  actor: string;
+  actorName?: string | null;
+  /** `trusted` or `untrusted`. */
+  trust: string;
+  /** What it would do: the tool and its target. */
+  summary: string;
+  /** Why the reviewer asked the owner; for an owner task, where it was asked. */
+  reason: string;
+  createdAt: string;
+  expiresAt: string;
+  /**
+   * `owner_task`: a task the peko hands to its owner from a conversation
+   * others share (runtime ADR-100). `summary` is then its whole brief, and
+   * it is approved once, never always. Absent for a reviewed call.
+   */
+  kind?: string | null;
+}
+
+/**
+ * Legacy alias. The runtime no longer returns session-event arrays
+ * over IPC; this name was kept so callers built before the
+ * chat-session split (e.g. older Storybook stories) still typecheck.
+ * The Chat page now consumes `ChatLogPage`
+ * directly. New code should not reference `LogResponse`.
+ *
+ * @deprecated Use `ChatLogPage`.
+ */
+export type LogResponse = ChatLogPage;
+
+// ─── System ───────────────────────────────────────────────────────
+
+export interface SystemStatus {
+  daemon: DaemonStatus;
+  platform: string;
+  arch: string;
+  memory: {
+    total: number;
+    used: number;
+    free: number;
+  };
+  cpu: {
+    cores: number;
+    usage: number;
+  };
+  disk: {
+    total: number;
+    used: number;
+    free: number;
+  };
+}
+
+export interface DoctorReport {
+  checks: DoctorCheck[];
+  passed: number;
+  failed: number;
+  warnings: number;
+}
+
+export interface DoctorCheck {
+  name: string;
+  status: "pass" | "fail" | "warn";
+  message: string;
+  suggestion?: string;
+}
+
+export interface StreamEvent {
+  id?: string;
+  type:
+    | "chunk"
+    | "done"
+    | "error"
+    | "tool_call"
+    | "tool_result"
+    | "channel_event";
+  content?: string;
+  data?: Record<string, unknown>;
+  timestamp?: string;
+  /// PR-2b: `channel_event` variant — `channelId` (camelCase,
+  /// matching the Rust `rename_all = "camelCase"` on `StreamEvent`)
+  /// identifies the channel; `payload` is the runtime's
+  /// `ChannelEvent` JSON object verbatim (with `kind: "posted" |
+  /// "created" | "member_joined" | "member_left"`). `useChannelStreamInvalidator`
+  /// filters on `type === "channel_event" && channelId === channelId`.
+  channelId?: string;
+  payload?: unknown;
+}
+
+// ─── Model-first catalog (model-first migration) ─────────────────
+//
+// The runtime's provider catalog was replaced by a catalog of
+// configured models. Each ModelSummary is a self-contained endpoint
+// configuration: base URL, API format, wire model id, headers, and
+// an optional credential reference.
+
+export interface ModelSummary {
+  id: string;
+  displayName: string;
+  templateId?: string;
+  apiFormat: string;
+  baseUrl: string;
+  modelId: string;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  headers: Record<string, string>;
+  credentialId?: string;
+  requiresKey: boolean;
+  isLocal: boolean;
+  enabled: boolean;
+  // PR 4 / feature/model-first-config: read-only declarative
+  // capability descriptor. The runtime emits this on every
+  // `model_list` envelope but leaves it absent (null) for entries
+  // written before spec support landed. When absent, the UI falls
+  // back to MODEL_SPEC_DEFAULT (text-only).
+  //
+  // Field names match the wire format: the runtime's
+  // `ModelSpec` has no `rename_all = "camelCase"`, so nested
+  // fields stay snake_case in the JSON envelope. The parent's
+  // `rename_all = "camelCase"` only affects ModelSummary's own
+  // fields, not the nested type.
+  spec?: ModelSpec | null;
+  /** How hard the model thinks on every turn; absent = provider's default. */
+  effort?: string;
+  /** The levels the model takes, as listed when it was added. */
+  effortLevels?: string[];
+}
+
+// ── ModelSpec types (PR 4 / feature/model-first-config) ────────────
+//
+// One-way wire mirror of `peko_runtime::providers::spec::ModelSpec`.
+// Snake_case nested enums and snake_case field names match the
+// runtime's IPC envelope exactly. The desktop never round-trips a
+// ModelSpec back through IPC — edits go through the catalog file
+// via `peko model add|edit` (per the IPC contract).
+
+export type ModelToolSupport = "none" | "function_calling" | "full";
+export type ModelThinkingMode =
+  | "disabled"
+  | "optional"
+  | "required"
+  | "custom_budget";
+
+export interface ModelPricingHint {
+  input_per_million?: number;
+  output_per_million?: number;
+  /** Price of input read from the prompt cache; unset = the input price. */
+  cache_read_per_million?: number;
+  /** Price of input written to the prompt cache; unset = the input price. */
+  cache_write_per_million?: number;
+}
+
+export interface ModelSpec {
+  image_input: boolean;
+  audio_input: boolean;
+  /** Absent on specs written before video input existed. */
+  video_input?: boolean;
+  tool_support: ModelToolSupport;
+  streaming: boolean;
+  thinking: ModelThinkingMode;
+  json_mode: boolean;
+  pricing?: ModelPricingHint;
+}
+
+/**
+ * Conservative text-only fallback when `spec` is missing (pre-PR-1
+ * catalog entries, or entries with `spec: null`). Mirrors
+ * `peko_runtime::providers::spec::ModelSpec::default()`.
+ */
+export const MODEL_SPEC_DEFAULT: ModelSpec = {
+  image_input: false,
+  audio_input: false,
+  video_input: false,
+  tool_support: "none",
+  streaming: true,
+  thinking: "disabled",
+  json_mode: false,
+};
+
+/**
+ * Resolve the effective spec for a model: returns the row's spec
+ * when present, otherwise the text-only default. Used by every UI
+ * surface that needs to render capability badges so a single null
+ * check handles the pre-PR-1 catalog everywhere.
+ */
+export function resolveSpec(m: { spec?: ModelSpec | null }): ModelSpec {
+  return m.spec ?? MODEL_SPEC_DEFAULT;
+}
+
+/** A ChatGPT sign-in the engine started (runtime ADR-115): open `url`. */
+export interface PlanSignInStarted {
+  flowId: string;
+  url: string;
+}
+
+/** A model a ChatGPT plan offers. */
+export interface PlanModel {
+  slug: string;
+  displayName: string;
+  /** What the plan's list says about the model. */
+  reported?: ModelFacts;
+  suggested?: ModelFacts;
+}
+
+/**
+ * What a model list or models.dev says about a model. Every field is
+ * optional: absent is "not said", not "no". Snake_case, as `ModelSpec`.
+ */
+export interface ModelFacts {
+  context_window?: number;
+  max_output_tokens?: number;
+  image_input?: boolean;
+  audio_input?: boolean;
+  video_input?: boolean;
+  tools?: boolean;
+  thinking?: ModelThinkingFacts;
+  pricing?: ModelPricingHint;
+}
+
+export interface ModelThinkingFacts {
+  supported: boolean;
+  /** True: thinking cannot be turned off. */
+  required?: boolean;
+  /** Effort levels, lowercase, as the source names them. */
+  efforts?: string[];
+  default_effort?: string;
+}
+
+/**
+ * A model an endpoint lists. `reported` is the endpoint's own word;
+ * `suggested` is what the public models.dev catalog says, for the
+ * person to accept or change.
+ */
+export interface DiscoveredModel {
+  id: string;
+  displayName?: string;
+  reported: ModelFacts;
+  suggested?: ModelFacts;
+}
+
+/** Where a ChatGPT sign-in stands. */
+export type PlanSignInState =
+  | { state: "waiting" }
+  | { state: "done"; credentialId: string; account: string; models: PlanModel[] }
+  | { state: "failed"; message: string }
+  | { state: "gone" };
+
+export interface ModelAddArgs {
+  name?: string;
+  displayName?: string;
+  custom: boolean;
+  apiFormat?: string;
+  baseUrl?: string;
+  requiresKey?: boolean;
+  model: string[];
+  key?: string;
+  credentialId?: string;
+  /** Limits in tokens; omitted leaves them unset. */
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  /** How hard the model thinks (`low` … `max`); omitted = provider's default. */
+  effort?: string;
+  /** The levels the model takes, as its endpoint listed them. */
+  effortLevels?: string[];
+  /** Capabilities; omitted leaves the model without a descriptor. */
+  spec?: ModelSpec;
+}
+
+export interface ModelUpdateArgs {
+  id: string;
+  displayName?: string;
+  apiFormat?: string;
+  baseUrl?: string;
+  modelId?: string;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  headers?: Record<string, string>;
+  credentialId?: string;
+  requiresKey?: boolean;
+  enabled?: boolean;
+  /** Replace the capability descriptor. */
+  spec?: ModelSpec;
+  /** Replace the effort; `"none"` clears it. */
+  effort?: string;
+}
+
+export interface ModelTestResult {
+  id: string;
+  ok: boolean;
+  message: string;
+  latencyMs: number;
+  httpStatus?: number;
+  modelUsed?: string;
+  testedAt: string;
+}
+
+export interface Setting {
+  key: string;
+  value: string;
+  defaultValue?: string;
+  description?: string;
+  category: string;
+}
+
+// ─── Credential (generic vault) ──────────────────────────────────
+//
+// Credentials are owned by the runtime's OS keychain / vault.
+// The desktop never holds the secret beyond the IPC call. The shape
+// mirrors what `credential_list_generic` returns over IPC.
+
+export type CredentialKind =
+  | "api_key"
+  | "bearer_token"
+  | "oauth_token"
+  | "basic_auth"
+  | "private_key"
+  | "generic_secret";
+
+export interface CredentialDetail {
+  id: string;
+  namespace: string;
+  name: string;
+  kind: CredentialKind;
+  hasKey: boolean;
+  lastTestedAt?: string;
+  lastTestedOk?: boolean;
+  metadata?: Record<string, unknown>;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Channels (peko-channel cross-runtime desktop PR-1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Lightweight summary row for the channel sidebar. The runtime's
+ * `channel_list` IPC returns only `ChannelId` values; the desktop
+ * projects them to this shape so the React sidebar can group +
+ * filter without re-fetching.
+ */
+export interface ChannelSummary {
+  channelId: string;
+  runtimeId: string;
+}
+
+/**
+ * Single channel's full metadata snapshot. Projected on the Tauri
+ * side from the runtime's `channel_peek` response — the first
+ * `Created` event gives name/creator/createdAt, and `MemberJoined -
+ * MemberLeft` gives the memberCount. Returns `null` (rather than
+ * error) when the channel doesn't exist on the runtime.
+ */
+export interface ChannelDetail {
+  channelId: string;
+  name: string;
+  creator: string;
+  createdAt: string;
+  memberCount: number;
+  runtimeId: string;
+}
+
+/**
+ * Mirrors `peko_protocol::channel::ChannelEvent`'s
+ * `#[serde(tag = "kind", rename_all = "snake_case")]` shape. Camel-case
+ * discriminated union so the React side can switch on `kind` directly.
+ * Forward-compatible: unknown variants are dropped at the Tauri
+ * projector, not surfaced here.
+ */
+export type ChannelEvent =
+  | {
+      kind: "created";
+      channel: string;
+      creator: string;
+      name: string;
+      at: string;
+    }
+  | {
+      kind: "posted";
+      channel: string;
+      author: string;
+      parent: string | null;
+      text: string;
+      at: string;
+      /** Stable across every runtime's copy (absent on old lines). */
+      msg_id?: string;
+      /** Runtime ADR-101: the board change this post makes. */
+      board?: BoardOp;
+      /** Runtime ADR-114: questions the peko asks with this post. */
+      ask?: Ask;
+      /** Runtime ADR-114: a person's answers to a post's questions. */
+      answers?: Answers;
+      /** Runtime ADR-126: the `msg_id` of the post this one replies to. */
+      reply_to?: string | null;
+      /** Runtime ADR-126: this post is a reaction, not a message. */
+      react?: ReactOp | null;
+    }
+  | {
+      kind: "member_joined";
+      channel: string;
+      member: string;
+      at: string;
+    }
+  | {
+      kind: "member_left";
+      channel: string;
+      member: string;
+      at: string;
+    };
+
+/**
+ * Per-member runtime provenance returned by the runtime's
+ * `ChannelMembers` IPC variant (`ResponsePacket::ChannelMembersResult`'s
+ * `member_provenance` field). `runtimeId === null` ⇒ the member is
+ * local to the receiving runtime; a non-null `runtimeId` means the
+ * member is hosted on a peer runtime that participated in the
+ * channel via the cross-runtime invite envelope (PR-3a wire shape).
+ */
+export interface MemberProvenance {
+  principal: string;
+  runtimeId: string | null;
+}
+
+/**
+ * Member list for a single channel. `members` are principal DIDs.
+ * Since the runtime moved to self-certifying identities (ADR-057)
+ * these are `did:key:z…` strings; legacy `did:peko:` / `prin_*`
+ * forms are dead and no longer emitted. The runtime derives the
+ * authoritative membership from the `Member*` event log.
+ *
+ * `memberProvenance` (PR-3b / P1.2 attribution) pairs each DID with
+ * its hosting runtime id; consumers that only need the DID set can
+ * ignore it. Optional for back-compat with pre-PR-3b runtimes that
+ * don't surface attribution.
+ */
+export interface ChannelMembers {
+  channelId: string;
+  members: string[];
+  runtimeId: string;
+  memberProvenance?: MemberProvenance[];
+}
+
+/**
+ * PR-3: ack envelope for `channel_invite`. Mirrors the runtime's
+ * `ResponsePacket::ChannelInvited { channel, invitee }` shape so the
+ * React side can refresh the optimistic invitee list without a
+ * follow-up `channel_members` round-trip.
+ */
+export interface ChannelInviteResult {
+  channelId: string;
+  invitee: string;
+  runtimeId: string;
+}
+
+/**
+ * PR-3: ack envelope for `channel_leave`. Mirrors the runtime's
+ * `ResponsePacket::ChannelLeft { channel, principal }` shape. The
+ * React side uses this to drop the principal from its optimistic
+ * member list and (if the leaver was the last local member)
+ * navigate away from the channel route.
+ */
+export interface ChannelLeaveResult {
+  channelId: string;
+  principal: string;
+  runtimeId: string;
+}
+
+
+// ─── Usage (runtime quota) ────────────────────────────────────────
+
+/** How often a peko's usage counters and budget reset. */
+export type UsageCycle = "hourly" | "daily" | "weekly" | "monthly";
+
+/** Runtime `QuotaConfig` (snake_case, passed through). */
+export interface UsageLimits {
+  cycle: UsageCycle;
+  input_tokens?: number;
+  output_tokens?: number;
+  request_count?: number;
+  cost_per_call_max?: number;
+  /** Spend limit per cycle, US dollars. */
+  budget_per_cycle?: number;
+}
+
+/** Runtime `QuotaState`: this cycle's counters. */
+export interface UsageState {
+  window_start: string;
+  window_end: string;
+  cycle: UsageCycle;
+  input_tokens: number;
+  output_tokens: number;
+  request_count: number;
+  /** Spend this cycle, US dollars; counted for models with a price. */
+  cost_usd?: number | null;
+  /** Part of `input_tokens` read from the provider's prompt cache. */
+  cache_read_tokens?: number;
+  /** Part of `input_tokens` written to the provider's prompt cache. */
+  cache_creation_tokens?: number;
+}
+
+export interface PekoUsage {
+  state: UsageState;
+  config: UsageLimits;
+}
+
+/**
+ * Runtime ADR-113: what one group of visitors reaches through a peko.
+ * Paths are relative to the peko's folder.
+ */
+export interface AccessRule {
+  tools: string[];
+  mcp: string[];
+  read: string[];
+  write: string[];
+  /** Whether what they may not do comes to the owner, or is refused. */
+  ask_owner: boolean;
+}
+
+/** One person's own rules, which replace everyone's for them. */
+export interface AccessPerson {
+  address: string;
+  display_name?: string | null;
+  rule: AccessRule;
+}
+
+/** Someone a peko has talked with. */
+export interface AccessKnown {
+  address: string;
+  display_name?: string | null;
+}
+
+/** A local peko's sharing: what visitors reach, and with what. */
+export interface PekoAccess {
+  visitors: AccessRule;
+  people: AccessPerson[];
+  known: AccessKnown[];
+  /** The peko's connected services (MCP servers), by id. */
+  servers: string[];
+  /** The peko's folder, absolute on this computer. */
+  workspace: string;
+  /** Why the peko's rules file is refused, when it is. */
+  problem?: string | null;
+}
+
+/** Runtime ADR-101: where a board item stands. */
+export type BoardState = "open" | "doing" | "blocked" | "done";
+
+/** Runtime ADR-101: one change to a group's board. */
+export type BoardOp =
+  | { op: "add"; title: string; for?: string }
+  | { op: "claim"; item: string; check_at?: string }
+  | {
+      op: "update";
+      item: string;
+      state: "doing" | "blocked" | "done";
+      note?: string;
+      check_at?: string;
+    }
+  | { op: "release"; item: string }
+  | { op: "drop"; item: string };
+
+/** Runtime ADR-101: one item on a group's board, as `channel_board` returns it. */
+export interface BoardItem {
+  /** The `msg_id` of the post that added it. */
+  id: string;
+  /** Its short reference (`b3f9a1`). */
+  short: string;
+  title: string;
+  added_by: string;
+  /** The member it was asked of. */
+  for?: string;
+  state: BoardState;
+  claimant?: string;
+  note?: string;
+  /** RFC 3339: when its holder looks at it again. */
+  check_at?: string;
+  added_at: string;
+  updated_at: string;
+}

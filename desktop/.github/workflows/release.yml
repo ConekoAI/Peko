@@ -1,0 +1,311 @@
+name: Release
+
+# Tag-triggered release build. Produces one draft GitHub release with
+# native bundles for every desktop platform attached:
+#   Linux          .deb, .AppImage, .rpm
+#   macOS arm64    .dmg (+ .app.tar.gz)
+#   macOS x86_64   .dmg (+ .app.tar.gz)
+#   Windows x64    NSIS -setup.exe, .msi
+#
+# Pushed by tagging: git tag v0.1.0 && git push origin v0.1.0
+# Manual re-run for an existing tag: Actions -> Release -> Run workflow,
+#   supplying the tag (e.g. to re-build v0.1.0 after fixing a
+#   release-only issue on a hotfix branch).
+#
+# The app and the runtime are released separately (peko-runtime
+# ADR-102). The bundled peko-daemon sidecar is built from peko-runtime
+# at `v<version>`, where the version is in `src-tauri/runtime-version`
+# at the tag being built (or `runtime_ref` when dispatching). That
+# release must exist in peko-runtime — `prepare` checks before anything
+# builds. The same file is the oldest runtime the app accepts.
+#
+# In-app updates: with TAURI_SIGNING_PRIVATE_KEY set (and
+# TAURI_SIGNING_PRIVATE_KEY_PASSWORD when the key has one), each platform
+# signs its update file and `latest.json`, the feed the app reads, is
+# attached to the release:
+#   macOS    .app.tar.gz + .sig (per architecture)
+#   Windows  the NSIS -setup.exe + .sig
+#   Linux    the .AppImage + .sig
+# The matching public key is `plugins.updater.pubkey` in
+# src-tauri/tauri.conf.json. Without the secret the release builds as it
+# did before, with no update files, and installed apps find no update.
+# Make a key pair with `npx tauri signer generate`. Keep the private key:
+# a release signed with another key is refused by every installed app.
+#
+# Signing (optional; each platform builds unsigned without it):
+#   macOS    APPLE_CERTIFICATE (base64 .p12), APPLE_CERTIFICATE_PASSWORD,
+#            APPLE_SIGNING_IDENTITY; for notarization also APPLE_ID,
+#            APPLE_PASSWORD (app-specific password), APPLE_TEAM_ID.
+#            Without a certificate the app is ad-hoc signed, which
+#            Gatekeeper blocks for downloaded copies (right-click → Open).
+#   Windows  not code-signed yet, so SmartScreen warns on first run.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (e.g. v0.1.0). Required unless the run is started from a tag.'
+        required: false
+        default: ''
+      runtime_ref:
+        description: 'peko-runtime tag or branch for the sidecar. Leave empty to use src-tauri/runtime-version.'
+        required: false
+        default: ''
+
+permissions:
+  # Creating the draft release and uploading assets needs write.
+  contents: write
+
+concurrency:
+  # Never cancel an in-flight release build for the same tag. Key on
+  # the resolved tag (input or trigger ref) so manual re-runs for the
+  # same tag serialize, rather than racing on the draft release.
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  # One draft release that every platform job uploads into. Creating it
+  # here, once, keeps the parallel builds from racing to create
+  # duplicate drafts for the same tag.
+  prepare:
+    name: Prepare draft release
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      runtime_ref: ${{ steps.resolve.outputs.runtime_ref }}
+      release_id: ${{ steps.release.outputs.id }}
+    steps:
+      - name: Resolve tag and runtime ref
+        id: resolve
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_RUNTIME_REF: ${{ inputs.runtime_ref }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          elif [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            TAG="$GITHUB_REF_NAME"
+          else
+            echo "::error::Run from a tag, or pass the 'tag' input."
+            exit 1
+          fi
+          if ! git ls-remote --exit-code --tags "https://github.com/$GITHUB_REPOSITORY.git" "refs/tags/$TAG" >/dev/null; then
+            echo "::error::Tag $TAG does not exist in $GITHUB_REPOSITORY."
+            exit 1
+          fi
+          if [ -n "$INPUT_RUNTIME_REF" ]; then
+            RUNTIME_REF="$INPUT_RUNTIME_REF"
+          else
+            PINNED="$(gh api "repos/$GITHUB_REPOSITORY/contents/src-tauri/runtime-version?ref=$TAG" \
+              -H 'Accept: application/vnd.github.raw' | tr -d '[:space:]')"
+            if ! printf '%s' "$PINNED" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "::error::src-tauri/runtime-version at $TAG is not X.Y.Z (got '$PINNED')."
+              exit 1
+            fi
+            RUNTIME_REF="v$PINNED"
+          fi
+          if ! git ls-remote --exit-code https://github.com/ConekoAI/Peko.git \
+              "refs/tags/$RUNTIME_REF" "refs/heads/$RUNTIME_REF" >/dev/null; then
+            echo "::error::peko-runtime has no tag or branch '$RUNTIME_REF'. Release that runtime version first, set src-tauri/runtime-version to a released one, or pass 'runtime_ref' (e.g. master)."
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "runtime_ref=$RUNTIME_REF" >> "$GITHUB_OUTPUT"
+          echo "Desktop $TAG, sidecar from peko-runtime $RUNTIME_REF"
+
+      - name: Find or create the draft release
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+          RUNTIME_REF: ${{ steps.resolve.outputs.runtime_ref }}
+        run: |
+          ID="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+            --jq ".[] | select(.tag_name == \"$TAG\") | .id" | head -n 1)"
+          if [ -z "$ID" ]; then
+            case "$TAG" in
+              *alpha*|*beta*|*rc*) PRERELEASE=true ;;
+              *) PRERELEASE=false ;;
+            esac
+            ID="$(gh api "repos/$GITHUB_REPOSITORY/releases" \
+              -f tag_name="$TAG" \
+              -f name="Peko Desktop $TAG" \
+              -f body="See the assets below to download and install. Bundles peko-daemon from peko-runtime $RUNTIME_REF." \
+              -F draft=true \
+              -F prerelease="$PRERELEASE" \
+              --jq .id)"
+            echo "Created draft release $ID for $TAG"
+          else
+            echo "Reusing release $ID for $TAG"
+          fi
+          echo "id=$ID" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build Tauri (${{ matrix.platform }}, release)
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            os: ubuntu-latest
+          # Native runners for both Mac architectures, so the host
+          # triple (which fetch-peko-sidecar.sh and Tauri's externalBin
+          # lookup use) is the target triple.
+          - platform: macos-aarch64
+            os: macos-latest
+          - platform: macos-x86_64
+            os: macos-15-intel
+          # Static CRT: the sidecar must not need the Visual C++
+          # runtime DLLs, which a clean Windows install may not have
+          # (tauri-build links the app's VC runtime statically too; the
+          # app still uses the Universal CRT, part of Windows 10+).
+          - platform: windows-x86_64
+            os: windows-latest
+            sidecar_rustflags: -C target-feature=+crt-static
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        # Git Bash on Windows, so the sidecar script runs everywhere.
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      # fetch-peko-sidecar.sh defaults to ../peko-runtime.
+      - name: Check out peko-runtime
+        uses: actions/checkout@v7
+        with:
+          repository: ConekoAI/Peko
+          ref: ${{ needs.prepare.outputs.runtime_ref }}
+          path: peko-runtime-src
+
+      - name: Move peko-runtime beside the desktop checkout
+        run: mv peko-runtime-src ../peko-runtime
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri
+            ../peko-runtime
+          shared-key: tauri-release-${{ matrix.platform }}
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      # Build the peko-daemon binary from source so the desktop can
+      # bundle it as a Tauri sidecar (see ADR-043 and
+      # scripts/fetch-peko-sidecar.sh). The desktop's tauri.conf.json
+      # declares `bundle.externalBin: ["binaries/peko-daemon"]`, which
+      # fails the build if the host-triple-suffixed binary is missing.
+      - name: Build peko-runtime sidecar
+        env:
+          RUSTFLAGS: ${{ matrix.sidecar_rustflags }}
+        run: |
+          (cd ../peko-runtime && cargo build --release -p peko-daemon)
+          bash scripts/fetch-peko-sidecar.sh ../peko-runtime
+
+      # Only hand Tauri the Apple variables that are actually set: an
+      # empty APPLE_CERTIFICATE makes the bundler try to import an empty
+      # certificate and fail. With no certificate, sign ad hoc ("-").
+      - name: Configure macOS signing
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -n "$APPLE_CERTIFICATE" ]; then
+            {
+              echo "APPLE_CERTIFICATE=$APPLE_CERTIFICATE"
+              echo "APPLE_CERTIFICATE_PASSWORD=$APPLE_CERTIFICATE_PASSWORD"
+              echo "APPLE_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY"
+            } >> "$GITHUB_ENV"
+            echo "Signing with $APPLE_SIGNING_IDENTITY"
+            if [ -n "$APPLE_ID" ]; then
+              {
+                echo "APPLE_ID=$APPLE_ID"
+                echo "APPLE_PASSWORD=$APPLE_PASSWORD"
+                echo "APPLE_TEAM_ID=$APPLE_TEAM_ID"
+              } >> "$GITHUB_ENV"
+              echo "Notarizing as $APPLE_ID"
+            fi
+          else
+            echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+            echo "::warning::No APPLE_CERTIFICATE secret: the macOS app is ad-hoc signed and not notarized."
+          fi
+
+      # Update files are signed only when the key is set. The config asks
+      # for them (`bundle.createUpdaterArtifacts`), and the bundler fails
+      # without a key, so with no key that setting is turned off for this
+      # build (src-tauri/tauri.no-updates.conf.json; a local `tauri build`
+      # without the key takes the same `--config`). A key with no public key in the config would sign files no
+      # installed app accepts, so that fails here.
+      - name: Configure update signing
+        id: updates
+        env:
+          UPDATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          UPDATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          PUBKEY="$(node -p "require('./src-tauri/tauri.conf.json').plugins.updater.pubkey")"
+          if [ -z "$UPDATE_KEY" ]; then
+            echo "args=--config src-tauri/tauri.no-updates.conf.json" >> "$GITHUB_OUTPUT"
+            echo "::warning::No TAURI_SIGNING_PRIVATE_KEY secret: this release has no update files, so installed apps won't be offered it."
+          elif [ -z "$PUBKEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is set but plugins.updater.pubkey in src-tauri/tauri.conf.json is empty. Put the public key there."
+            exit 1
+          else
+            {
+              echo "TAURI_SIGNING_PRIVATE_KEY=$UPDATE_KEY"
+              echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$UPDATE_KEY_PASSWORD"
+            } >> "$GITHUB_ENV"
+            echo "args=" >> "$GITHUB_OUTPUT"
+            echo "Signing update files"
+          fi
+
+      # Builds the release-mode Tauri app and uploads its bundles, and
+      # the update feed `latest.json` when update files were signed, to
+      # the draft created by `prepare`.
+      - name: Build Tauri app (release) and upload to the draft
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Where crash reports go (pekohub ADR-014; src-tauri/src/telemetry.rs).
+          # Unset, the app is built without crash reporting. A Sentry
+          # address is not a secret: it ships inside the app.
+          PEKO_DESKTOP_SENTRY_DSN: ${{ vars.DESKTOP_SENTRY_DSN }}
+          # Where usage counts go (src-tauri/src/usage.rs). Unset, none are
+          # sent. A PostHog project key is not a secret either.
+          PEKO_DESKTOP_POSTHOG_KEY: ${{ vars.DESKTOP_POSTHOG_KEY }}
+        with:
+          args: ${{ steps.updates.outputs.args }}
+          # Windows updates with the NSIS installer, not the .msi.
+          updaterJsonPreferNsis: true
+          projectPath: .
+          # Dependencies are installed with `npm ci` above; run the Tauri
+          # CLI from them.
+          tauriScript: npx tauri
+          releaseId: ${{ needs.prepare.outputs.release_id }}

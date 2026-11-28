@@ -1,0 +1,2291 @@
+//! Principal commands (ADR-041).
+//!
+//! Principals are the top-level runtime actors. The desktop talks to
+//! the local daemon over IPC; the daemon routes to the principal's
+//! supervisor, which can in turn dispatch to specialist agent
+//! prompts. Sessions are internal mechanics of the principal's
+//! memory layer and are not surfaced in the desktop UI.
+//!
+//! The companion read surface is `peko log` / `RequestPacket::PrincipalLog`,
+//! added in peko-runtime PR #124 and surfaced here as `principal_log`.
+
+use serde::{Deserialize, Serialize};
+use tauri::ipc::Channel;
+use tauri::AppHandle;
+use tauri::Manager;
+
+use crate::state::AppState;
+
+/// Lightweight summary row for the principal list / sidebar.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PrincipalSummary {
+    pub name: String,
+    /// The runtime's stable local id (`prin_…`), which channel members
+    /// and authors refer to. Empty for pekos from older runtimes.
+    pub local_id: String,
+    /// Its PekoHub ID once it is on PekoHub; `None` while it is only on
+    /// this computer, whatever `exposure` says it should be.
+    pub hub_id: Option<String>,
+    /// An emoji or short monogram (`identity.avatar`), if set.
+    pub avatar: Option<String>,
+    pub exposure: String,
+    pub status: String,
+    pub description: Option<String>,
+    pub preferred_model_id: Option<String>,
+    pub owner: String,
+    pub runtime_id: String,
+    /// ADR-054 genesis pipeline state (`provisioned → defined →
+    /// genesis_pending → organized`). `None` when the runtime's
+    /// wire summary doesn't carry it (current runtimes omit it from
+    /// the IPC `PrincipalSummary`; the field is forward-compatible).
+    pub boot_state: Option<String>,
+}
+
+#[tauri::command]
+pub async fn principal_list(
+    state: tauri::State<'_, AppState>,
+    runtime_id: Option<String>,
+) -> Result<Vec<PrincipalSummary>, String> {
+    // PR #3: route on the supplied runtime_id. `None` / `Some("local")`
+    // both resolve to the local IPC client; PR #5 will route
+    // `hub:<url>` style IDs to the HubRemoteClient. The runtime's
+    // id is stamped on the returned summary so the React sidebar
+    // can group entries by owning runtime.
+    let resolved = state.resolve_runtime(runtime_id.as_deref()).await;
+    let runtime_id = runtime_id.unwrap_or_else(|| "local".to_string());
+    let _ = resolved; // PR #5 will branch on `resolved`.
+
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    let value = client
+        .principal_list()
+        .await
+        .map_err(|e| format!("Couldn't list your pekos: {e}"))?;
+
+    let empty = Vec::new();
+    let items = value
+        .get("principals")
+        .and_then(|v| v.as_array())
+        .unwrap_or(&empty);
+    let mut out: Vec<PrincipalSummary> = Vec::with_capacity(items.len());
+    for v in items {
+        out.push(summary_from_wire(
+            v.as_object().unwrap_or(&serde_json::Map::new()),
+            runtime_id.clone(),
+            "",
+        ));
+    }
+    Ok(out)
+}
+
+/// The desktop's summary of one runtime `PrincipalSummary` object.
+/// `owner` is an `ActorRef` (`{"kind": "user", "id": "local"}`) on
+/// current runtimes and a string on older ones; both read as
+/// `kind:id` text.
+fn summary_from_wire(
+    p: &serde_json::Map<String, serde_json::Value>,
+    runtime_id: impl Into<String>,
+    fallback_name: &str,
+) -> PrincipalSummary {
+    let text = |key: &str| p.get(key).and_then(|v| v.as_str()).map(String::from);
+    PrincipalSummary {
+        name: text("name").unwrap_or_else(|| fallback_name.to_string()),
+        local_id: text("local_id").unwrap_or_default(),
+        hub_id: text("hub_id").filter(|id| !id.is_empty()),
+        avatar: text("avatar"),
+        exposure: text("exposure").unwrap_or_else(|| "unexposed".to_string()),
+        // No stored status means the live engine is the truth — and an
+        // engine that answered is up, so its pekos are online (the
+        // runtime's `PrincipalConfig::status` contract). Defaulting to
+        // `offline` showed every running local peko as offline.
+        status: text("status").unwrap_or_else(|| "online".to_string()),
+        description: text("description"),
+        preferred_model_id: text("preferred_model_id"),
+        owner: p.get("owner").and_then(actor_text).unwrap_or_default(),
+        runtime_id: runtime_id.into(),
+        boot_state: extract_boot_state(p.get("boot_state")),
+    }
+}
+
+/// An actor in `kind:id` text form, from an `ActorRef` object or text.
+fn actor_text(value: &serde_json::Value) -> Option<String> {
+    if let Some(text) = value.as_str() {
+        return Some(text.to_string());
+    }
+    let kind = value.get("kind")?.as_str()?;
+    Some(match value.get("id").and_then(|v| v.as_str()) {
+        Some(id) => format!("{kind}:{id}"),
+        None => kind.to_string(),
+    })
+}
+
+/// Pull `boot_state` off a runtime summary object, tolerating its
+/// absence (current runtimes omit it from the IPC wire summary).
+fn extract_boot_state(v: Option<&serde_json::Value>) -> Option<String> {
+    v.and_then(|s| s.as_str()).map(|s| s.to_string())
+}
+
+/// Look up a single Principal by name. Returns the lightweight
+/// summary shape used by `principal_list` so the desktop's
+/// `usePrincipal` hook can consume either source interchangeably.
+/// The runtime returns `principal: null` for a miss, never an
+/// error.
+#[tauri::command]
+pub async fn principal_get(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    runtime_id: Option<String>,
+) -> Result<Option<PrincipalSummary>, String> {
+    let resolved = state
+        .resolve_peko_runtime(runtime_id.as_deref(), &name)
+        .await;
+    let _ = resolved; // PR #5 will branch on `resolved`.
+    let runtime_id = runtime_id.unwrap_or_else(|| "local".to_string());
+
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    let value = client
+        .principal_get(&name)
+        .await
+        .map_err(|e| format!("Couldn't load the peko: {e}"))?;
+
+    Ok(project_principal_get_envelope(&value, &runtime_id))
+}
+
+/// Project the runtime's `principal_get` response envelope down to
+/// the desktop's lightweight `PrincipalSummary`. Extracted so the
+/// projection logic is unit-testable without spinning up the IPC
+/// stack.
+fn project_principal_get_envelope(
+    value: &serde_json::Value,
+    runtime_id: &str,
+) -> Option<PrincipalSummary> {
+    let p = value.get("principal").and_then(|v| v.as_object())?;
+    Some(summary_from_wire(p, runtime_id.to_string(), ""))
+}
+
+/// Create a new Principal on the local runtime. Mirrors
+/// `peko principal new <name>` so the desktop user never has to drop
+/// to the CLI to onboard. The daemon validates the name (saving a
+/// round-trip is a desktop-side nicety), writes `agents/primary.md`,
+/// and registers the new principal in the in-memory manager. The
+/// caller is recorded as the owner.
+///
+/// `seed` (create-from-seed, ADR-060) is a seed's TOML text, e.g. a
+/// `.seed.toml` downloaded from PekoHub. The daemon grows the peko from
+/// it with a fresh identity, owned by the caller; `model_id` and
+/// `description` override the seed's.
+///
+/// Errors from the daemon (e.g. name validation, `AlreadyExists`)
+/// propagate as `Err(String)` — the React form surfaces them inline.
+#[tauri::command]
+pub async fn principal_create(
+    name: String,
+    description: Option<String>,
+    model_id: String,
+    seed: Option<String>,
+    accept_setup: Option<bool>,
+    runtime_id: Option<String>,
+) -> Result<PrincipalSummary, String> {
+    if seed.as_deref().is_some_and(|seed| seed.len() > 64 * 1024) {
+        return Err("A seed is at most 64 KB.".to_string());
+    }
+    validate_principal_name(&name)?;
+    if model_id.is_empty() {
+        return Err("model id must not be empty".to_string());
+    }
+    // PR #3: creation is local-only. Reject any remote runtime_id
+    // explicitly so the JS form surfaces a clear error rather than
+    // silently sending a create packet to a remote hub.
+    let runtime_id = runtime_id.unwrap_or_else(|| "local".to_string());
+    if runtime_id != "local" {
+        return Err(format!(
+            "principal_create is only available on the local runtime (got runtime_id={runtime_id:?})"
+        ));
+    }
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    let value = client
+        .principal_create(
+            &name,
+            description.as_deref(),
+            &model_id,
+            seed.as_deref(),
+            accept_setup.unwrap_or(false),
+        )
+        .await
+        .map_err(|e| format!("Couldn't create the peko: {e}"))?;
+    project_principal_create_envelope(&value, &name)
+}
+
+/// One file a seed carries (`[files]`), for the person to read before
+/// they accept the seed.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SeedFile {
+    pub path: String,
+    /// Bytes of text.
+    pub size: usize,
+    /// The file's text, when it names something this computer will run
+    /// (an MCP server or a workflow); such a file is shown in full.
+    pub content: Option<String>,
+}
+
+/// What a seed brings beyond a definition: the setup steps the new peko
+/// will carry out, and the files written into its folder.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SeedContents {
+    pub steps: Vec<String>,
+    pub files: Vec<SeedFile>,
+}
+
+/// What a seed will do to this computer when a peko is created from it
+/// (`[intent] setup` and `[files]`), so the form can show it and the
+/// person can accept it first. The engine checks the seed again and is
+/// the one that enforces what a seed may carry; this only reads it.
+#[tauri::command]
+pub fn seed_contents(seed: String) -> Result<SeedContents, String> {
+    if seed.len() > 64 * 1024 {
+        return Err("A seed is at most 64 KB.".to_string());
+    }
+    let doc: toml::Table =
+        toml::from_str(&seed).map_err(|e| format!("This seed could not be read: {e}"))?;
+    let steps = doc
+        .get("intent")
+        .and_then(|intent| intent.get("setup"))
+        .and_then(toml::Value::as_array)
+        .map(|steps| {
+            steps
+                .iter()
+                .filter_map(toml::Value::as_str)
+                .map(|step| step.split_whitespace().collect::<Vec<_>>().join(" "))
+                .filter(|step| !step.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut files: Vec<SeedFile> = doc
+        .get("files")
+        .and_then(toml::Value::as_table)
+        .map(|table| {
+            table
+                .iter()
+                .map(|(path, value)| {
+                    let text = value.as_str().unwrap_or_default();
+                    let runs = path.starts_with("mcp/") || path.starts_with("workflows/");
+                    SeedFile {
+                        path: path.clone(),
+                        size: text.len(),
+                        content: runs.then(|| text.trim_end().to_string()),
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(SeedContents { steps, files })
+}
+
+/// One thing a peko did on its first turn, as a short line.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SetupStep {
+    pub call_id: String,
+    pub tool: String,
+    pub line: String,
+    /// `None` while it is still running.
+    pub outcome: Option<String>,
+}
+
+/// One setup step from the peko's seed and how it stands.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SetupResult {
+    pub step: String,
+    /// `ready` | `failed` | `pending`.
+    pub status: String,
+    /// The peko's one line about it: how it checked, or why it failed
+    /// and what to do.
+    pub note: Option<String>,
+}
+
+/// How a peko's first turn and its setup steps are going.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SetupStatus {
+    /// False once the first turn is over (done, or stopped).
+    pub setting_up: bool,
+    /// Whether it is doing something on its own right now, so there is
+    /// something to stop.
+    pub running: bool,
+    /// The setup steps its seed listed.
+    pub setup: Vec<String>,
+    /// Its most recent tool calls, oldest first.
+    pub steps: Vec<SetupStep>,
+    /// Its own report of how setup went, once written.
+    pub report: Option<String>,
+    /// Where its setup steps stand: `none` | `pending` | `running` |
+    /// `done`. Empty from an engine that does not say.
+    pub setup_state: String,
+    /// Each setup step with its result, in order. Empty from an engine
+    /// that does not say; `report` is then all there is.
+    pub results: Vec<SetupResult>,
+    /// Why its first turn last failed, while nothing will run it again.
+    pub first_turn_error: Option<String>,
+    /// The model its turns need and this computer doesn't have: the id it
+    /// is set to, or `""` when it is set to none. `None` when its model is
+    /// here, and from an engine that does not say.
+    pub missing_model: Option<String>,
+}
+
+/// Project the daemon's `principal_setup_status` envelope. `None` when
+/// the daemon predates the request (it answers with an error), so the
+/// app shows no setup panel instead of a failure.
+fn project_setup_status(value: &serde_json::Value) -> Option<SetupStatus> {
+    if value.get("type").and_then(|t| t.as_str()) != Some("principal_setup_status") {
+        return None;
+    }
+    let text =
+        |v: &serde_json::Value, key: &str| v.get(key).and_then(|s| s.as_str()).map(str::to_string);
+    let list = |key: &str| {
+        value
+            .get(key)
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default()
+    };
+    Some(SetupStatus {
+        setting_up: text(value, "boot_state").is_some_and(|state| state != "organized"),
+        running: value.get("running").and_then(serde_json::Value::as_bool) == Some(true),
+        setup: list("setup")
+            .iter()
+            .filter_map(|s| s.as_str().map(str::to_string))
+            .collect(),
+        steps: list("steps")
+            .iter()
+            .filter_map(|step| {
+                Some(SetupStep {
+                    call_id: text(step, "call_id")?,
+                    tool: text(step, "tool").unwrap_or_default(),
+                    line: text(step, "line")?,
+                    outcome: text(step, "outcome"),
+                })
+            })
+            .collect(),
+        report: text(value, "report").filter(|r| !r.trim().is_empty()),
+        setup_state: text(value, "setup_state").unwrap_or_default(),
+        results: list("results")
+            .iter()
+            .filter_map(|result| {
+                Some(SetupResult {
+                    step: text(result, "step")?,
+                    status: text(result, "status")?,
+                    note: text(result, "note").filter(|n| !n.trim().is_empty()),
+                })
+            })
+            .collect(),
+        first_turn_error: text(value, "first_turn_error").filter(|e| !e.trim().is_empty()),
+        missing_model: text(value, "missing_model"),
+    })
+}
+
+/// How the peko `name` is getting on with its first turn. `None` for a
+/// remote peko, and when this computer's engine is too old to say.
+#[tauri::command]
+pub async fn principal_setup_status(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    runtime_id: Option<String>,
+) -> Result<Option<SetupStatus>, String> {
+    let resolved = state
+        .resolve_peko_runtime(runtime_id.as_deref(), &name)
+        .await;
+    if matches!(resolved, crate::state::ResolvedRuntime::HubRemote(_)) {
+        return Ok(None);
+    }
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    let value = client
+        .principal_setup_status(&name)
+        .await
+        .map_err(|e| format!("Couldn't check on the peko: {e}"))?;
+    Ok(project_setup_status(&value))
+}
+
+/// Have the peko `name` go through its setup steps again: it checks
+/// each one and carries out those that do not work yet.
+#[tauri::command]
+pub async fn principal_setup_run(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    runtime_id: Option<String>,
+) -> Result<(), String> {
+    let resolved = state
+        .resolve_peko_runtime(runtime_id.as_deref(), &name)
+        .await;
+    if matches!(resolved, crate::state::ResolvedRuntime::HubRemote(_)) {
+        return Err("Setup is not supported for remote pekos yet".to_string());
+    }
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    let value = client
+        .principal_setup_run(&name)
+        .await
+        .map_err(|e| format!("Couldn't start setup: {e}"))?;
+    setup_run_outcome(&value)
+}
+
+/// The daemon's answer to `principal_setup_run`, as the app shows it.
+fn setup_run_outcome(value: &serde_json::Value) -> Result<(), String> {
+    let text = |key: &str| value.get(key).and_then(|v| v.as_str());
+    if crate::ipc::is_error_response(value) {
+        return Err(text("message")
+            .unwrap_or("Couldn't start setup")
+            .to_string());
+    }
+    if value.get("success").and_then(serde_json::Value::as_bool) == Some(true) {
+        return Ok(());
+    }
+    Err(text("error").unwrap_or("Couldn't start setup").to_string())
+}
+
+/// Stop what the peko `name` is doing on its own: its first turn, or
+/// scheduled work. Returns whether there was something to stop.
+#[tauri::command]
+pub async fn principal_stop_setup(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    runtime_id: Option<String>,
+) -> Result<bool, String> {
+    let resolved = state
+        .resolve_peko_runtime(runtime_id.as_deref(), &name)
+        .await;
+    if matches!(resolved, crate::state::ResolvedRuntime::HubRemote(_)) {
+        return Err("Stopping is not supported for remote pekos yet".to_string());
+    }
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    let value = client
+        .principal_stop_main(&name)
+        .await
+        .map_err(|e| format!("Couldn't stop the peko: {e}"))?;
+    if crate::ipc::is_error_response(&value) {
+        return Err(value
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Couldn't stop the peko")
+            .to_string());
+    }
+    Ok(value.get("success").and_then(serde_json::Value::as_bool) == Some(true))
+}
+
+/// Mirror of the runtime's `validate_agent_name` rules
+/// (`peko-runtime/peko-rs/core/src/common/identifiers.rs:49`). Pre-IPC
+/// nicety so obviously-bad input fails fast; the daemon re-validates
+/// so this is only a UX win, not a security boundary.
+fn validate_principal_name(name: &str) -> Result<(), String> {
+    if name.is_empty() || name.len() > 64 {
+        return Err(format!("invalid peko name: {name:?}"));
+    }
+    // Mirror the runtime's explicit `..` rule (PR #241). The
+    // per-char alphanumeric check below incidentally rejects "."
+    // and "..", but the explicit check makes the intent obvious and
+    // survives a future regex loosening.
+    if name == ".." || name == "." || name.contains("..") {
+        return Err(format!("invalid peko name: {name:?}"));
+    }
+    if name.starts_with('-') || name.ends_with('-') {
+        return Err(format!("invalid peko name: {name:?}"));
+    }
+    if name.contains('/') || name.contains('\\') {
+        return Err(format!("invalid peko name: {name:?}"));
+    }
+    if name
+        .chars()
+        .any(|c| !c.is_ascii_alphanumeric() && c != '-' && c != '_')
+    {
+        return Err(format!("invalid peko name: {name:?}"));
+    }
+    Ok(())
+}
+
+/// Project the runtime's `principal_created` envelope down to the
+/// desktop's lightweight `PrincipalSummary`. Extracted so the
+/// projection logic is unit-testable without spinning up the IPC
+/// stack (same shape as `project_principal_get_envelope`).
+///
+/// The runtime can also send `{"type": "error", "message": "..."}`
+/// when the create fails (e.g. the model's preferred model id is
+/// unknown after PR #204 removed default providers, or the disk is
+/// read-only). Without the early check below those errors surfaced as
+/// the misleading "principal_create response missing `principal`" —
+/// a user could not tell whether the request never reached the
+/// runtime, the runtime returned a malformed envelope, or the
+/// runtime rejected the request. Surface the runtime's message so
+/// the React form can show the real reason.
+fn project_principal_create_envelope(
+    value: &serde_json::Value,
+    fallback_name: &str,
+) -> Result<PrincipalSummary, String> {
+    if value.get("type").and_then(|v| v.as_str()) == Some("error") {
+        let message = value
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown runtime error");
+        return Err(format!("Couldn't create the peko: {message}"));
+    }
+    let p = value
+        .get("principal")
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| {
+            format!(
+                "principal_create response missing `principal` (got envelope: {})",
+                value
+            )
+        })?;
+    Ok(summary_from_wire(p, "local".to_string(), fallback_name))
+}
+
+/// Update an existing Principal's mutable config (description, status,
+/// exposure, and pinned model). Mirror of the runtime's
+/// `RequestPacket::PrincipalUpdate`. The daemon checks
+/// `Permission::ManageSettings`; for the local desktop caller this is
+/// always satisfied for principals it owns.
+#[derive(serde::Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PrincipalUpdateRequest {
+    pub name: String,
+    pub description: Option<String>,
+    pub status: Option<String>,
+    pub exposure: Option<String>,
+    pub preferred_model_id: Option<String>,
+    /// An emoji or short monogram; `""` clears it.
+    pub avatar: Option<String>,
+    /// PR #3: defaults to `"local"`. Forwarded through the
+    /// `RuntimeConnection` registry; only "local" is accepted in
+    /// PR #3, PR #5 will add remote support.
+    pub runtime_id: Option<String>,
+}
+
+#[tauri::command]
+pub async fn principal_update(req: PrincipalUpdateRequest) -> Result<PrincipalSummary, String> {
+    // PR #3: update is local-only. The Shape mirrors `principal_create`:
+    // a remote runtime_id is rejected up front so the desktop exposes
+    // a clear failure rather than silently forwarding to a remote hub.
+    let runtime_id = req
+        .runtime_id
+        .clone()
+        .unwrap_or_else(|| "local".to_string());
+    if runtime_id != "local" {
+        return Err(format!(
+            "principal_update is only available on the local runtime (got runtime_id={runtime_id:?})"
+        ));
+    }
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    let value = client
+        .principal_update(
+            &req.name,
+            req.description.as_deref(),
+            req.status.as_deref(),
+            req.exposure.as_deref(),
+            req.preferred_model_id.as_deref(),
+            req.avatar.as_deref(),
+        )
+        .await
+        .map_err(|e| format!("Couldn't update the peko: {e}"))?;
+    project_principal_update_envelope(&value, &runtime_id)
+}
+
+/// Remove a Principal and its on-disk workspace. Mirror of the runtime's
+/// `RequestPacket::PrincipalRemove`. Returns `true` if the principal was
+/// actually deleted, `false` if it was already gone.
+#[tauri::command]
+pub async fn principal_remove(name: String, runtime_id: Option<String>) -> Result<bool, String> {
+    // PR #3: remove is local-only (mirrors create / update).
+    let runtime_id = runtime_id.unwrap_or_else(|| "local".to_string());
+    if runtime_id != "local" {
+        return Err(format!(
+            "principal_remove is only available on the local runtime (got runtime_id={runtime_id:?})"
+        ));
+    }
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    let value = client
+        .principal_remove(&name)
+        .await
+        .map_err(|e| format!("Couldn't remove the peko: {e}"))?;
+    project_principal_remove_envelope(&value)
+}
+
+/// Project the runtime's `principal_updated` envelope down to the
+/// desktop's `PrincipalSummary`. Reuses the same field defaults as
+/// `principal_list` so the sidebar and detail views stay consistent.
+fn project_principal_update_envelope(
+    value: &serde_json::Value,
+    runtime_id: &str,
+) -> Result<PrincipalSummary, String> {
+    if value.get("type").and_then(|v| v.as_str()) == Some("error") {
+        let message = value
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown runtime error");
+        return Err(format!("Couldn't update the peko: {message}"));
+    }
+    let p = value
+        .get("principal")
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| {
+            format!(
+                "principal_update response missing `principal` (got envelope: {})",
+                value
+            )
+        })?;
+    Ok(summary_from_wire(p, runtime_id.to_string(), ""))
+}
+
+/// Project the runtime's `principal_removed` envelope down to a boolean.
+fn project_principal_remove_envelope(value: &serde_json::Value) -> Result<bool, String> {
+    if value.get("type").and_then(|v| v.as_str()) == Some("error") {
+        let message = value
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown runtime error");
+        return Err(format!("Couldn't remove the peko: {message}"));
+    }
+    value
+        .get("removed")
+        .and_then(|v| v.as_bool())
+        .ok_or_else(|| {
+            format!(
+                "principal_remove response missing `removed` (got envelope: {})",
+                value
+            )
+        })
+}
+
+/// Send a non-streaming principal message and return the final content.
+#[tauri::command]
+pub async fn principal_send(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    message: String,
+    runtime_id: Option<String>,
+) -> Result<String, String> {
+    // Route by runtime_id: a remote peko is reached through the DM this
+    // runtime holds with it (runtime ADR-090).
+    let resolved = state
+        .resolve_peko_runtime(runtime_id.as_deref(), &name)
+        .await;
+    match resolved {
+        crate::state::ResolvedRuntime::Local => {
+            let client = crate::ipc::IpcClient::new()
+                .await
+                .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+            client
+                .principal_send(name, message)
+                .await
+                .map_err(|e| format!("Couldn't send the message: {e}"))
+        }
+        // A remote peko: post to the DM; its reply arrives on the thread.
+        crate::state::ResolvedRuntime::HubRemote(client) => {
+            client.send(&message, &[], None, None, None).await?;
+            Ok(String::new())
+        }
+    }
+}
+
+/// Result envelope returned by the `principal_send_stream` Tauri
+/// command. `request_id` is the runtime's correlation id for the
+/// in-flight run (also minted by `IpcClient::next_request_id` on the
+/// desktop side).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PrincipalSendStreamResult {
+    pub request_id: u64,
+    pub content: String,
+}
+
+/// Stream a principal message via the `principal_send_stream` IPC
+/// path. Each `PrincipalSentChunk` delta and `PrincipalSentIteration`
+/// boundary marker is pushed to the supplied Tauri
+/// `Channel<ChatStreamMsg>`; the resolved `Promise<PrincipalSendStreamResult>`
+/// on the JS side returns the final full content plus the runtime
+/// correlation id once the run settles. The desktop's `useIpcStream`
+/// hook also listens on the `peko-stream` Tauri event channel for
+/// chunks so legacy listeners see the live tokens during the
+/// migration window.
+///
+/// The `request_id` is supplied by the JS caller (see
+/// `nextRequestId` in `src/hooks/usePrincipals.ts`) so concurrent
+/// streams never share a correlation id. If the thread is already
+/// busy the run settles at once with a `queued` event and empty
+/// content; the reply then arrives through `principal_log_watch_start`.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri command args stay flat to keep the JS call shape additive
+pub async fn principal_send_stream(
+    app: AppHandle,
+    name: String,
+    message: String,
+    request_id: u64,
+    on_event: Channel<crate::ipc::ChatStreamMsg>,
+    runtime_id: Option<String>,
+    override_model: Option<String>,
+    attachments: Option<Vec<String>>,
+    answers: Option<serde_json::Value>,
+    reply_to: Option<String>,
+) -> Result<PrincipalSendStreamResult, String> {
+    let attachments = attachments.unwrap_or_default();
+    // Route by runtime_id. Local → the daemon's streamed run; a remote
+    // peko → a post to the DM this runtime holds with it.
+    let resolved = {
+        let state = app.state::<AppState>();
+        state
+            .resolve_peko_runtime(runtime_id.as_deref(), &name)
+            .await
+    };
+
+    let content = match resolved {
+        crate::state::ResolvedRuntime::Local => {
+            let client = crate::ipc::IpcClient::new()
+                .await
+                .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+            let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+            client
+                .principal_send_stream(
+                    &app,
+                    request_id,
+                    crate::ipc::StreamSend {
+                        name,
+                        message,
+                        override_model,
+                        attachments,
+                        answers,
+                        reply_to,
+                    },
+                    {
+                        let channel = on_event.clone();
+                        move |msg| {
+                            let _ = channel.send(msg);
+                        }
+                    },
+                    move |content| {
+                        let _ = tx.send(content);
+                    },
+                )
+                .await
+                .map_err(|e| format!("Couldn't send the message: {e}"))?;
+            rx.await.map_err(|e| format!("supervisor task died: {e}"))?
+        }
+        // A remote peko: post to the DM, files included (runtime ADR-094:
+        // its runtime pulls them through PekoHub). The reply arrives later,
+        // on the thread (the log watch shows it), like a message sent to a
+        // busy local peko.
+        crate::state::ResolvedRuntime::HubRemote(client) => {
+            client
+                .send(
+                    &message,
+                    &attachments,
+                    override_model.as_deref(),
+                    answers.as_ref(),
+                    reply_to.as_deref(),
+                )
+                .await?;
+            let _ = on_event.send(crate::ipc::ChatStreamMsg::Queued { message });
+            String::new()
+        }
+    };
+
+    Ok(PrincipalSendStreamResult {
+        request_id,
+        content,
+    })
+}
+
+/// Put your `emoji` on a message in your DM with a peko, or take it off
+/// (runtime ADR-126): `to` is the message's `msg_id`, `channel` the DM
+/// (`principal_log` names it; a peko on another computer finds its own).
+/// The reaction wakes no one.
+#[tauri::command]
+pub async fn principal_react(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    runtime_id: Option<String>,
+    channel: Option<String>,
+    to: String,
+    emoji: String,
+    remove: Option<bool>,
+) -> Result<(), String> {
+    let remove = remove.unwrap_or(false);
+    let channel = match state
+        .resolve_peko_runtime(runtime_id.as_deref(), &name)
+        .await
+    {
+        crate::state::ResolvedRuntime::HubRemote(client) => client.dm_channel().await?,
+        crate::state::ResolvedRuntime::Local => {
+            channel.ok_or("This conversation can't take reactions yet: reload it.")?
+        }
+    };
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    let answer = client
+        .channel_react(&channel, &to, &emoji, remove)
+        .await
+        .map_err(|e| format!("Couldn't react: {e}"))?;
+    if crate::ipc::is_error_response(&answer) {
+        return Err(answer
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("Couldn't react.")
+            .to_string());
+    }
+    Ok(())
+}
+
+/// The models one of your pekos on another computer can answer you with,
+/// from its host (runtime ADR-097 D1), for the composer's model picker.
+/// A local peko's models are `model_list`'s; this is for `runtime_id =
+/// hub:…` only.
+#[tauri::command]
+pub async fn remote_peko_models(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    runtime_id: String,
+) -> Result<Vec<crate::clients::hub_remote_client::PekoModel>, String> {
+    match state.resolve_peko_runtime(Some(&runtime_id), &name).await {
+        crate::state::ResolvedRuntime::HubRemote(client) => client.models().await,
+        crate::state::ResolvedRuntime::Local => {
+            Err("remote_peko_models is for pekos on other computers".to_string())
+        }
+    }
+}
+
+/// Your messages to a peko on another computer that haven't reached it
+/// yet, by message id: its computer has been away (asleep or off) since.
+/// Empty for a peko on this computer.
+#[tauri::command]
+pub async fn remote_peko_undelivered(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    runtime_id: String,
+) -> Result<Vec<String>, String> {
+    match state.resolve_peko_runtime(Some(&runtime_id), &name).await {
+        crate::state::ResolvedRuntime::HubRemote(client) => client.undelivered().await,
+        crate::state::ResolvedRuntime::Local => Ok(Vec::new()),
+    }
+}
+
+/// Stop the running turn in the caller's thread with `name`
+/// (`principal_stop`). `peer = None` is the owner's thread. Returns the
+/// daemon's `done` envelope; `success: false` with "no running turn…"
+/// just means there was nothing to stop.
+#[tauri::command]
+pub async fn principal_stop(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    peer: Option<String>,
+    runtime_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let resolved = state
+        .resolve_peko_runtime(runtime_id.as_deref(), &name)
+        .await;
+    if matches!(resolved, crate::state::ResolvedRuntime::HubRemote(_)) {
+        return Err("Stopping a run is not supported for remote pekos yet".to_string());
+    }
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    let value = client
+        .principal_stop(&name, peer.as_deref())
+        .await
+        .map_err(|e| format!("Couldn't stop the peko: {e}"))?;
+    if crate::ipc::is_error_response(&value) {
+        return Err(value
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Couldn't stop the peko")
+            .to_string());
+    }
+    Ok(value)
+}
+
+/// Live log watches keyed by the id `principal_log_watch_start` returns.
+static LOG_WATCHES: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<u64, tokio::task::AbortHandle>>,
+> = std::sync::LazyLock::new(Default::default);
+static NEXT_LOG_WATCH_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+/// Delay before a log watch re-subscribes after it ended.
+const LOG_WATCH_RETRY: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Start following the caller's thread with `name` live
+/// (`principal_log_watch`). Each new DM row is pushed to `on_message`
+/// in the `principal_log` message shape. Returns a watch id for
+/// `principal_log_watch_stop`. A remote peko (`runtime_id = hub:…`) is
+/// followed through the DM this runtime holds with it.
+///
+/// `since_cursor` is the newest row number the caller already has (a
+/// log row id is `chan_<line>`), so opening a long thread does not
+/// replay it. The watch outlives a missing thread (a new peko has no
+/// DM channel until its first message — the daemon answers
+/// `[not_found]`) and daemon restarts: it re-subscribes every
+/// [`LOG_WATCH_RETRY`] from the newest row it has seen, until stopped.
+#[tauri::command]
+pub async fn principal_log_watch_start(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    peer: Option<String>,
+    since_cursor: Option<String>,
+    on_message: Channel<serde_json::Value>,
+    runtime_id: Option<String>,
+) -> Result<u64, String> {
+    let id = NEXT_LOG_WATCH_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    // A remote peko: follow the DM this runtime holds with it.
+    if let crate::state::ResolvedRuntime::HubRemote(client) = state
+        .resolve_peko_runtime(runtime_id.as_deref(), &name)
+        .await
+    {
+        let task = tokio::spawn(async move {
+            loop {
+                let on_message = on_message.clone();
+                if let Err(e) = client
+                    .watch(since_cursor.as_deref(), move |row| {
+                        let _ = on_message.send(row);
+                    })
+                    .await
+                {
+                    eprintln!("[peko-desktop] remote DM watch for {name}: {e}; retrying");
+                }
+                tokio::time::sleep(LOG_WATCH_RETRY).await;
+            }
+        });
+        LOG_WATCHES.lock().unwrap().insert(id, task.abort_handle());
+        return Ok(id);
+    }
+    let task = tokio::spawn(async move {
+        let newest = std::sync::Arc::new(std::sync::Mutex::new(
+            since_cursor.and_then(|c| c.parse::<u64>().ok()),
+        ));
+        loop {
+            let since = newest.lock().unwrap().map(|n| n.to_string());
+            let result = match crate::ipc::IpcClient::new().await {
+                Ok(client) => {
+                    let newest = std::sync::Arc::clone(&newest);
+                    let on_message = on_message.clone();
+                    client
+                        .principal_log_watch(&name, peer.as_deref(), since.as_deref(), move |m| {
+                            // Replayed rows carry their store line
+                            // (`chan_<line>`); live rows do not.
+                            if let Some(line) = m
+                                .get("id")
+                                .and_then(|v| v.as_str())
+                                .and_then(|id| id.strip_prefix("chan_"))
+                                .and_then(|n| n.parse::<u64>().ok())
+                            {
+                                let mut newest = newest.lock().unwrap();
+                                *newest = Some(newest.map_or(line, |n| n.max(line)));
+                            }
+                            let _ = on_message.send(m);
+                        })
+                        .await
+                        .map_err(|e| e.to_string())
+                }
+                Err(e) => Err(e.to_string()),
+            };
+            if let Err(e) = result {
+                if !e.contains("[not_found]") {
+                    eprintln!("[peko-desktop] principal_log_watch for {name}: {e}; retrying");
+                }
+            }
+            tokio::time::sleep(LOG_WATCH_RETRY).await;
+        }
+    });
+    LOG_WATCHES.lock().unwrap().insert(id, task.abort_handle());
+    Ok(id)
+}
+
+/// Stop a watch started by `principal_log_watch_start`. Unknown ids are
+/// a no-op (the watch may already have ended).
+#[tauri::command]
+pub fn principal_log_watch_stop(watch_id: u64) {
+    if let Some(handle) = LOG_WATCHES.lock().unwrap().remove(&watch_id) {
+        handle.abort();
+    }
+}
+
+/// Read a peer's conversation thread with a Principal.
+///
+/// Pass `peer = None` for the principal's owner-root view (the default
+/// `peko log <PRINCIPAL>` invocation). Pass `peer = Some("user:alice")`
+/// for a specific peer's thread; the runtime enforces the privacy
+/// contract (`caller == peer || caller == principal.owner`) plus the
+/// principal's `Chat` grant before returning anything.
+#[tauri::command]
+pub async fn principal_log(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    peer: Option<String>,
+    limit: Option<usize>,
+    since_secs: Option<u64>,
+    cursor: Option<String>,
+    runtime_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    // Route by runtime_id. A remote peko's thread is the DM this runtime
+    // holds with it (runtime ADR-090).
+    let resolved = state
+        .resolve_peko_runtime(runtime_id.as_deref(), &name)
+        .await;
+    match resolved {
+        crate::state::ResolvedRuntime::Local => {
+            let client = crate::ipc::IpcClient::new()
+                .await
+                .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+            client
+                .principal_log(&name, peer.as_deref(), limit, since_secs, cursor.as_deref())
+                .await
+                .map_err(|e| format!("Couldn't load the conversation: {e}"))
+        }
+        crate::state::ResolvedRuntime::HubRemote(client) => {
+            let _ = since_secs;
+            client.log_page(limit, cursor).await
+        }
+    }
+}
+
+// ── PR #3: new status / exposure / permission commands ──────────────────────
+//
+// These wrap the corresponding runtime IPC packets added in the same
+// PR-series. None of them accept a `runtime_id` — they only operate
+// on the local runtime because ACL grants and exposure flips are
+// owner-only RPCs that the hub does not yet proxy. The local-only
+// rejection lives in the dedicated `reject_if_remote` helper below.
+
+// ── PR #3: new status / exposure / permission commands ──────────────────────
+//
+// These wrap the corresponding runtime IPC packets added in the same
+// PR-series. None of them accept a `runtime_id` — they only operate
+// on the local runtime because ACL grants and exposure flips are
+// owner-only RPCs that the hub does not yet proxy. The local-only
+// rejection lives in the upfront check.
+
+fn reject_if_remote(runtime_id: Option<String>) -> Result<String, String> {
+    let id = runtime_id.unwrap_or_else(|| "local".to_string());
+    if id != "local" {
+        return Err(format!(
+            "this command is local-only (got runtime_id={id:?})"
+        ));
+    }
+    Ok(id)
+}
+
+/// Set the local principal's runtime status (`online` / `offline` /
+/// `busy` / `error`). Mirror of `RequestPacket::PrincipalSetStatus`.
+#[tauri::command]
+pub async fn principal_set_status(
+    name: String,
+    status: String,
+    runtime_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    reject_if_remote(runtime_id)?;
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    client
+        .principal_set_status(&name, &status)
+        .await
+        .map_err(|e| format!("Couldn't change the peko's status: {e}"))
+}
+
+/// Error prefix the frontend matches on to show the "already exposed
+/// elsewhere" dialog: the hub enforces at most one publicly exposed
+/// instance per principal DID (ADR-056 D7) and answers a conflicting
+/// expose with 409 `{ error, conflictingInstanceId }`. When that
+/// conflict reaches the desktop (via the runtime's error message) it
+/// is re-thrown with this stable prefix instead of a generic failure.
+pub const EXPOSURE_CONFLICT_PREFIX: &str = "[exposure_conflict]";
+
+/// The runtime's registration states (ADR-081 `Exposure`).
+const REGISTRATION_MODES: &[&str] = &["local_only", "private", "public"];
+
+/// True when an error message looks like the hub's 409 exposure
+/// conflict ("Another instance … is already publicly exposed for this
+/// principal DID", optionally carrying `conflictingInstanceId`).
+fn is_exposure_conflict(message: &str) -> bool {
+    message.contains("conflictingInstanceId")
+        || message.contains("already publicly exposed")
+        || (message.contains("409") && message.contains("exposure"))
+}
+
+/// Set a local peko's PekoHub registration (`local_only` / `private` /
+/// `public`). Mirror of `RequestPacket::PrincipalRegister` (ADR-081).
+///
+/// A runtime `error` envelope is mapped to `Err`; a hub exposure
+/// conflict is prefixed with [`EXPOSURE_CONFLICT_PREFIX`] so the
+/// frontend can show the "already registered elsewhere" notice.
+#[tauri::command]
+pub async fn principal_register(
+    name: String,
+    exposure: String,
+    runtime_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    reject_if_remote(runtime_id)?;
+    if !REGISTRATION_MODES.contains(&exposure.as_str()) {
+        return Err(format!(
+            "invalid registration {exposure:?} — expected one of: {}",
+            REGISTRATION_MODES.join(", ")
+        ));
+    }
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    let value = client
+        .principal_register(&name, &exposure)
+        .await
+        .map_err(|e| format!("Couldn't put the peko online: {e}"))?;
+    if crate::ipc::is_error_response(&value) {
+        let message = value
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown runtime error");
+        if is_exposure_conflict(message) {
+            return Err(format!("{EXPOSURE_CONFLICT_PREFIX} {message}"));
+        }
+        return Err(message.to_string());
+    }
+    Ok(value)
+}
+
+/// Grant a permission on a local principal. Mirror of
+/// `RequestPacket::PrincipalGrantPermission`. `subject` is an actor in
+/// Display form (`user:<route>`, `principal:<route>`, `visitor:<route>`,
+/// `public`); `permission` is `chat` / `view_settings` /
+/// `manage_settings` / `trusted`.
+#[tauri::command]
+pub async fn principal_grant_permission(
+    name: String,
+    subject: String,
+    permission: String,
+    runtime_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    reject_if_remote(runtime_id)?;
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    client
+        .principal_grant_permission(&name, &subject, &permission)
+        .await
+        .map_err(|e| format!("Couldn't grant the permission: {e}"))
+}
+
+/// Revoke a previously-granted permission on a local principal.
+/// Mirror of `RequestPacket::PrincipalRevokePermission` — a grant is
+/// named by its `(subject, permission)` pair.
+#[tauri::command]
+pub async fn principal_revoke_permission(
+    name: String,
+    subject: String,
+    permission: String,
+    runtime_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    reject_if_remote(runtime_id)?;
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    client
+        .principal_revoke_permission(&name, &subject, &permission)
+        .await
+        .map_err(|e| format!("Couldn't revoke the permission: {e}"))
+}
+
+/// List the permissions currently granted on a local principal.
+/// Mirror of `RequestPacket::PrincipalPermissions`. Returns the
+/// `permissions: Vec<PermissionGrant>` envelope verbatim so the
+/// `PrincipalProfileModal` can render the access list inline.
+#[tauri::command]
+pub async fn principal_permissions(
+    name: String,
+    runtime_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    reject_if_remote(runtime_id)?;
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    client
+        .principal_permissions(&name)
+        .await
+        .map_err(|e| format!("Couldn't load the permissions: {e}"))
+}
+
+/// PR #11: mint a signed invite token for a local principal.
+/// Mirror of `RequestPacket::PrincipalMintInvite`. Returns the
+/// `PrincipalInviteMinted` envelope as JSON (the runtime shapes it
+/// as `{ name, token, url, claims }`). The `scope` is forwarded
+/// as a JSON array of permission name strings; the daemon
+/// deserializes them into `peko_auth::Permission` (snake_case
+/// matches the lowercase names we use here).
+#[tauri::command]
+pub async fn principal_mint_invite(
+    name: String,
+    scope: Vec<String>,
+    ttl_secs: u64,
+    runtime_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    reject_if_remote(runtime_id)?;
+    // Reject obviously-bad scope names client-side so a typo
+    // produces a clean error instead of a daemon roundtrip +
+    // deserialization failure. The list mirrors
+    // `peko_auth::Permission` exactly (snake_case); if a new
+    // permission is added on the runtime side, this list must be
+    // updated.
+    const ALLOWED: &[&str] = &["chat", "view_settings", "manage_settings", "trusted"];
+    for s in &scope {
+        if !ALLOWED.contains(&s.as_str()) {
+            return Err(format!("Unknown permission: {s}"));
+        }
+    }
+
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    client
+        .principal_mint_invite(&name, scope, ttl_secs)
+        .await
+        .map_err(|e| format!("Couldn't create the invite link: {e}"))
+}
+
+/// PR #11: revoke a previously-minted invite token. Adds the `jti`
+/// to the runtime's in-memory `InviteRevocationSet`. The next
+/// inbound request presenting that token is rejected by the
+/// runtime's `TunnelDispatcher::check_request_allowed`.
+#[tauri::command]
+pub async fn principal_revoke_invite(
+    name: String,
+    jti: String,
+    runtime_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    reject_if_remote(runtime_id)?;
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    client
+        .principal_revoke_invite(&name, &jti)
+        .await
+        .map_err(|e| format!("Couldn't revoke the invite: {e}"))
+}
+
+/// Export a local principal as a `.peko` full-existence package
+/// (ADR-056). Sends IPC `PrincipalExport { name, output }` — the wire
+/// shape is exactly those two fields; the legacy `include_sessions` /
+/// `with_extensions` / `full_snapshot` flags are gone runtime-side.
+/// `output: None` lets the daemon pick its default export path.
+/// Returns the `principal_exported { name, output_path }` envelope.
+///
+/// The package contains the peko's private keys — the UI shows a
+/// sensitivity warning before invoking this.
+#[tauri::command]
+pub async fn principal_export(
+    name: String,
+    output: Option<String>,
+    runtime_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    reject_if_remote(runtime_id)?;
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    let value = client
+        .principal_export(&name, output.as_deref())
+        .await
+        .map_err(|e| format!("Couldn't export the peko: {e}"))?;
+    error_envelope_to_err(&value, "Couldn't export the peko")?;
+    Ok(value)
+}
+
+/// Import a `.peko` package from `file_path` (ADR-056). Sends the
+/// runtime's `principal_import` packet with the `manifest_checksum`
+/// from the `principal_import_preview` the user reviewed (the runtime
+/// refuses the import if the package changed since) and, on
+/// success, calls `principal_reload` so the daemon's in-memory manager
+/// picks the peko up without a restart (runtime requirement — the cron
+/// engine only drives genesis jobs for loaded principals).
+///
+/// Returns the `principal_imported { name, config_path }` envelope.
+/// Keyless packages surface the runtime's "ground it with `peko
+/// create`" guidance error verbatim.
+#[tauri::command]
+pub async fn principal_import(
+    file_path: String,
+    name: Option<String>,
+    expected_manifest_checksum: String,
+    rotate_keys: Option<bool>,
+    runtime_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    reject_if_remote(runtime_id)?;
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    let value = client
+        .principal_import(
+            &file_path,
+            name.as_deref(),
+            &expected_manifest_checksum,
+            rotate_keys.unwrap_or(false),
+        )
+        .await
+        .map_err(|e| format!("Couldn't import the peko: {e}"))?;
+    error_envelope_to_err(&value, "Couldn't import the peko")?;
+
+    // Runtime requirement: the import materializes the workspace but
+    // the daemon only treats the peko as live after a reload.
+    let imported_name = value
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    if let Some(imported_name) = imported_name {
+        let reload = client
+            .principal_reload(&imported_name)
+            .await
+            .map_err(|e| format!("Couldn't import the peko: reload failed: {e}"))?;
+        if let Err(e) = error_envelope_to_err(&reload, "Couldn't reload your pekos") {
+            return Err(format!(
+                "imported '{imported_name}' but failed to load it into the running daemon: {e}"
+            ));
+        }
+    }
+    Ok(value)
+}
+
+/// Preview a `.peko` package before importing it
+/// (`principal_import_preview`). Returns the
+/// `principal_import_previewed` envelope; its `manifest_checksum` must
+/// be passed to `principal_import`.
+#[tauri::command]
+pub async fn principal_import_preview(
+    file_path: String,
+    name: Option<String>,
+    rotate_keys: Option<bool>,
+    runtime_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    reject_if_remote(runtime_id)?;
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    let value = client
+        .principal_import_preview(&file_path, name.as_deref(), rotate_keys.unwrap_or(false))
+        .await
+        .map_err(|e| format!("Couldn't read the .peko file: {e}"))?;
+    error_envelope_to_err(&value, "Couldn't read the .peko file")?;
+    Ok(value)
+}
+
+/// Load (or confirm already loaded) an on-disk principal into the
+/// daemon's in-memory manager. Mirror of `RequestPacket::PrincipalReload`
+/// — idempotent. The frontend calls this after local create/import
+/// flows that materialize a workspace out of band. Returns the
+/// `principal_loaded { name, loaded }` envelope.
+#[tauri::command]
+pub async fn principal_reload(
+    name: String,
+    runtime_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    reject_if_remote(runtime_id)?;
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    let value = client
+        .principal_reload(&name)
+        .await
+        .map_err(|e| format!("Couldn't reload your pekos: {e}"))?;
+    error_envelope_to_err(&value, "Couldn't reload your pekos")?;
+    Ok(value)
+}
+
+/// Map a runtime `{type: "error", message}` envelope to `Err` so
+/// callers get Tauri-idiomatic failures instead of having to inspect
+/// the envelope themselves. `Ok(())` for any other envelope. `op` is
+/// the sentence the user sees before the runtime's reason, such as
+/// "Couldn't export the peko".
+fn error_envelope_to_err(value: &serde_json::Value, op: &str) -> Result<(), String> {
+    if value.get("type").and_then(|v| v.as_str()) == Some("error") {
+        let message = value
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown runtime error");
+        return Err(format!("{op}: {message}"));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    /// Current runtimes send `owner` as an `ActorRef` object and carry
+    /// `local_id` and `avatar`; older ones sent `owner` as text.
+    #[test]
+    fn summary_from_wire_reads_current_and_older_shapes() {
+        let current = serde_json::json!({
+            "local_id": "prin_a", "name": "alice", "avatar": "🦊",
+            "owner": {"kind": "user", "id": "local"}, "exposure": "private",
+            "hub_id": "7f700f07-e081-4dd8-b0db-ae41c7efbaeb",
+        });
+        let p = summary_from_wire(current.as_object().unwrap(), "local", "");
+        assert_eq!(p.local_id, "prin_a");
+        assert_eq!(
+            p.hub_id.as_deref(),
+            Some("7f700f07-e081-4dd8-b0db-ae41c7efbaeb")
+        );
+        assert_eq!(p.avatar.as_deref(), Some("🦊"));
+        assert_eq!(p.owner, "user:local");
+        assert_eq!(p.exposure, "private");
+
+        let older = serde_json::json!({"name": "bob", "owner": "user:alice"});
+        let p = summary_from_wire(older.as_object().unwrap(), "local", "");
+        assert_eq!(p.owner, "user:alice");
+        assert_eq!(p.local_id, "");
+        assert!(p.hub_id.is_none(), "not on PekoHub, or an older runtime");
+        assert!(p.avatar.is_none());
+        assert_eq!(
+            p.status, "online",
+            "no stored status: the live engine is up"
+        );
+    }
+
+    use super::*;
+
+    // PR #3: the local-only gate rejects any non-`"local"` runtime_id
+    // before the IPC client is instantiated. Pin the contract so a
+    // future refactor that loosens the check catches in CI.
+    #[test]
+    fn test_reject_if_remote_accepts_local() {
+        assert_eq!(reject_if_remote(None).unwrap(), "local");
+        assert_eq!(
+            reject_if_remote(Some("local".to_string())).unwrap(),
+            "local"
+        );
+    }
+
+    #[test]
+    fn test_reject_if_remote_rejects_remote_runtime_id() {
+        let err = reject_if_remote(Some("hub:pekohub.org".to_string()))
+            .expect_err("remote runtime_id must be rejected");
+        assert!(
+            err.contains("local-only"),
+            "error should clearly say local-only, got: {err}"
+        );
+        assert!(
+            err.contains("hub:pekohub.org"),
+            "error should echo the supplied runtime_id, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_project_principal_get_envelope_hit() {
+        let envelope = serde_json::json!({
+            "type": "principal_get",
+            "request_id": 1,
+            "principal": {
+                "name": "helper",
+                "did": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2mKLpbHYkdWfyyEbAm",
+                "owner": "user:alice",
+                "description": "A test principal",
+                "exposure": "Private",
+                "status": "online",
+                "capabilities": {},
+                "agent_prompt_count": 2,
+                "workspace_path": "/tmp/helper",
+                "boot_state": "organized",
+            }
+        });
+        let projected = project_principal_get_envelope(&envelope, "local");
+        let p = projected.expect("hit should project to Some");
+        assert_eq!(p.name, "helper");
+        assert_eq!(p.exposure, "Private");
+        assert_eq!(p.status, "online");
+        assert_eq!(p.description.as_deref(), Some("A test principal"));
+        assert_eq!(p.owner, "user:alice");
+        assert_eq!(p.runtime_id, "local");
+        assert_eq!(p.boot_state.as_deref(), Some("organized"));
+    }
+
+    #[test]
+    fn test_project_principal_get_envelope_miss_returns_none() {
+        let envelope = serde_json::json!({
+            "type": "principal_get",
+            "request_id": 1,
+            "principal": null,
+        });
+        assert!(project_principal_get_envelope(&envelope, "local").is_none());
+    }
+
+    #[test]
+    fn test_project_principal_get_envelope_minimal_applies_defaults() {
+        // Runtime returns a minimal summary when fields aren't set; the
+        // projection must fill in the same defaults as `principal_list`.
+        let envelope = serde_json::json!({
+            "type": "principal_get",
+            "request_id": 1,
+            "principal": { "name": "minimal" },
+        });
+        let p = project_principal_get_envelope(&envelope, "local").unwrap();
+        assert_eq!(p.name, "minimal");
+        assert_eq!(p.exposure, "unexposed");
+        assert_eq!(p.status, "online");
+        assert_eq!(p.description, None);
+        assert_eq!(p.owner, "");
+        assert_eq!(p.runtime_id, "local");
+        // Current runtimes omit `boot_state` from the wire summary —
+        // the projection must tolerate that (None, not a parse error).
+        assert_eq!(p.boot_state, None);
+    }
+
+    #[test]
+    fn test_project_principal_create_envelope_hit() {
+        let envelope = serde_json::json!({
+            "type": "principal_created",
+            "request_id": 1,
+            "principal": {
+                "name": "alice",
+                "owner": "user:desktop",
+                "description": "personal assistant",
+                "exposure": "Private",
+                "status": "online",
+            }
+        });
+        let p = project_principal_create_envelope(&envelope, "alice").unwrap();
+        assert_eq!(p.name, "alice");
+        assert_eq!(p.exposure, "Private");
+        assert_eq!(p.status, "online");
+        assert_eq!(p.description.as_deref(), Some("personal assistant"));
+        assert_eq!(p.owner, "user:desktop");
+        assert_eq!(p.runtime_id, "local");
+    }
+
+    #[test]
+    fn test_project_principal_create_envelope_missing_field_returns_error() {
+        // No `principal` object — projection should fail loudly so the
+        // caller surfaces the error in the form rather than silently
+        // creating a row with empty fields.
+        let envelope = serde_json::json!({
+            "type": "principal_created",
+            "request_id": 1,
+        });
+        assert!(project_principal_create_envelope(&envelope, "alice").is_err());
+    }
+
+    /// Runtime returns a `ResponsePacket::Error` envelope when the
+    /// create fails (e.g. unknown model id after PR #204, disk full,
+    /// permission denied). Surface its `message` so the React form
+    /// shows the real reason instead of the misleading "missing
+    /// `principal`" sentinel.
+    #[test]
+    fn test_project_principal_create_envelope_runtime_error_surfaces_message() {
+        let envelope = serde_json::json!({
+            "type": "error",
+            "request_id": 1,
+            "message": "model id 'gpt-x' is not configured"
+        });
+        let err = project_principal_create_envelope(&envelope, "alice")
+            .expect_err("error envelope should fail projection");
+        assert!(
+            err.contains("model id 'gpt-x' is not configured"),
+            "runtime error message must be surfaced verbatim, got: {err}"
+        );
+        // And it's clearly framed as a runtime failure, not a
+        // wire-shape complaint.
+        assert!(
+            err.starts_with("Couldn't create the peko"),
+            "error must be prefixed to distinguish from protocol errors, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_principal_name_accepts_valid_names() {
+        for name in ["alice", "helper-1", "test_principal", "A1B2C3"] {
+            assert!(
+                validate_principal_name(name).is_ok(),
+                "{name:?} should validate"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_principal_name_rejects_bad_names() {
+        for name in [
+            "",
+            "-leading-hyphen",
+            "trailing-hyphen-",
+            "has/slash",
+            "has\\backslash",
+            "has space",
+            "has.dot",
+            ".",        // single dot
+            "..",       // double dot (path-traversal defense)
+            "foo..bar", // embedded ".." segment
+            "..foo",
+            "foo..",
+            &"a".repeat(65),
+        ] {
+            assert!(
+                validate_principal_name(name).is_err(),
+                "{name:?} should reject"
+            );
+        }
+    }
+
+    /// The runtime's three registration states pass desktop-side
+    /// validation; hub-only modes (`unlisted`, `unexposed`) do not.
+    #[tokio::test]
+    async fn test_principal_register_accepts_runtime_modes() {
+        for mode in REGISTRATION_MODES {
+            // Validation passes, then the call fails at IPC-connect
+            // time in the test env (no supervisor).
+            let err = principal_register("x".to_string(), mode.to_string(), None)
+                .await
+                .expect_err("no daemon in test env");
+            assert!(
+                !err.contains("invalid registration"),
+                "{mode:?} must pass validation, got: {err}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_principal_register_rejects_hub_only_modes() {
+        for mode in ["unlisted", "unexposed", "friends-only"] {
+            let err = principal_register("x".to_string(), mode.to_string(), None)
+                .await
+                .expect_err("non-runtime mode must be rejected");
+            assert!(err.contains("invalid registration"), "got: {err}");
+            assert!(err.contains("local_only"), "error should list modes: {err}");
+        }
+    }
+
+    /// The hub's 409 conflict copy (ADR-056 D7: at most one publicly
+    /// exposed instance per principal DID) must be recognized so the
+    /// command can prefix it with `[exposure_conflict]` for the
+    /// frontend's specific dialog.
+    #[test]
+    fn test_is_exposure_conflict_matches_hub_copy() {
+        assert!(is_exposure_conflict(
+            "Another instance ('helper', id inst_42) is already publicly exposed for this principal DID"
+        ));
+        assert!(is_exposure_conflict(
+            "hub returned 409: {\"error\":\"...\",\"conflictingInstanceId\":\"inst_42\"}"
+        ));
+        assert!(!is_exposure_conflict("Principal 'x' not found"));
+        assert!(!is_exposure_conflict("[permission_denied] nope"));
+    }
+
+    /// `error_envelope_to_err` maps runtime error envelopes to
+    /// Tauri-idiomatic `Err` and passes success envelopes through.
+    #[test]
+    fn test_error_envelope_to_err() {
+        let err_env = serde_json::json!({"type": "error", "message": "boom"});
+        let err = error_envelope_to_err(&err_env, "Couldn't export the peko").unwrap_err();
+        assert_eq!(err, "Couldn't export the peko: boom");
+
+        let ok_env =
+            serde_json::json!({"type": "principal_exported", "output_path": "/tmp/a.peko"});
+        assert!(error_envelope_to_err(&ok_env, "Couldn't export the peko").is_ok());
+    }
+
+    /// A seed over 64 KB is refused before anything reaches the daemon.
+    #[tokio::test]
+    async fn test_principal_create_refuses_an_oversized_seed() {
+        let err = principal_create(
+            "helper".to_string(),
+            None,
+            "gpt-4o".to_string(),
+            Some("x".repeat(65 * 1024)),
+            None,
+            None,
+        )
+        .await
+        .expect_err("an oversized seed is refused");
+        assert!(err.contains("64 KB"), "got: {err}");
+    }
+
+    /// `None` seed keeps the pre-existing path: validation still runs
+    /// (and in the test env the call then fails at IPC-connect time,
+    /// not at the seed gate).
+    #[tokio::test]
+    async fn test_principal_create_without_seed_passes_seed_gate() {
+        let err = principal_create(
+            "bad name".to_string(),
+            None,
+            "gpt-4o".to_string(),
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect_err("invalid name must fail validation");
+        assert!(err.contains("invalid peko name"), "got: {err}");
+    }
+
+    /// What a seed brings is read for the person to accept: its setup
+    /// steps, one line each, and its files, with the text of the ones
+    /// that name something to run.
+    #[test]
+    fn test_seed_contents_are_read_from_the_seed() {
+        let seed = "name = \"ada\"\n[intent]\ngoals = [\"Help\"]\n\
+                    setup = [\"  Install\\n ripgrep \", \"\", \"Add the notes skill\"]\n\
+                    [files]\n\"roles/researcher.md\" = \"Cite sources.\"\n\
+                    \"mcp/echo/server.json\" = \"{ \\\"command\\\": \\\"echo\\\" }\\n\"\n";
+        let contents = seed_contents(seed.to_string()).unwrap();
+        assert_eq!(contents.steps, ["Install ripgrep", "Add the notes skill"]);
+        assert_eq!(
+            contents.files,
+            [
+                SeedFile {
+                    path: "mcp/echo/server.json".into(),
+                    size: 22,
+                    content: Some("{ \"command\": \"echo\" }".into()),
+                },
+                SeedFile {
+                    path: "roles/researcher.md".into(),
+                    size: 13,
+                    content: None,
+                },
+            ]
+        );
+        assert_eq!(
+            seed_contents("name = \"ada\"\n".to_string()).unwrap(),
+            SeedContents::default()
+        );
+        assert!(seed_contents("not toml [".to_string()).is_err());
+        assert!(seed_contents("x".repeat(65 * 1024))
+            .unwrap_err()
+            .contains("64 KB"));
+    }
+
+    /// The setup status the app shows, from the engine's reply; an
+    /// engine too old to answer gives none.
+    #[test]
+    fn test_project_setup_status() {
+        let status = project_setup_status(&serde_json::json!({
+            "type": "principal_setup_status",
+            "request_id": 1,
+            "name": "ada",
+            "boot_state": "genesis_pending",
+            "running": true,
+            "setup": ["Install ripgrep"],
+            "steps": [
+                {"call_id": "c1", "tool": "Fetch", "line": "Fetch: https://example.com", "outcome": "ok"},
+                {"call_id": "c2", "tool": "Bash", "line": "Bash: brew install ripgrep"}
+            ]
+        }))
+        .unwrap();
+        assert!(status.setting_up && status.running);
+        assert_eq!(status.setup, ["Install ripgrep"]);
+        assert_eq!(status.steps.len(), 2);
+        assert_eq!(status.steps[0].outcome.as_deref(), Some("ok"));
+        assert_eq!(status.steps[1].outcome, None, "still running");
+        assert_eq!(status.report, None);
+
+        let done = project_setup_status(&serde_json::json!({
+            "type": "principal_setup_status",
+            "boot_state": "organized",
+            "running": false,
+            "setup": [],
+            "steps": [],
+            "report": "- ripgrep: ready"
+        }))
+        .unwrap();
+        assert!(!done.setting_up && !done.running);
+        assert_eq!(done.report.as_deref(), Some("- ripgrep: ready"));
+        // An engine that predates per-step results gives none.
+        assert!(done.results.is_empty() && done.setup_state.is_empty());
+
+        let stepwise = project_setup_status(&serde_json::json!({
+            "type": "principal_setup_status",
+            "boot_state": "organized",
+            "running": false,
+            "setup": ["Install ripgrep", "Add Playwright"],
+            "steps": [],
+            "setup_state": "done",
+            "results": [
+                {"step": "Install ripgrep", "status": "ready", "note": "rg --version"},
+                {"step": "Add Playwright", "status": "failed", "note": "  "}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(stepwise.setup_state, "done");
+        assert_eq!(stepwise.results[0].note.as_deref(), Some("rg --version"));
+        assert_eq!(stepwise.results[1].status, "failed");
+        assert_eq!(stepwise.results[1].note, None, "a blank note is none");
+        // An engine that predates them says nothing of a stuck first turn.
+        assert_eq!(stepwise.first_turn_error, None);
+        assert_eq!(stepwise.missing_model, None);
+
+        // A first turn that can't go on: why, and the model it lacks.
+        let stuck = project_setup_status(&serde_json::json!({
+            "type": "principal_setup_status",
+            "boot_state": "genesis_pending",
+            "running": false,
+            "setup": [],
+            "steps": [],
+            "first_turn_error": "no model configured for this call",
+            "missing_model": "mimo-v2.6-flash"
+        }))
+        .unwrap();
+        assert_eq!(
+            stuck.first_turn_error.as_deref(),
+            Some("no model configured for this call")
+        );
+        assert_eq!(stuck.missing_model.as_deref(), Some("mimo-v2.6-flash"));
+        let unset = project_setup_status(&serde_json::json!({
+            "type": "principal_setup_status",
+            "boot_state": "genesis_pending",
+            "missing_model": ""
+        }))
+        .unwrap();
+        assert_eq!(unset.missing_model.as_deref(), Some(""), "set to no model");
+
+        // Starting setup again: started, refused with a reason, or an error.
+        assert!(setup_run_outcome(&serde_json::json!({"type": "done", "success": true})).is_ok());
+        assert_eq!(
+            setup_run_outcome(&serde_json::json!({
+                "type": "done", "success": false, "error": "a setup turn is already scheduled"
+            }))
+            .unwrap_err(),
+            "a setup turn is already scheduled"
+        );
+        assert_eq!(
+            setup_run_outcome(&serde_json::json!({"type": "error", "message": "[forbidden] no"}))
+                .unwrap_err(),
+            "[forbidden] no"
+        );
+
+        assert!(project_setup_status(&serde_json::json!({
+            "type": "error",
+            "message": "unknown variant `principal_setup_status`"
+        }))
+        .is_none());
+    }
+}
+
+/// A runtime reply's `[code] message` error, or `None`.
+fn runtime_error(value: &serde_json::Value) -> Option<String> {
+    (value.get("type").and_then(|t| t.as_str()) == Some("error")).then(|| {
+        value
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("runtime error")
+            .to_string()
+    })
+}
+
+/// The approval requests waiting for a peko's owner (ADR-078), oldest
+/// first: `[{ id, actor, actor_name?, trust, summary, reason, created_at,
+/// expires_at }]`, snake_case, passed through. A peko on another of your
+/// computers (`runtime_id = hub:…`) is asked through its host (runtime
+/// ADR-099).
+#[tauri::command]
+pub async fn principal_approvals(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    runtime_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    if let crate::state::ResolvedRuntime::HubRemote(client) = state
+        .resolve_peko_runtime(runtime_id.as_deref(), &name)
+        .await
+    {
+        return client.approvals().await;
+    }
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    let value = client
+        .approval_list(&name)
+        .await
+        .map_err(|e| format!("approval_list failed: {e}"))?;
+    if let Some(err) = runtime_error(&value) {
+        return Err(err);
+    }
+    Ok(value
+        .get("approvals")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([])))
+}
+
+/// Approve (`always`: and remember it) or deny a waiting request.
+/// Resolves to what the runtime did ("Approved apr_… Running it …"). For
+/// a peko on another of your computers, its host decides (runtime
+/// ADR-099).
+#[tauri::command]
+pub async fn principal_decide_approval(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    id: String,
+    approve: bool,
+    always: bool,
+    runtime_id: Option<String>,
+) -> Result<String, String> {
+    if let crate::state::ResolvedRuntime::HubRemote(client) = state
+        .resolve_peko_runtime(runtime_id.as_deref(), &name)
+        .await
+    {
+        return client.decide_approval(&id, approve, always).await;
+    }
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    let value = client
+        .approval_decide(&name, &id, approve, always)
+        .await
+        .map_err(|e| format!("approval_decide failed: {e}"))?;
+    if let Some(err) = runtime_error(&value) {
+        return Err(err);
+    }
+    Ok(value
+        .get("message")
+        .and_then(|m| m.as_str())
+        .unwrap_or_default()
+        .to_string())
+}
+
+/// Recent turns in your DM with a peko on this computer that changed
+/// files (runtime ADR-117), newest first: `[{ turn, updated_at, files:
+/// [{ path, change }], shell, undone_at? }]`, snake_case, passed through.
+/// A peko on another computer lists none.
+#[tauri::command]
+pub async fn principal_turn_changes(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    runtime_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    if let crate::state::ResolvedRuntime::HubRemote(_) = state
+        .resolve_peko_runtime(runtime_id.as_deref(), &name)
+        .await
+    {
+        return Ok(serde_json::json!([]));
+    }
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    let value = client
+        .turn_changes(&name, 5)
+        .await
+        .map_err(|e| format!("turn_changes failed: {e}"))?;
+    if let Some(err) = runtime_error(&value) {
+        return Err(err);
+    }
+    Ok(value
+        .get("turns")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([])))
+}
+
+/// Undo one turn's file changes: `{ restored: [path], skipped: [{ path,
+/// why }] }`.
+#[tauri::command]
+pub async fn principal_undo_turn(name: String, turn: String) -> Result<serde_json::Value, String> {
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    let value = client
+        .turn_undo(&name, &turn)
+        .await
+        .map_err(|e| format!("turn_undo failed: {e}"))?;
+    if let Some(err) = runtime_error(&value) {
+        return Err(err);
+    }
+    Ok(serde_json::json!({
+        "restored": value.get("restored").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "skipped": value.get("skipped").cloned().unwrap_or_else(|| serde_json::json!([])),
+    }))
+}
+
+/// What the engine answered a browser request with, with a `frame`'s
+/// picture read from the file the engine named and carried as base64
+/// (`data`). The file is the engine's own, on this computer.
+fn browser_body(value: serde_json::Value) -> Result<serde_json::Value, String> {
+    use base64::Engine as _;
+    if let Some(err) = runtime_error(&value) {
+        return Err(err);
+    }
+    let mut body = value
+        .get("body")
+        .cloned()
+        .ok_or_else(|| "the engine gave no browser answer".to_string())?;
+    let path = body
+        .get("path")
+        .and_then(|p| p.as_str())
+        .map(std::path::PathBuf::from);
+    if let (Some(path), Some(fields)) = (path, body.as_object_mut()) {
+        fields.remove("path");
+        // Replaced by a newer picture between the answer and this read
+        // is fine; gone means the watch ended.
+        match std::fs::read(&path) {
+            Ok(bytes) => {
+                fields.insert(
+                    "data".into(),
+                    serde_json::json!(base64::engine::general_purpose::STANDARD.encode(bytes)),
+                );
+            }
+            Err(_) => {
+                fields.insert("seq".into(), serde_json::Value::Null);
+            }
+        }
+    }
+    Ok(body)
+}
+
+/// One thing you ask of your peko's browser (runtime ADR-119): `state`,
+/// `frame`, `control`, `input`, `open`. A peko on another of your
+/// computers (`runtime_id = hub:…`) is asked through its host. A `frame`
+/// resolves to `{ seq, tab, width, height, data, controller }` with the
+/// picture as base64 JPEG, or `{ seq: null }` when nothing changed.
+#[tauri::command]
+pub async fn principal_browser(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    runtime_id: Option<String>,
+    verb: String,
+    args: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    if !matches!(
+        verb.as_str(),
+        "state" | "frame" | "control" | "input" | "open"
+    ) {
+        return Err(format!("unknown browser request: {verb}"));
+    }
+    let args = args.unwrap_or_else(|| serde_json::json!({}));
+    if let crate::state::ResolvedRuntime::HubRemote(client) = state
+        .resolve_peko_runtime(runtime_id.as_deref(), &name)
+        .await
+    {
+        return browser_body(client.browser(&verb, &args).await?);
+    }
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    browser_body(
+        client
+            .browser(&name, &verb, &args)
+            .await
+            .map_err(|e| format!("browser failed: {e}"))?,
+    )
+}
+
+/// The secret requests waiting for you, the owner of a peko on this
+/// computer (runtime ADR-116), oldest first: `[{ id, secret, kind, why,
+/// created_at, expires_at }]`, snake_case, passed through. Only a peko on
+/// this computer: a secret is never sent through PekoHub, so a peko on
+/// another of your computers lists none here.
+#[tauri::command]
+pub async fn principal_secret_requests(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    runtime_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    if let crate::state::ResolvedRuntime::HubRemote(_) = state
+        .resolve_peko_runtime(runtime_id.as_deref(), &name)
+        .await
+    {
+        return Ok(serde_json::json!([]));
+    }
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    let value = client
+        .secret_list(&name)
+        .await
+        .map_err(|e| format!("secret_list failed: {e}"))?;
+    if let Some(err) = runtime_error(&value) {
+        return Err(err);
+    }
+    Ok(value
+        .get("waiting")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([])))
+}
+
+/// Give a waiting secret request its value (`decline` instead declines
+/// it). Resolves to what the engine did ("Saved GITHUB_TOKEN for …").
+#[tauri::command]
+pub async fn principal_answer_secret(
+    name: String,
+    id: String,
+    value: Option<String>,
+    decline: bool,
+) -> Result<String, String> {
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    let value = match (decline, value) {
+        (true, _) => client.secret_decline(&name, &id).await,
+        (false, Some(value)) if !value.trim().is_empty() => {
+            client.secret_provide(&name, &id, &value).await
+        }
+        (false, _) => return Err("Enter the secret first.".to_string()),
+    }
+    .map_err(|e| format!("secret answer failed: {e}"))?;
+    if let Some(err) = runtime_error(&value) {
+        return Err(err);
+    }
+    Ok(value
+        .get("message")
+        .and_then(|m| m.as_str())
+        .unwrap_or_default()
+        .to_string())
+}
+
+/// A peko's usage this cycle and its limits: the runtime's
+/// `quota_status` (`{ state, config }`, snake_case, passed through).
+fn quota_envelope(value: serde_json::Value) -> Result<serde_json::Value, String> {
+    match value.get("type").and_then(|t| t.as_str()) {
+        Some("quota_status") => Ok(serde_json::json!({
+            "state": value.get("state").cloned().unwrap_or_default(),
+            "config": value.get("config").cloned().unwrap_or_default(),
+        })),
+        Some("error") => Err(value
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("runtime error")
+            .to_string()),
+        _ => Err(format!("unexpected quota response: {value}")),
+    }
+}
+
+/// Usage this cycle (tokens, requests, spend) and limits of a local peko.
+#[tauri::command]
+pub async fn principal_usage(name: String) -> Result<serde_json::Value, String> {
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    let value = client
+        .quota_get(&name)
+        .await
+        .map_err(|e| format!("quota_get failed: {e}"))?;
+    quota_envelope(value)
+}
+
+/// Replace a local peko's limits (budget per cycle, the cycle, token
+/// and request limits). Returns the usage and limits now in force.
+#[tauri::command]
+pub async fn principal_set_limits(
+    name: String,
+    config: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    let value = client
+        .quota_set(&name, config)
+        .await
+        .map_err(|e| format!("quota_set failed: {e}"))?;
+    quota_envelope(value)
+}
+
+/// The sharing screen's view of a `principal_access` answer, or the
+/// runtime's refusal.
+fn access_envelope(value: serde_json::Value) -> Result<serde_json::Value, String> {
+    match value.get("type").and_then(|t| t.as_str()) {
+        Some("principal_access") => {
+            let field = |k: &str| value.get(k).cloned().unwrap_or_default();
+            Ok(serde_json::json!({
+                "visitors": field("visitors"),
+                "people": field("people"),
+                "known": field("known"),
+                "servers": field("servers"),
+                "workspace": field("workspace"),
+                "problem": field("problem"),
+            }))
+        }
+        Some("error") => Err(value
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("runtime error")
+            .to_string()),
+        _ => Err(format!("unexpected access response: {value}")),
+    }
+}
+
+/// What a local peko's visitors reach (ADR-113): the rules for everyone
+/// and for each person, its services, and the people it has talked with.
+#[tauri::command]
+pub async fn principal_access(name: String) -> Result<serde_json::Value, String> {
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    let value = client
+        .principal_access_get(&name)
+        .await
+        .map_err(|e| format!("principal_access_get failed: {e}"))?;
+    access_envelope(value)
+}
+
+/// Replace what a local peko's visitors reach. Returns the rules now in
+/// force, or why the change was refused.
+#[tauri::command]
+pub async fn principal_set_access(
+    name: String,
+    visitors: serde_json::Value,
+    people: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    let value = client
+        .principal_access_set(&name, visitors, people)
+        .await
+        .map_err(|e| format!("principal_access_set failed: {e}"))?;
+    access_envelope(value)
+}
+
+#[cfg(test)]
+mod access_tests {
+    use super::access_envelope;
+
+    #[test]
+    fn principal_access_passes_the_rules_through() {
+        let value = serde_json::json!({
+            "type": "principal_access",
+            "request_id": 1,
+            "name": "desk",
+            "visitors": {"tools": ["Read"], "read": ["public/"], "ask_owner": false},
+            "people": [{"address": "visitor:local:+1", "rule": {"read": []}}],
+            "known": [],
+            "servers": ["orders"],
+            "workspace": "/w/desk",
+        });
+        let out = access_envelope(value).unwrap();
+        assert_eq!(out["visitors"]["read"][0], "public/");
+        assert_eq!(out["people"][0]["address"], "visitor:local:+1");
+        assert_eq!(out["servers"][0], "orders");
+        assert_eq!(out["workspace"], "/w/desk");
+        assert!(out["problem"].is_null());
+        let err = access_envelope(serde_json::json!({"type": "error", "message": "nope"}));
+        assert_eq!(err.unwrap_err(), "nope");
+    }
+}
+
+#[cfg(test)]
+mod quota_tests {
+    use super::quota_envelope;
+
+    #[test]
+    fn quota_status_passes_state_and_config_through() {
+        let value = serde_json::json!({
+            "type": "quota_status",
+            "request_id": 1,
+            "state": {"cost_usd": 0.04, "request_count": 2},
+            "config": {"cycle": "daily", "budget_per_cycle": 0.06},
+        });
+        let out = quota_envelope(value).unwrap();
+        assert_eq!(out["state"]["request_count"], 2);
+        assert_eq!(out["config"]["budget_per_cycle"], 0.06);
+        let err = quota_envelope(
+            serde_json::json!({"type": "error", "message": "principal not found: x"}),
+        );
+        assert_eq!(err.unwrap_err(), "principal not found: x");
+    }
+}

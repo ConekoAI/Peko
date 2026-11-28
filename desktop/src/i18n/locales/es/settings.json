@@ -1,0 +1,184 @@
+{
+  "title": "Ajustes",
+  "sectionsLabel": "Secciones de ajustes",
+  "sections": {
+    "general": "General",
+    "models": "Modelos",
+    "advanced": "Avanzado",
+    "about": "Acerca de"
+  },
+  "yourName": {
+    "title": "Tu nombre",
+    "hintSignedIn": "Cómo te llaman las personas y los pekos. Es tu nombre en PekoHub, así que tus otros ordenadores lo siguen; tu identificador @{{handle}} no cambia.",
+    "hintSignedOut": "Cómo te llaman tus pekos. Se queda en este ordenador hasta que inicies sesión en PekoHub.",
+    "placeholder": "Tu nombre",
+    "saving": "Guardando…"
+  },
+  "appearance": {
+    "title": "Apariencia",
+    "hint": "El tema oscuro coincide con PekoHub.",
+    "theme": "Tema",
+    "light": "Claro",
+    "dark": "Oscuro",
+    "system": "Sistema"
+  },
+  "keys": {
+    "title": "Claves guardadas",
+    "hint": "Todos los secretos del almacén del motor. Las claves de los modelos se gestionan en Modelos; esta lista es para las claves que usan otras herramientas.",
+    "add": "Añadir una clave",
+    "namespace": "Espacio de nombres",
+    "namePlaceholder": "p. ej. github",
+    "kind": "Tipo",
+    "kinds": {
+      "api_key": "Clave de API",
+      "bearer_token": "Token Bearer",
+      "oauth_token": "Token OAuth",
+      "basic_auth": "Autenticación básica",
+      "private_key": "Clave privada",
+      "generic_secret": "Otro secreto"
+    },
+    "secret": "Secreto",
+    "save": "Guardar clave",
+    "loading": "Cargando credenciales…",
+    "empty": "No hay claves guardadas",
+    "emptyHint": "Las claves que añadas para modelos o herramientas aparecerán aquí.",
+    "hide": "Ocultar el secreto",
+    "reveal": "Mostrar el secreto"
+  },
+  "models": {
+    "intro": "Los endpoints con los que piensan tus pekos. Cada modelo guarda su propia clave de API; cámbiala en Editar.",
+    "add": "Añadir modelo",
+    "usePlan": "Usar plan de ChatGPT",
+    "loading": "Cargando modelos…",
+    "empty": "Todavía no hay modelos configurados",
+    "emptyHint": "Añade un endpoint y su clave de API para empezar a hablar con tus pekos.",
+    "addFirst": "Añade tu primer modelo",
+    "unavailable": "Catálogo de modelos no disponible",
+    "unavailableHint": "No se pudo cargar el catálogo de modelos. Comprueba que el motor está en ejecución y recarga esta pestaña."
+  },
+  "folder": {
+    "title": "Carpeta de Peko",
+    "hint": "Donde el motor guarda tus pekos, modelos y claves.",
+    "unknown": "Desconocida",
+    "show": "Mostrar carpeta"
+  },
+  "about": {
+    "appVersion": "Versión de la app",
+    "engineVersion": "Versión del motor",
+    "notRunning": "No está en ejecución",
+    "help": "Ayuda",
+    "gettingStarted": "Primeros pasos",
+    "report": "Informar de un problema",
+    "onboarding": "Configuración inicial",
+    "onboardingHint": "Repite los pasos para conectar un modelo y crear un peko.",
+    "replay": "Repetir la configuración inicial",
+    "updates": "Actualizaciones",
+    "checkUpdates": "Buscar actualizaciones",
+    "checking": "Comprobando…",
+    "upToDate": "Tienes la versión más reciente.",
+    "updateAvailable": "La versión {{version}} está disponible.",
+    "checkFailed": "No se pudo buscar actualizaciones. Comprueba tu conexión e inténtalo de nuevo."
+  },
+  "language": {
+    "title": "Idioma",
+    "hint": "El idioma en el que se muestra Peko Desktop.",
+    "system": "Predeterminado del sistema"
+  },
+  "devices": {
+    "title": "Dispositivos",
+    "hint": "Tus ordenadores y teléfonos de tu cuenta de PekoHub. Un dispositivo de esta lista lee y actúa como tú; nada se une sin un código mostrado en un dispositivo que ya esté en ella.",
+    "notSignedIn": "Inicia sesión en PekoHub primero. Tus dispositivos se encuentran a través de PekoHub.",
+    "notOnList": "Este ordenador aún no está en los dispositivos de tu cuenta.",
+    "joinHow": "En un ordenador o teléfono que ya esté en tu cuenta, elige Añadir un dispositivo y escribe aquí el código que muestra.",
+    "codeLabel": "Código",
+    "join": "Unirse",
+    "joining": "Uniéndose…",
+    "computer": "Ordenador",
+    "phone": "Teléfono",
+    "thisComputer": "este ordenador",
+    "addedAt": "añadido {{when}}",
+    "lastSeen": "usado {{when}}",
+    "remove": "Quitar",
+    "removeConfirm": "¿Quitarlo? Ya no podrá actuar como tú.",
+    "removeThisConfirm": "¿Quitar este ordenador? Deja de actuar como tú hasta que se una de nuevo.",
+    "add": "Añadir un dispositivo",
+    "scanOrType": "Escanéalo con Peko en tu teléfono o escribe el código en tu otro ordenador.",
+    "warning": "Quien lo use actúa como tú. Muéstralo solo a tu propio dispositivo.",
+    "expires": "Funciona una vez, hasta las {{time}}.",
+    "expired": "Ese código ha caducado.",
+    "codeAlt": "Código para añadir un dispositivo",
+    "joined": "{{name}} se unió a tu cuenta.",
+    "waiting": "Esperando tu decisión",
+    "devicesReset": "PekoHub dice que alguien con quien hablas configuró de nuevo todos sus dispositivos. Apruébalo solo si te lo dijo; hasta entonces no se envía nada a sus dispositivos nuevos.",
+    "approve": "Aprobar",
+    "deny": "Denegar",
+    "ownerChange": "PekoHub dice que {{peko}} ahora pertenece a otra cuenta. ¿Entregarlo? Si no lo cediste, deniégalo: seguirá siendo tuyo.",
+    "keyChange": "PekoHub dice que un peko con el que hablas tiene una identidad nueva. Un peko conserva su identidad cuando se muda a otro ordenador, así que aprueba solo si su dueño te dijo que lo configuró de nuevo. Hasta que decidas, no le llega nada de lo que envíes.",
+    "codePlaceholder": "ABCD-EFGH-JKMN",
+    "accountCode": "Código de tu cuenta",
+    "accountCodeHint": "Quien quiera asegurarse de que te llega puede pedirte que lo leas. Solo cambia si vuelves a configurar todos tus dispositivos.",
+    "itsCode": "Su código",
+    "untilNow": "Hasta ahora",
+    "compare": "Pide a su dueño que te lea el código de su pantalla. Aprueba solo si coincide.",
+    "path": {
+      "direct": "Directo",
+      "relay": "Por PekoHub",
+      "waiting": "Esperando la misma red",
+      "offline": "Sin conexión"
+    }
+  },
+  "privacy": {
+    "title": "Privacidad",
+    "noticeTitle": "Qué nos envía Peko",
+    "noticeBody": "Peko puede enviarnos dos cosas para ayudarnos a corregirlo y mejorarlo. Ninguna incluye tus mensajes, nombres, archivos ni claves.",
+    "crash": {
+      "title": "Enviar informes de fallos",
+      "hint": "Cuando Peko deja de funcionar: el error, la versión de la app y tu sistema operativo."
+    },
+    "usage": {
+      "title": "Enviar recuentos de uso",
+      "hint": "Qué funciones se usan, solo como recuentos. Nunca lo que escribís tú o tus pekos."
+    },
+    "changeLater": "Puedes cambiarlo cuando quieras en Ajustes.",
+    "continue": "Continuar"
+  },
+  "network": {
+    "title": "Red",
+    "hint": "Cómo este ordenador llega a tus otros ordenadores y a las personas con las que hablas. Los mensajes van sellados en cualquier caso; una conexión directa además impide que PekoHub vea quién habla con quién.",
+    "how": "Cómo se conecta este ordenador",
+    "automatic": {
+      "label": "Automático",
+      "hint": "Directamente cuando el otro ordenador está en la misma red; por PekoHub si no."
+    },
+    "pekohub": {
+      "label": "Solo PekoHub",
+      "hint": "Todo pasa por PekoHub."
+    },
+    "direct": {
+      "label": "Solo directo",
+      "hint": "Nunca por PekoHub. Los mensajes esperan hasta que el otro ordenador esté en la misma red."
+    },
+    "listenError": "Este ordenador no puede aceptar conexiones directas: {{reason}}. Aun así se conecta con los demás.",
+    "accepts": "Este ordenador aceptará conexiones de tus ordenadores en esta red. macOS o Windows pueden pedirte que lo permitas.",
+    "directStops": "Con Solo directo, nada de una conversación pasa por PekoHub:",
+    "stopsWait": "Los mensajes a ordenadores de otras redes esperan hasta que estén en la misma red.",
+    "stopsPhones": "Tus teléfonos no reciben respuestas ni notificaciones.",
+    "stopsWebChat": "El chat web con tus pekos públicos se detiene.",
+    "turnOnDirect": "Activar Solo directo",
+    "turnOnAutomatic": "Activar Automático",
+    "with": {
+      "title": "Conectar directamente con",
+      "mine": "Mis ordenadores",
+      "people": "Personas con las que hablo"
+    },
+    "advanced": {
+      "title": "Avanzado",
+      "listen": "Escuchar en",
+      "listenHint": "Una dirección y un puerto de este ordenador (por defecto 0.0.0.0:11438). Ahora: {{listening}}",
+      "tell": "Direcciones que se indican a otros",
+      "tellHint": "Una por línea, host:puerto. Vacío: las direcciones de red de este ordenador ({{told}}).",
+      "try": "Direcciones que probar",
+      "tryHint": "Una por línea, host:puerto: ordenadores a los que conectarse sin que digan dónde están."
+    }
+  }
+}

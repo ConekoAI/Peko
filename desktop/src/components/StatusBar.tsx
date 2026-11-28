@@ -1,0 +1,40 @@
+import { useTranslation } from "react-i18next";
+import { useEngineStatus } from "../hooks/useEngine";
+import {
+  engineStateLabel,
+  engineStateSubtitle,
+} from "../lib/engine-helpers";
+
+/**
+ * Status footer driven by the engine state (ADR-043). With engine
+ * adoption in place the only state worth surfacing in the chrome is
+ * `Failed` — on every other state the user has nothing to do, so
+ * the bar is hidden. The Layout mounts this only when the engine
+ * is in `Failed`, but we double-check here too in case the
+ * component is mounted directly.
+ */
+export default function StatusBar() {
+  const { t } = useTranslation();
+  const { data: engine } = useEngineStatus();
+
+  if (engine?.kind !== "failed") {
+    return null;
+  }
+
+  const subtitle = engineStateSubtitle(engine);
+
+  return (
+    <footer className="flex h-7 items-center justify-between border-t border-danger/30 bg-danger-soft px-4 text-xs text-danger">
+      <div className="flex items-center gap-2">
+        <span className="inline-block h-2 w-2 rounded-full bg-danger" />
+        <span className="font-medium">
+          {t("layout.statusBar.failed", {
+            label: engineStateLabel(engine),
+            detail: subtitle ?? t("layout.statusBar.failedFallback"),
+          })}
+        </span>
+      </div>
+      <span>v—</span>
+    </footer>
+  );
+}

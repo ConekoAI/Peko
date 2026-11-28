@@ -1,0 +1,141 @@
+{
+  "attachments": {
+    "listLabel": "File allegati",
+    "remove": "Rimuovi {{name}}",
+    "open": "Apri {{name}}",
+    "play": "Riproduci {{name}}",
+    "cantPlay": "Non si può riprodurre qui; apri il file",
+    "missingTitle": "{{name}} non è ancora arrivato dall'altro computer",
+    "missing": "non ancora ricevuto",
+    "pageFull": "Apri {{name}} a schermo intero",
+    "pageBrowser": "Apri {{name}} nel browser"
+  },
+  "composer": {
+    "label": "Messaggio",
+    "placeholder": "Scrivi al tuo peko…",
+    "attachTitle": "Allega file — oppure trascinali sulla finestra",
+    "modelLabel": "Modello per questo messaggio",
+    "pekosModel": "Modello del peko",
+    "hint": "↵ per inviare · ⇧↵ per andare a capo",
+    "sendTitle": "Invia (Invio)"
+  },
+  "markdown": {
+    "svgImage": "Immagine SVG",
+    "code": "codice",
+    "showImage": "Mostra immagine",
+    "showCode": "Mostra codice",
+    "image": "Immagine",
+    "codeLabel": "Codice",
+    "copyCode": "Copia codice"
+  },
+  "hostOffline": "<computer/> è offline, quindi {{peko}} non può lavorare in questo momento. Quello che invii resta in attesa e arriva a {{peko}} quando quel computer torna online; riceverai una notifica quando {{peko}} risponde.",
+  "hostOfflineSince": "<computer/> è offline (ultima volta online: {{ago}}), quindi {{peko}} non può lavorare in questo momento. Quello che invii resta in attesa e arriva a {{peko}} quando quel computer torna online; riceverai una notifica quando {{peko}} risponde.",
+  "waitingFor": "In attesa che {{name}} torni online",
+  "suggestedReplies": "Risposte suggerite",
+  "questions": {
+    "label": "Domande",
+    "for": "Per {{name}}",
+    "pickAny": "(scegli quante vuoi)",
+    "otherPlaceholder": "Oppure con parole tue…",
+    "answerPlaceholder": "La tua risposta…",
+    "otherLabel": "La tua risposta a: {{question}}",
+    "send": "Invia risposte",
+    "answered": "Risposto"
+  },
+  "runFailure": {
+    "reason": {
+      "peko_limit": "ha raggiunto il limite di spesa",
+      "provider_quota": "la quota del fornitore del modello è esaurita",
+      "provider_unreachable": "il fornitore del modello non è raggiungibile"
+    },
+    "waiting": "In attesa: {{reason}}. Riprenderà da solo, prossimo tentativo {{when}}.",
+    "failed": "L'ultima risposta non è andata a buon fine: {{reason}}."
+  },
+  "approval": {
+    "asker": "{{name}} ({{address}})",
+    "ownerTask": "Hai chiesto a {{peko}} qualcosa {{where}} che richiede il tuo accesso completo. Se approvi, viene eseguito a tuo nome, fuori da quella conversazione, solo con queste istruzioni:",
+    "ownerTaskWhere": "in una conversazione condivisa",
+    "toolRequest": "<asker/> chiede a {{peko}} di eseguire <summary/>",
+    "approve": "Approva",
+    "alwaysTitle": "Approva e consenti sempre questa operazione a {{name}}",
+    "always": "Consenti sempre",
+    "deny": "Nega",
+    "wakeLimit": "Altri peko hanno svegliato {{peko}} in un gruppo tante volte quante il suo limite consente. I loro messaggi per lui sono in attesa.",
+    "wakeLimitContinue": "Lascialo continuare",
+    "wakeLimitNoLimit": "Nessun limite in questo gruppo",
+    "wakeLimitNoLimitTitle": "Lascialo continuare e non limitare più quante volte altri peko svegliano {{peko}} in questo gruppo",
+    "wakeLimitNotNow": "Non ora"
+  },
+  "secret": {
+    "request": "{{peko}} chiede <name/>",
+    "mcpRequest": "{{peko}} chiede <name/> per il suo server MCP <server/>",
+    "label": "Valore di {{name}}",
+    "placeholder": "Incollalo o scrivilo qui",
+    "show": "Mostra",
+    "hide": "Nascondi",
+    "save": "Salva in modo sicuro",
+    "decline": "Rifiuta",
+    "hint": "Va nel portachiavi di questo computer. {{peko}} sa che è stato salvato, mai il valore. Non incollare segreti nella chat."
+  },
+  "browser": {
+    "needsYou": "{{peko}} ha bisogno di te nel suo browser",
+    "open": "{{peko}} ha un browser aperto",
+    "openButton": "Apri il browser",
+    "title": "Browser di {{peko}}",
+    "tab": "Scheda",
+    "back": "Indietro",
+    "reload": "Ricarica",
+    "address": "Indirizzo",
+    "take": "Prendi il controllo",
+    "release": "Restituisci",
+    "watching": "Stai guardando. {{peko}} sta usando il browser.",
+    "handoff": "{{peko}} ti sta aspettando. Prendi il controllo per intervenire.",
+    "controlling": "Hai il controllo. {{peko}} aspetta finché non lo restituisci.",
+    "other": "Un altro dei tuoi dispositivi ha il controllo.",
+    "waiting": "In attesa della pagina…",
+    "typeHere": "Scrivi o incolla il testo da inviare alla pagina",
+    "send": "Invia",
+    "hint": "Ciò che clicchi e scrivi va direttamente alla pagina sul computer dove gira {{peko}}. Non resta nella chat e {{peko}} non lo vede mai."
+  },
+  "changes": {
+    "summary_one": "{{peko}} ha modificato {{count}} file",
+    "summary_other": "{{peko}} ha modificato {{count}} file",
+    "summary_many": "{{peko}} ha modificato {{count}} file",
+    "undo": "Annulla",
+    "dismiss": "Nascondi",
+    "kind": {
+      "added": "aggiunto",
+      "modified": "modificato",
+      "deleted": "eliminato"
+    },
+    "shell": "Ha anche eseguito comandi di shell; ciò che hanno modificato fuori dal suo spazio di lavoro non è elencato né annullato.",
+    "restored_one": "Ripristinato {{count}} file.",
+    "restored_other": "Ripristinati {{count}} file.",
+    "restored_many": "Ripristinati {{count}} file.",
+    "skipped": "{{path}} lasciato com'è: {{why}}"
+  },
+  "yourPeko": "Il tuo peko",
+  "onComputer": "· su {{computer}}",
+  "ownersPeko": "Peko di {{owner}}",
+  "pekosComputer": "il computer di {{name}}",
+  "selectPeko": "Seleziona un peko dalla barra laterale",
+  "noPekos": "Ancora nessun peko",
+  "noPekosHint": "Crea il tuo primo peko per iniziare a chattare.",
+  "createPeko": "Crea un peko",
+  "signInPrompt": "Hai dei peko su un altro computer? <signIn>Accedi con PekoHub</signIn> per vederli qui.",
+  "dropFiles": "Rilascia i file per allegarli",
+  "begin": "Invia un messaggio per iniziare…",
+  "working": "{{name}} sta lavorando",
+  "workingFor": "{{name}} sta lavorando · {{seconds}} s",
+  "waitsSameNetwork": "Aspetta finché siete sulla stessa rete",
+  "message": {
+    "reply": "Rispondi",
+    "react": "Reagisci",
+    "otherEmoji": "Altra emoji",
+    "reactedBy": "{{emoji}} da {{names}}",
+    "you": "Tu",
+    "notLoaded": "Un messaggio non caricato",
+    "replyingTo": "Risposta a {{name}}",
+    "reactFailed": "Impossibile reagire: {{reason}}"
+  }
+}

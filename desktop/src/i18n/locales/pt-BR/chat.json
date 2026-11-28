@@ -1,0 +1,141 @@
+{
+  "attachments": {
+    "listLabel": "Arquivos anexados",
+    "remove": "Remover {{name}}",
+    "open": "Abrir {{name}}",
+    "play": "Reproduzir {{name}}",
+    "cantPlay": "Não dá para reproduzir aqui; abra o arquivo",
+    "missingTitle": "{{name}} ainda não chegou do outro computador",
+    "missing": "ainda não recebido",
+    "pageFull": "Abrir {{name}} em tamanho cheio",
+    "pageBrowser": "Abrir {{name}} no navegador"
+  },
+  "composer": {
+    "label": "Mensagem",
+    "placeholder": "Escreva para o seu peko…",
+    "attachTitle": "Anexar arquivos — ou solte-os na janela",
+    "modelLabel": "Modelo para esta mensagem",
+    "pekosModel": "Modelo do peko",
+    "hint": "↵ para enviar · ⇧↵ para nova linha",
+    "sendTitle": "Enviar (Enter)"
+  },
+  "markdown": {
+    "svgImage": "Imagem SVG",
+    "code": "código",
+    "showImage": "Mostrar imagem",
+    "showCode": "Mostrar código",
+    "image": "Imagem",
+    "codeLabel": "Código",
+    "copyCode": "Copiar código"
+  },
+  "hostOffline": "<computer/> está offline, então {{peko}} não pode trabalhar agora. O que você enviar fica aguardando e chega a {{peko}} quando esse computador voltar; você receberá uma notificação quando {{peko}} responder.",
+  "hostOfflineSince": "<computer/> está offline (última vez online: {{ago}}), então {{peko}} não pode trabalhar agora. O que você enviar fica aguardando e chega a {{peko}} quando esse computador voltar; você receberá uma notificação quando {{peko}} responder.",
+  "waitingFor": "Aguardando {{name}} ficar online",
+  "suggestedReplies": "Respostas sugeridas",
+  "questions": {
+    "label": "Perguntas",
+    "for": "Para {{name}}",
+    "pickAny": "(escolha quantas quiser)",
+    "otherPlaceholder": "Ou com suas palavras…",
+    "answerPlaceholder": "Sua resposta…",
+    "otherLabel": "Sua resposta para: {{question}}",
+    "send": "Enviar respostas",
+    "answered": "Respondido"
+  },
+  "runFailure": {
+    "reason": {
+      "peko_limit": "o limite de gastos dele foi atingido",
+      "provider_quota": "a cota do provedor do modelo acabou",
+      "provider_unreachable": "não foi possível contatar o provedor do modelo"
+    },
+    "waiting": "Aguardando: {{reason}}. Ele continua sozinho; próxima tentativa: {{when}}.",
+    "failed": "A última resposta não foi concluída: {{reason}}."
+  },
+  "approval": {
+    "asker": "{{name}} ({{address}})",
+    "ownerTask": "Você pediu a {{peko}} algo {{where}} que precisa do seu acesso completo. Se aprovado, é executado como você, fora daquela conversa, apenas com estas instruções:",
+    "ownerTaskWhere": "em uma conversa compartilhada",
+    "toolRequest": "<asker/> pede que {{peko}} execute <summary/>",
+    "approve": "Aprovar",
+    "alwaysTitle": "Aprovar e sempre permitir isso para {{name}}",
+    "always": "Sempre permitir",
+    "deny": "Negar",
+    "wakeLimit": "Outros pekos acordaram {{peko}} em um grupo tantas vezes quanto o limite permite. As mensagens deles para ele estão esperando.",
+    "wakeLimitContinue": "Deixar continuar",
+    "wakeLimitNoLimit": "Sem limite neste grupo",
+    "wakeLimitNoLimitTitle": "Deixar continuar e não limitar mais quantas vezes outros pekos acordam {{peko}} neste grupo",
+    "wakeLimitNotNow": "Agora não"
+  },
+  "secret": {
+    "request": "{{peko}} pede <name/>",
+    "mcpRequest": "{{peko}} pede <name/> para o servidor MCP <server/>",
+    "label": "Valor de {{name}}",
+    "placeholder": "Cole ou digite aqui",
+    "show": "Mostrar",
+    "hide": "Ocultar",
+    "save": "Salvar com segurança",
+    "decline": "Recusar",
+    "hint": "Vai para o cofre deste computador. {{peko}} fica sabendo que foi salvo, nunca o valor. Não cole segredos no chat."
+  },
+  "browser": {
+    "needsYou": "{{peko}} precisa de você no navegador",
+    "open": "{{peko}} está com um navegador aberto",
+    "openButton": "Abrir navegador",
+    "title": "Navegador de {{peko}}",
+    "tab": "Aba",
+    "back": "Voltar",
+    "reload": "Recarregar",
+    "address": "Endereço",
+    "take": "Assumir o controle",
+    "release": "Devolver",
+    "watching": "Você está assistindo. {{peko}} está usando o navegador.",
+    "handoff": "{{peko}} está esperando por você. Assuma o controle para agir.",
+    "controlling": "Você está no controle. {{peko}} espera até você devolver.",
+    "other": "Outro dispositivo seu está no controle.",
+    "waiting": "Aguardando a página…",
+    "typeHere": "Digite ou cole o texto para enviar à página",
+    "send": "Enviar",
+    "hint": "O que você clica e digita vai direto para a página no computador onde {{peko}} roda. Não fica na conversa, e {{peko}} nunca vê."
+  },
+  "changes": {
+    "summary_one": "{{peko}} alterou {{count}} arquivo",
+    "summary_other": "{{peko}} alterou {{count}} arquivos",
+    "summary_many": "{{peko}} alterou {{count}} arquivos",
+    "undo": "Desfazer",
+    "dismiss": "Ocultar",
+    "kind": {
+      "added": "novo",
+      "modified": "alterado",
+      "deleted": "excluído"
+    },
+    "shell": "Também executou comandos de shell; o que eles alteraram fora do espaço de trabalho não é listado nem desfeito.",
+    "restored_one": "{{count}} arquivo restaurado.",
+    "restored_other": "{{count}} arquivos restaurados.",
+    "restored_many": "{{count}} arquivos restaurados.",
+    "skipped": "{{path}} ficou como estava: {{why}}"
+  },
+  "yourPeko": "Seu peko",
+  "onComputer": "· em {{computer}}",
+  "ownersPeko": "Peko de {{owner}}",
+  "pekosComputer": "o computador de {{name}}",
+  "selectPeko": "Selecione um peko na barra lateral",
+  "noPekos": "Ainda não há pekos",
+  "noPekosHint": "Crie seu primeiro peko para começar a conversar.",
+  "createPeko": "Criar um peko",
+  "signInPrompt": "Tem pekos em outro computador? <signIn>Entre com o PekoHub</signIn> para vê-los aqui.",
+  "dropFiles": "Solte os arquivos para anexar",
+  "begin": "Envie uma mensagem para começar…",
+  "working": "{{name}} está trabalhando",
+  "workingFor": "{{name}} está trabalhando · {{seconds}} s",
+  "waitsSameNetwork": "Espera até vocês estarem na mesma rede",
+  "message": {
+    "reply": "Responder",
+    "react": "Reagir",
+    "otherEmoji": "Outro emoji",
+    "reactedBy": "{{emoji}} de {{names}}",
+    "you": "Você",
+    "notLoaded": "Uma mensagem que não foi carregada",
+    "replyingTo": "Respondendo a {{name}}",
+    "reactFailed": "Não foi possível reagir: {{reason}}"
+  }
+}

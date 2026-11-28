@@ -1,0 +1,304 @@
+import { describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+
+const api = vi.hoisted(() => ({
+  attachmentPreview: vi.fn(),
+  attachmentOpen: vi.fn(),
+}));
+vi.mock("../hooks/useRemotePrincipals", () => ({
+  useRemotePrincipals: () => ({ data: [] }),
+  useRemotePeko: (_runtimeId: string, name: string) => ({
+    record: undefined,
+    status: { data: undefined },
+    identity: { name, avatar: null, initials: name.slice(0, 1).toUpperCase(), accent: "emerald" },
+    description: null,
+  }),
+}));
+
+vi.mock("../lib/api", () => api);
+vi.mock("@tauri-apps/api/core", () => ({
+  convertFileSrc: (path: string, protocol = "asset") => `${protocol}://localhost${path}`,
+}));
+
+import {
+  MessageAttachments,
+  PendingAttachments,
+  attachmentKind,
+  baseName,
+  formatSize,
+} from "../components/chat/Attachments";
+import Composer from "../components/chat/Composer";
+import { chatLogMessagesToChatItems } from "../pages/Chat";
+import { inputsOf, withInputs } from "../lib/model-spec";
+
+function wrap(node: React.ReactNode) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(<QueryClientProvider client={client}>{node}</QueryClientProvider>);
+}
+
+describe("attachments", () => {
+  it("tells kinds by MIME type, else by extension", () => {
+    expect(attachmentKind("a.bin", "image/png")).toBe("image");
+    expect(attachmentKind("a.bin", "image/svg+xml")).toBe("image");
+    expect(attachmentKind("/x/chart.svg")).toBe("image");
+    expect(attachmentKind("a.bin", "audio/wav")).toBe("audio");
+    expect(attachmentKind("a.bin", "video/mp4")).toBe("video");
+    expect(attachmentKind("/x/clip.MOV")).toBe("video");
+    expect(attachmentKind("/x/notes.md")).toBe("text");
+    expect(attachmentKind("/x/blob")).toBe("file");
+    expect(baseName("/Users/me/Desktop/photo one.png")).toBe("photo one.png");
+    expect(formatSize(1_258_291)).toBe("1.2 MB");
+  });
+
+  it("lists files for the next message and removes one", () => {
+    const onRemove = vi.fn();
+    render(<PendingAttachments paths={["/a/photo.png", "/a/voice.wav"]} onRemove={onRemove} />);
+    expect(screen.getByText("photo.png")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Remove voice.wav" }));
+    expect(onRemove).toHaveBeenCalledWith("/a/voice.wav");
+  });
+
+  it("shows an image as a thumbnail and opens other files", async () => {
+    api.attachmentPreview.mockResolvedValue("data:image/png;base64,AAAA");
+    wrap(
+      <MessageAttachments
+        attachments={[
+          { name: "photo.png", path: "/p/photo.png", mime: "image/png", size: 10 },
+          { name: "voice.wav", path: "/p/voice.wav", mime: "audio/wav", size: 2048 },
+        ]}
+      />,
+    );
+    expect(await screen.findByRole("img", { name: "photo.png" })).toHaveAttribute(
+      "src",
+      "data:image/png;base64,AAAA",
+    );
+    fireEvent.click(screen.getByTitle("Open voice.wav"));
+    expect(api.attachmentOpen).toHaveBeenCalledWith("/p/voice.wav");
+    expect(screen.getByText("2.0 KB")).toBeInTheDocument();
+  });
+
+  it("sends files alone and offers the paperclip only when attaching works", () => {
+    const onSend = vi.fn();
+    const onAttach = vi.fn();
+    const props = {
+      value: "",
+      onChange: () => {},
+      onSend,
+      models: [],
+      model: null,
+      onModelChange: () => {},
+    };
+    const { rerender } = render(<Composer {...props} />);
+    expect(screen.queryByRole("button", { name: "Attach files" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+
+    rerender(<Composer {...props} attachments={["/a/clip.mp4"]} onAttach={onAttach} />);
+    fireEvent.click(screen.getByRole("button", { name: "Attach files" }));
+    expect(onAttach).toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(onSend).toHaveBeenCalled();
+  });
+
+  it("hands pasted files to the chat", () => {
+    const onPasteFiles = vi.fn();
+    render(
+      <Composer
+        value=""
+        onChange={() => {}}
+        onSend={() => {}}
+        models={[]}
+        model={null}
+        onModelChange={() => {}}
+        onPasteFiles={onPasteFiles}
+      />,
+    );
+    const shot = new File(["png"], "image.png", { type: "image/png" });
+    fireEvent.paste(screen.getByLabelText("Message"), { clipboardData: { files: [shot] } });
+    expect(onPasteFiles).toHaveBeenCalledWith([shot]);
+  });
+
+  it("plays audio inline once asked, from the engine's copy", async () => {
+    wrap(
+      <MessageAttachments
+        attachments={[{ name: "memo.wav", path: "/p/memo.wav", mime: "audio/wav", size: 2048 }]}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Play memo.wav" }));
+    const player = await screen.findByLabelText("memo.wav");
+    expect(player.tagName).toBe("AUDIO");
+    expect(player.getAttribute("src")).toContain("memo.wav");
+  });
+
+  it("shows a file from another computer that has not arrived, without opening it", () => {
+    wrap(
+      <MessageAttachments
+        attachments={[{ name: "photo.png", path: "", mime: "image/png", size: 2048 }]}
+      />,
+    );
+    expect(screen.getByText("photo.png")).toBeInTheDocument();
+    expect(screen.getByText("not received yet")).toBeInTheDocument();
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(api.attachmentPreview).not.toHaveBeenCalledWith("");
+  });
+
+  it("keeps a thread row that is only files", () => {
+    const items = chatLogMessagesToChatItems([
+      {
+        schemaVersion: 1,
+        id: "chan_1",
+        sender: "user:local",
+        timestamp: "2026-10-30T10:00:00Z",
+        text: "",
+        attachments: [{ name: "a.png", path: "/p/a.png", mime: "image/png", size: 1 }],
+      },
+    ]);
+    expect(items).toHaveLength(1);
+    expect(items[0].attachments?.[0].name).toBe("a.png");
+  });
+
+  it("shows files a peko sent (Attach) as its own message", () => {
+    const items = chatLogMessagesToChatItems([
+      {
+        schemaVersion: 1,
+        id: "chan_2",
+        sender: "principal:local:prin_x",
+        timestamp: "2026-11-02T10:00:00Z",
+        text: "",
+        attachments: [{ name: "chart.svg", path: "/p/chart.svg", mime: "image/svg+xml", size: 40 }],
+      },
+    ]);
+    expect(items).toHaveLength(1);
+    expect(items[0].isUser).toBe(false);
+    expect(items[0].attachments?.[0].mime).toBe("image/svg+xml");
+  });
+
+  // Runtime ADR-126: a row's reply and reactions ride to the thread.
+  it("keeps a message's reply and reactions", () => {
+    const items = chatLogMessagesToChatItems([
+      {
+        schemaVersion: 1,
+        id: "chan_3",
+        sender: "user:local",
+        timestamp: "2026-11-25T10:00:00Z",
+        text: "yes",
+        msgId: "m3",
+        replyTo: "m1",
+        reactions: [{ emoji: "👍", by: ["principal:local:prin_x"] }],
+      },
+    ]);
+    expect(items[0].replyTo).toBe("m1");
+    expect(items[0].reactions?.[0].emoji).toBe("👍");
+  });
+});
+
+describe("model inputs", () => {
+  it("gives a model without a descriptor one that keeps its tools", () => {
+    const spec = withInputs(null, { image: true, audio: true, video: true });
+    expect(spec.tool_support).toBe("function_calling");
+    expect(spec.thinking).toBe("optional");
+    expect(inputsOf(spec)).toEqual({ image: true, audio: true, video: true });
+  });
+
+  it("changes only the inputs of an existing descriptor", () => {
+    const spec = withInputs(
+      {
+        image_input: true,
+        audio_input: false,
+        tool_support: "full",
+        streaming: true,
+        thinking: "required",
+        json_mode: true,
+      },
+      { image: true, audio: true, video: false },
+    );
+    expect(spec.tool_support).toBe("full");
+    expect(spec.thinking).toBe("required");
+    expect(spec.audio_input).toBe(true);
+    expect(spec.video_input).toBe(false);
+  });
+});
+
+describe("model price", () => {
+  it("reads a price draft and keeps tools on a new descriptor", async () => {
+    const { pricingFromDraft, withPricing, priceDraftOf, EMPTY_PRICE_DRAFT } = await import(
+      "../lib/model-spec"
+    );
+    const draft = (d: Partial<typeof EMPTY_PRICE_DRAFT>) => ({ ...EMPTY_PRICE_DRAFT, ...d });
+    expect(pricingFromDraft(EMPTY_PRICE_DRAFT)).toBeUndefined();
+    expect(pricingFromDraft(draft({ input: "$1", output: "2.5" }))).toEqual({
+      input_per_million: 1,
+      output_per_million: 2.5,
+    });
+    expect(pricingFromDraft(draft({ input: "-1" }))).toBeNull();
+    const spec = withPricing(null, { input_per_million: 1 });
+    expect(spec.tool_support).toBe("function_calling");
+    expect(priceDraftOf(spec)).toEqual(draft({ input: "1" }));
+    expect(withPricing(spec, undefined).pricing).toBeUndefined();
+  });
+
+  it("carries cache prices through the draft", async () => {
+    const { pricingFromDraft, priceDraftOf, priceDraftChanged, EMPTY_PRICE_DRAFT } = await import(
+      "../lib/model-spec"
+    );
+    const pricing = pricingFromDraft({
+      ...EMPTY_PRICE_DRAFT,
+      input: "3",
+      output: "15",
+      cacheRead: "0.3",
+      cacheWrite: "3.75",
+    });
+    expect(pricing).toEqual({
+      input_per_million: 3,
+      output_per_million: 15,
+      cache_read_per_million: 0.3,
+      cache_write_per_million: 3.75,
+    });
+    const back = priceDraftOf({ pricing } as never);
+    expect(back.cacheRead).toBe("0.3");
+    expect(priceDraftChanged(back, { ...back, cacheRead: " 0.3 " })).toBe(false);
+    expect(priceDraftChanged(back, { ...back, cacheWrite: "" })).toBe(true);
+    expect(pricingFromDraft({ ...EMPTY_PRICE_DRAFT, cacheRead: "x" })).toBeNull();
+  });
+});
+
+// Pages a peko answers with (runtime ADR-118).
+describe("pages", () => {
+  it("are their own kind, by extension or MIME type", () => {
+    expect(attachmentKind("chart.html")).toBe("page");
+    expect(attachmentKind("chart.HTM")).toBe("page");
+    expect(attachmentKind("x", "text/html")).toBe("page");
+    expect(attachmentKind("notes.txt", "text/plain")).toBe("text");
+  });
+
+  it("show in a sandboxed frame from the page protocol, with full-size and browser buttons", () => {
+    const client = new QueryClient();
+    render(
+      <QueryClientProvider client={client}>
+        <MessageAttachments
+          attachments={[{ name: "chart.html", path: "/p/attachments/chart.html", mime: "text/html", size: 900 }]}
+        />
+      </QueryClientProvider>,
+    );
+    const frame = screen.getByTestId("page-frame");
+    expect(frame).toHaveAttribute("src", "pekopage://localhost/p/attachments/chart.html");
+    expect(frame).toHaveAttribute("sandbox", "allow-scripts");
+    fireEvent.click(screen.getByRole("button", { name: /full size/i }));
+    expect(screen.getAllByTestId("page-frame")).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: /in your browser/i }));
+    expect(api.attachmentOpen).toHaveBeenCalledWith("/p/attachments/chart.html");
+  });
+
+  it("stay a file when too large to show", () => {
+    const client = new QueryClient();
+    render(
+      <QueryClientProvider client={client}>
+        <MessageAttachments
+          attachments={[{ name: "huge.html", path: "/p/huge.html", mime: "text/html", size: 3 * 1024 * 1024 }]}
+        />
+      </QueryClientProvider>,
+    );
+    expect(screen.queryByTestId("page-frame")).toBeNull();
+    expect(screen.getByText("huge.html")).toBeInTheDocument();
+  });
+});
