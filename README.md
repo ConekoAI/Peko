@@ -38,7 +38,7 @@ your computer.**
 
 ### Desktop app
 
-**[Download Peko Desktop](https://github.com/ConekoAI/peko-desktop/releases/latest)**
+**[Download Peko Desktop](https://github.com/ConekoAI/Peko/releases/latest)**
 for macOS, Windows or Linux. It includes everything: create pekos, chat with
 them, approve what they ask, and decide who may talk to them, without a
 terminal.
