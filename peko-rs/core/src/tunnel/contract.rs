@@ -14,8 +14,8 @@
 use super::protocol::{
     AccountDm, AccountGroup, AccountPersonDm, DmBlock, DmRoute, ExposureUpdatePayload,
     InstanceAnnouncePayload, InstanceDeregisterPayload, InstanceExposure, InstanceHeartbeatPayload,
-    InstanceStatus, InstanceType, PekoApproval, PekoModel, RuntimeKeyEntry, StatusUpdatePayload,
-    TunnelMessage, VisitorCounts,
+    InstanceListPayload, InstanceStatus, InstanceType, PekoApproval, PekoModel, RuntimeKeyEntry,
+    StatusUpdatePayload, TunnelMessage, VisitorCounts,
 };
 use peko_protocol::channel::{
     Attachment, ChannelEvent, ChannelId, ConversationKind, InitialMember,
@@ -50,6 +50,7 @@ fn variant(message: &TunnelMessage) -> &'static str {
         TunnelMessage::PrincipalTransferOffered { .. } => "principal_transfer_offered",
         TunnelMessage::PrincipalOwnerChanged { .. } => "principal_owner_changed",
         TunnelMessage::InstanceDeregister { .. } => "instance_deregister",
+        TunnelMessage::InstanceList { .. } => "instance_list",
         TunnelMessage::InstanceAnnounce { .. } => "instance_announce",
         TunnelMessage::InstanceHeartbeat { .. } => "instance_heartbeat",
         TunnelMessage::ExposureUpdate { .. } => "exposure_update",
@@ -122,6 +123,7 @@ const ALL_VARIANTS: &[&str] = &[
     "principal_transfer_offered",
     "principal_owner_changed",
     "instance_deregister",
+    "instance_list",
     "instance_announce",
     "instance_heartbeat",
     "exposure_update",
@@ -285,6 +287,11 @@ fn samples() -> Vec<TunnelMessage> {
         TunnelMessage::InstanceDeregister {
             payload: InstanceDeregisterPayload {
                 id: "inst-1".into(),
+            },
+        },
+        TunnelMessage::InstanceList {
+            payload: InstanceListPayload {
+                ids: vec!["inst-1".into()],
             },
         },
         TunnelMessage::InstanceAnnounce {

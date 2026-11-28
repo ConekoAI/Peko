@@ -119,6 +119,14 @@
   },
   {
     "payload": {
+      "ids": [
+        "inst-1"
+      ]
+    },
+    "type": "instance_list"
+  },
+  {
+    "payload": {
       "agentDid": "did:key:z6MkPrincipal",
       "avatar": "🦉",
       "bundleRef": "alice/ada:1.0.0",

@@ -14,6 +14,17 @@ All notable changes to Peko.
   PekoHub dashboard shows real visitor traffic. Reactions, group posts, and the
   peko's and owner's own posts are not counted.
 
+### Fixed
+
+- **A computer's engine is the authority on its pekos (ADR-131).** Removing a peko
+  that was on PekoHub (`principal_remove`, what Peko Desktop's Remove sends) now
+  deregisters its instance, and once connected the engine lists every peko it has
+  on PekoHub (`instance_list`, a new tunnel message). PekoHub deletes the rest of
+  this computer's instances, so a peko removed while PekoHub was unreachable, or by
+  `peko remove`, leaves the owner's account the next time it connects. It no longer
+  stays listed as still on this computer, where Peko Desktop saved it back into
+  Chats as a peko nothing answered. A Hub that predates the list ignores it.
+
 ## [0.7.2] - 2026-11-27
 
 ### Changed

@@ -148,6 +148,16 @@ pub struct InstanceDeregisterPayload {
     pub id: String,
 }
 
+/// Every peko this runtime has on PekoHub, sent once a connection is
+/// ready, after the announces: the runtime is the authority on its pekos,
+/// and the Hub deletes the runtime's other instances (one removed while
+/// it was offline, or by `peko remove`, which tells the Hub nothing). A
+/// Hub that predates it ignores it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstanceListPayload {
+    pub ids: Vec<String>,
+}
+
 /// Payload for `instance_heartbeat` messages.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -372,6 +382,8 @@ pub enum TunnelMessage {
     },
     #[serde(rename = "instance_deregister")]
     InstanceDeregister { payload: InstanceDeregisterPayload },
+    #[serde(rename = "instance_list")]
+    InstanceList { payload: InstanceListPayload },
     #[serde(rename = "instance_announce")]
     InstanceAnnounce { payload: InstanceAnnouncePayload },
 

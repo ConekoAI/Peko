@@ -687,6 +687,25 @@ impl TunnelDispatcher {
         Ok(())
     }
 
+    /// Tell PekoHub every peko this computer has there: each one whose
+    /// configuration puts it on PekoHub (private or public), registered or
+    /// on its way. PekoHub deletes this computer's other instances, so a
+    /// peko removed while it was offline, or by `peko remove`, leaves the
+    /// owner's account the next time it connects.
+    pub async fn list_instances(&self, handle: &TunnelHandle) -> anyhow::Result<()> {
+        let mut ids = Vec::new();
+        for principal in self.host.principal_manager().list_all().await {
+            if principal.exposure().await == peko_auth::Exposure::LocalOnly {
+                continue;
+            }
+            ids.push(self.instance_id(&principal.name().await));
+        }
+        handle.send(TunnelMessage::InstanceList {
+            payload: super::protocol::InstanceListPayload { ids },
+        })?;
+        Ok(())
+    }
+
     /// Put on PekoHub the local user's pekos whose registration says they
     /// belong there but that have no Hub ID yet: a peko the desktop made
     /// (private by default) before or after this computer signed in. Only
@@ -1082,6 +1101,11 @@ impl TunnelDispatcher {
                 // Announce all instances after auth
                 if let Err(e) = self.announce_instances(&handle).await {
                     warn!("Failed to announce instances: {}", e);
+                }
+                // Then the whole list: PekoHub drops what this computer
+                // no longer has.
+                if let Err(e) = self.list_instances(&handle).await {
+                    warn!("Failed to list instances: {}", e);
                 }
                 // Then register the local user's pekos that should be on
                 // PekoHub and are not yet (a peko the desktop made before
@@ -2377,6 +2401,30 @@ impl TunnelDispatcher {
         .await
         .map_err(|_| anyhow::anyhow!("PekoHub did not answer the transfer request"))?;
         answer.map_err(|message| anyhow::anyhow!("PekoHub refused the transfer: {message}"))
+    }
+
+    /// A peko removed from this computer leaves PekoHub with it: its
+    /// instance is deregistered, so the owner's account stops listing it
+    /// (where their apps would keep it as a peko still on this computer,
+    /// with nothing to answer its chat). Sent only while the tunnel is up;
+    /// returns whether it was. Without a tunnel the Hub keeps the
+    /// instance, marked offline.
+    pub async fn deregister_removed_principal(&self, name: &str) -> bool {
+        let _registration = self.registration_lock.lock().await;
+        let Some(handle) = self.state.read().await.tunnel_handle.clone() else {
+            return false;
+        };
+        match handle.send(TunnelMessage::InstanceDeregister {
+            payload: super::protocol::InstanceDeregisterPayload {
+                id: self.instance_id(name),
+            },
+        }) {
+            Ok(()) => true,
+            Err(e) => {
+                warn!(principal = %name, "removed peko not deregistered from PekoHub: {e}");
+                false
+            }
+        }
     }
 
     pub async fn register_principal(
@@ -4502,6 +4550,27 @@ mod tests {
         assert!(state.tunnel_handle.is_some());
     }
 
+    /// A removed peko leaves PekoHub: its instance is deregistered under
+    /// the same id it was announced with, and nothing is sent without a
+    /// tunnel.
+    #[tokio::test]
+    async fn removed_principal_is_deregistered_from_pekohub() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
+        assert!(!dispatcher.deregister_removed_principal("pip").await);
+
+        let (handle, mut rx) = mock_tunnel_handle();
+        dispatcher.state.write().await.tunnel_handle = Some(handle);
+        assert!(dispatcher.deregister_removed_principal("pip").await);
+        match rx.try_recv().expect("a deregister") {
+            TunnelMessage::InstanceDeregister { payload } => {
+                assert_eq!(payload.id, dispatcher.instance_id("pip"));
+            }
+            other => panic!("Expected InstanceDeregister, got: {other:?}"),
+        }
+        assert!(rx.try_recv().is_err());
+    }
+
     #[tokio::test]
     async fn test_set_instance_status_sends_status_update() {
         let app_state = create_test_app_state().await;
@@ -5547,6 +5616,43 @@ mod tests {
 
         // Already registered: asking again sends nothing.
         dispatcher.register_pending_principals().await;
+        assert!(rx.try_recv().is_err());
+    }
+
+    /// Once connected, the runtime lists every peko it has on PekoHub —
+    /// registered or on its way — and none it keeps to itself: PekoHub
+    /// deletes the rest of this computer's instances.
+    #[tokio::test]
+    async fn the_instance_list_names_every_online_peko_and_no_other() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state.clone()));
+        let (handle, mut rx) = mock_tunnel_handle();
+        for (name, exposure) in [
+            ("nova", peko_auth::Exposure::Private),
+            ("kit", peko_auth::Exposure::Public),
+            ("hermit", peko_auth::Exposure::LocalOnly),
+        ] {
+            create_test_principal(
+                &app_state,
+                name,
+                ActorRef::User("local".into()),
+                vec![],
+                exposure,
+            )
+            .await;
+        }
+        dispatcher.list_instances(&handle).await.unwrap();
+        let TunnelMessage::InstanceList { payload } = rx.try_recv().expect("a list") else {
+            panic!("expected an instance list")
+        };
+        let mut listed = payload.ids;
+        listed.sort();
+        let mut expected = vec![
+            dispatcher.instance_id("nova"),
+            dispatcher.instance_id("kit"),
+        ];
+        expected.sort();
+        assert_eq!(listed, expected);
         assert!(rx.try_recv().is_err());
     }
 

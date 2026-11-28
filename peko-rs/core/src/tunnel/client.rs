@@ -721,6 +721,7 @@ impl TunnelClient {
             | TunnelMessage::PrincipalTransferOffered { .. }
             | TunnelMessage::PrincipalOwnerChanged { .. }
             | TunnelMessage::InstanceDeregister { .. }
+            | TunnelMessage::InstanceList { .. }
             | TunnelMessage::InstanceAnnounce { .. }
             | TunnelMessage::InstanceHeartbeat { .. }
             | TunnelMessage::ExposureUpdate { .. }
