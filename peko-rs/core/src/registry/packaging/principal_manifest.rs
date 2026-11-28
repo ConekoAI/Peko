@@ -63,7 +63,7 @@ impl PrincipalManifest {
 
     pub fn compute_checksum(data: &[u8]) -> String {
         use sha2::{Digest, Sha256};
-        format!("sha256:{:x}", Sha256::digest(data))
+        format!("sha256:{}", hex::encode(Sha256::digest(data)))
     }
 
     pub fn add_file(&mut self, path: impl Into<String>, data: &[u8]) {

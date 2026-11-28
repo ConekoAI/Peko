@@ -1134,7 +1134,7 @@ pub fn dm_channel_id(a: &str, b: &str) -> ChannelId {
         hash.update((address.len() as u64).to_be_bytes());
         hash.update(address.as_bytes());
     }
-    ChannelId(format!("dm_{:x}", hash.finalize()))
+    ChannelId(format!("dm_{}", hex::encode(hash.finalize())))
 }
 
 // ---------------------------------------------------------------------------
