@@ -2770,7 +2770,7 @@ dependencies = [
  "anyhow",
  "argon2",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "blake3",
  "block2",
  "bs58",
@@ -2865,7 +2865,7 @@ version = "0.8.0"
 dependencies = [
  "anyhow",
  "argon2",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "ed25519-dalek",
  "jsonwebtoken",
@@ -2911,7 +2911,7 @@ version = "0.8.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "clap",
  "clap_complete",
@@ -2985,7 +2985,7 @@ version = "0.8.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "futures",
  "peko-events",
@@ -3038,7 +3038,7 @@ dependencies = [
  "aes-gcm",
  "anyhow",
  "argon2",
- "base64 0.22.1",
+ "base64 0.23.1",
  "blake3",
  "bs58",
  "chrono",
@@ -3130,7 +3130,7 @@ version = "0.8.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "chrono",
  "futures",
