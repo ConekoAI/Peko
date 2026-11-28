@@ -397,7 +397,7 @@ describe("Settings sections", () => {
       expect(screen.getByTestId("engine-version")).toHaveTextContent("0.1.0");
       expect(screen.queryByText(/tailwind|react 19/i)).toBeNull();
       fireEvent.click(screen.getByRole("button", { name: /report a problem/i }));
-      expect(openUrlMock).toHaveBeenCalledWith("https://github.com/ConekoAI/peko-desktop/issues");
+      expect(openUrlMock).toHaveBeenCalledWith("https://github.com/ConekoAI/Peko/issues");
     });
   });
 });

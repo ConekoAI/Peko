@@ -498,7 +498,7 @@ const LINKS = [
     key: "gettingStarted",
     url: "https://github.com/ConekoAI/Peko/blob/master/docs/getting-started/GETTING_STARTED.md",
   },
-  { key: "report", url: "https://github.com/ConekoAI/peko-desktop/issues" },
+  { key: "report", url: "https://github.com/ConekoAI/Peko/issues" },
 ] as const;
 
 function AboutSection() {
