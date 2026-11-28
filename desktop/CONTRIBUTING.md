@@ -13,7 +13,7 @@ covers this app too.
 | Tool         | Version        | Why                                                  |
 | ------------ | -------------- | ---------------------------------------------------- |
 | **Rust**     | 1.74+ stable   | Tauri 2 backend ([`src-tauri/`](src-tauri/)) and the bundled `peko` sidecar (built from [`Peko`](https://github.com/ConekoAI/Peko)) |
-| **Node.js**  | 20+            | Vite + React frontend ([`src/`](src/))               |
+| **Node.js**  | 22.22+ or 24+  | Vite + React frontend ([`src/`](src/))               |
 | **npm**      | 10+            | Install JS dependencies                              |
 
 > **End users don't need a separate `peko` install.** The desktop app
