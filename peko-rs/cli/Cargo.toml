@@ -64,4 +64,4 @@ hex = "0.4"
 # Process-wide test setup: every CLI test takes the passphrase vault.
 ctor = "1.0"
 tempfile = "3.10"
-serial_test = "3.0"
+serial_test = "4.0"
