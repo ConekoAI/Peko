@@ -384,6 +384,13 @@ async fn ensure_daemon() -> Result<()> {
     let app = crate::sidecar::current_app_handle()
         .ok_or_else(|| IpcError::ConnectionFailed("supervisor not installed".to_string()))?;
     let sup = crate::sidecar::get(&app);
+    // A daemon the supervisor gave up on stays down until someone asks
+    // for a restart (the failure card's button). Relaunching it here would
+    // crash-loop it at the pace of every polling query, and flip the state
+    // back to Starting so the failure card never stays up.
+    if let crate::sidecar::EngineState::Failed { message } = sup.state() {
+        return Err(IpcError::ConnectionFailed(message));
+    }
     if !sup.is_running() {
         sup.start().map_err(|e| {
             IpcError::ConnectionFailed(format!("daemon not running and auto-start failed: {}", e))

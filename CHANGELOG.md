@@ -11,9 +11,8 @@ All notable changes to Peko.
   folder, privacy, ready) before anything is written, and once the engine
   starts the same window goes on to the first peko: connect a model, name
   it, say hello. Those last steps can be skipped, and a folder that already
-  has pekos skips them. The folder
-  step offers `~/.peko` or any folder you pick, and says what picking it
-  does: a folder that is already Peko's brings its pekos along, a folder with
+  has pekos skips them. The folder step offers `~/.peko` or any folder you
+  pick, and says what picking it does: a folder that is already Peko's brings its pekos along, a folder with
   other things in it gets a `Peko` folder inside, and a cloud-synced folder,
   another drive or a macOS-protected folder each get a word of warning.
   System folders, temp folders, the app's own folder and paths too long for
@@ -24,8 +23,29 @@ All notable changes to Peko.
   starting an empty Peko. Computers that already have `~/.peko` see no
   change.
 
+### Changed
+
+- **Peko Desktop's tray, title bar and Chats tab.** The tray icon is PekoHub's
+  favicon, filling its square like the icons beside it (a template image the
+  menu bar tints on macOS); the title bar wears the Peko sprout; the Chats tab
+  is a chat bubble.
+
 ### Fixed
 
+- **A runtime that can't start no longer leaves Peko Desktop loading
+  forever.** The desktop gave a daemon that died while loading a fresh restart
+  every time, so it never showed the failure card. It now gives up after two
+  quick crashes, shows the daemon's own error, and doesn't relaunch it until
+  you press Restart. The chat list and chat page say the pekos couldn't load,
+  with Retry, instead of spinning or looking empty.
+- **A full OS keychain is named as the problem.** A new vault reuses the key
+  already in the keychain even when it can't take new entries; otherwise the
+  error gives the keychain's reason and, on Windows, says Credential Manager
+  may be full. No more throwaway probe entries.
+- **Tests no longer fill the developer's keychain.** `peko-identity`'s own
+  tests stored every identity they made in the real OS keychain and never
+  removed it, until Windows Credential Manager was full and refused every
+  write, the vault's included.
 - Peko Desktop finds the engine, its settings and remote pekos under
   `PEKO_HOME` when that is set: the socket, `config.toml` and
   `remote-principals.json` were read from `~/.peko` regardless.

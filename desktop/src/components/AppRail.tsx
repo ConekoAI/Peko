@@ -1,7 +1,6 @@
 import { useNavigate, useLocation } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
-import { Settings } from "lucide-react";
-import PekoMark from "./PekoMark";
+import { MessageCircle, Settings } from "lucide-react";
 import ProfileMenu from "./ProfileMenu";
 import HubNotificationBell from "./HubNotificationBell";
 import GroupRail from "./rail/GroupRail";
@@ -41,9 +40,8 @@ export default function AppRail({ onCreateGroup }: { onCreateGroup?: () => void 
         badge={unread}
         onClick={() => navigate({ to: "/chat" })}
         testId="app-rail-chats"
-        variant="mark"
       >
-        <PekoMark className="h-6 w-6" />
+        <MessageCircle className="h-5 w-5" />
       </RailItem>
 
       <RailDivider />

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Minus, Square, X, Maximize2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import PekoMark from "./PekoMark";
 
 /**
  * macOS draws its own window buttons over the top-left of the page
@@ -73,9 +74,7 @@ export default function TitleBar() {
           the bar stays empty, like other Mac apps. */}
       {!IS_MAC && (
         <div className="flex items-center gap-2 px-3">
-          <div className="flex h-5 w-5 items-center justify-center rounded-md bg-brand">
-            <span className="h-1.5 w-1.5 rounded-full bg-white" />
-          </div>
+          <PekoMark className="h-4 w-4" />
           <span className="text-xs font-semibold tracking-tight text-fg-soft">Peko</span>
         </div>
       )}

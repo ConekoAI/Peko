@@ -300,7 +300,9 @@ export default function PrincipalSidebar({
   >;
   const currentRuntimeId = routeSearch.runtimeId ?? "local";
 
-  const { data: principals, isLoading } = usePrincipals();
+  const { data: principals, isLoading, isError, isFetching, refetch } = usePrincipals();
+  // The list never came: say so, rather than look like a fresh profile.
+  const loadFailed = isError && !principals;
   // A peko still setting itself up whose model isn't here can't go on:
   // its badge says so, and its chat shows the fix.
   const { data: models } = useModels();
@@ -413,7 +415,8 @@ export default function PrincipalSidebar({
 
   // First-run empty state shows a richer emerald CTA inside the list
   // area; otherwise the persistent footer button below handles creation.
-  const showFirstRunCTA = !isLoading && !search.trim() && listed === 0 && people.length === 0;
+  const showFirstRunCTA =
+    !isLoading && !loadFailed && !search.trim() && listed === 0 && people.length === 0;
 
   function openContextMenu(e: React.MouseEvent, name: string, runtimeId: string) {
     e.preventDefault();
@@ -561,6 +564,22 @@ export default function PrincipalSidebar({
                   ))}
               </>
             )}
+          </div>
+        ) : loadFailed && listed === 0 ? (
+          <div
+            data-testid="sidebar-load-failed"
+            className="flex flex-col items-center gap-2 px-2 py-8 text-center text-xs text-fg-subtle"
+          >
+            <AlertTriangle className="h-4 w-4 text-danger" />
+            <span>{t("sidebar.loadFailed")}</span>
+            <button
+              type="button"
+              onClick={() => refetch()}
+              disabled={isFetching}
+              className="btn-ghost btn-xs"
+            >
+              {t("common.retry")}
+            </button>
           </div>
         ) : showFirstRunCTA ? (
           <div className="px-2 py-8 text-center text-xs text-fg-subtle">

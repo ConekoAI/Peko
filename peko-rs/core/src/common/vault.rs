@@ -166,6 +166,15 @@ pub enum VaultError {
     #[error("no master passphrase available; set {MASTER_PASSPHRASE_ENV} or use an OS keychain")]
     NoPassphrase,
 
+    /// A new vault's key could not go into the OS keychain, and there is
+    /// no passphrase to use instead. Says why, and what to try.
+    #[error(
+        "couldn't keep the vault key in the OS keychain ({reason}); {}. \
+         Or set {MASTER_PASSPHRASE_ENV} to protect the vault with a passphrase instead",
+        peko_identity::keychain::unavailable_hint()
+    )]
+    KeychainUnusable { reason: String },
+
     #[error("invalid secret entry type for key '{0}'")]
     InvalidEntryType(String),
 
@@ -2084,9 +2093,6 @@ impl Vault {
 
         #[cfg(not(test))]
         {
-            let keychain = peko_identity::keychain::KeychainStorage::with_service(
-                KEYCHAIN_SERVICE.to_string(),
-            );
             let (file, dek, salt, unlock_method) = match method_override.as_unlock_method() {
                 // Caller asserted passphrase: skip the keychain probe and
                 // derive the DEK from `PEKO_MASTER_PASSPHRASE`. This is the
@@ -2101,47 +2107,33 @@ impl Vault {
                 // Caller asserted keychain: require it to actually be
                 // available rather than silently downgrading.
                 Some(UnlockMethod::Keychain) => {
-                    if !keychain.is_available() {
-                        anyhow::bail!(
-                            "{UNLOCK_METHOD_ENV}=keychain but the OS keychain is unavailable; \
-                             remove the override to allow passphrase fallback"
-                        );
-                    }
-                    let dek = match Self::try_retrieve_dek_from_keychain() {
-                        Ok(Some(dek)) => dek,
-                        Ok(None) => {
-                            let dek = Self::generate_dek();
-                            Self::store_dek_in_keychain(&dek)?;
-                            dek
-                        }
-                        Err(e) => return Err(e),
-                    };
+                    let dek = Self::keychain_dek_for_new_vault().map_err(|reason| {
+                        anyhow::anyhow!(
+                            "{UNLOCK_METHOD_ENV}=keychain but the OS keychain can't keep the \
+                             vault key ({reason}); {}. Or remove the override to allow \
+                             passphrase fallback",
+                            peko_identity::keychain::unavailable_hint()
+                        )
+                    })?;
                     (VaultFile::default(), dek, None, UnlockMethod::Keychain)
                 }
-                // Default: prefer keychain when available, fall back to
-                // passphrase (unchanged from pre-override behavior).
-                None => {
-                    if keychain.is_available() {
-                        // If a DEK already exists in the keychain, reuse it so that a
-                        // deleted vault file can be recreated without destroying the
-                        // key needed to decrypt any backups of the old file.
-                        let dek = match Self::try_retrieve_dek_from_keychain() {
-                            Ok(Some(dek)) => dek,
-                            Ok(None) => {
-                                let dek = Self::generate_dek();
-                                Self::store_dek_in_keychain(&dek)?;
-                                dek
-                            }
-                            Err(e) => return Err(e),
-                        };
-                        (VaultFile::default(), dek, None, UnlockMethod::Keychain)
-                    } else {
-                        let passphrase = Self::passphrase_from_env_or_test_fallback()
-                            .ok_or(VaultError::NoPassphrase)?;
+                // Default: prefer the keychain, fall back to a passphrase.
+                None => match Self::keychain_dek_for_new_vault() {
+                    Ok(dek) => (VaultFile::default(), dek, None, UnlockMethod::Keychain),
+                    Err(reason) => {
+                        let passphrase = Self::passphrase_from_env_or_test_fallback().ok_or(
+                            VaultError::KeychainUnusable {
+                                reason: reason.clone(),
+                            },
+                        )?;
+                        tracing::warn!(
+                            "OS keychain can't keep the vault key ({reason}); \
+                             using {MASTER_PASSPHRASE_ENV}"
+                        );
                         let (file, dek, salt) = Self::new_file_with_passphrase(&passphrase)?;
                         (file, dek, Some(salt), UnlockMethod::Passphrase)
                     }
-                }
+                },
             };
 
             let vault = Self {
@@ -2278,6 +2270,31 @@ impl Vault {
         }
     }
 
+    /// The DEK for a new keychain-mode vault: the one already in the OS
+    /// keychain, if any, else a fresh one stored there and read back.
+    ///
+    /// No throwaway probe entry: a keychain that refuses new writes (a full
+    /// Windows Credential Manager) still serves the key it already holds,
+    /// and a recreated vault file keeps the key any backups of the old one
+    /// need. `Err` carries the keychain's reason, for the caller's message.
+    #[cfg_attr(test, allow(dead_code))]
+    fn keychain_dek_for_new_vault() -> std::result::Result<Vec<u8>, String> {
+        match Self::try_retrieve_dek_from_keychain() {
+            Ok(Some(dek)) if dek.len() == KEY_LENGTH => return Ok(dek),
+            Ok(Some(_)) => return Err("the vault key in the keychain has the wrong length".into()),
+            Ok(None) => {}
+            Err(e) => return Err(format!("{e:#}")),
+        }
+        let dek = Self::generate_dek();
+        Self::store_dek_in_keychain(&dek).map_err(|e| format!("{e:#}"))?;
+        // Some backends accept a write and keep nothing.
+        match Self::try_retrieve_dek_from_keychain() {
+            Ok(Some(kept)) if kept == dek => Ok(dek),
+            Ok(_) => Err("the keychain did not keep the vault key".into()),
+            Err(e) => Err(format!("{e:#}")),
+        }
+    }
+
     fn store_dek_in_keychain(dek: &[u8]) -> Result<()> {
         let entry = Self::keychain_entry()?;
         let dek_hex = hex::encode(dek);
@@ -2391,6 +2408,22 @@ mod tests {
     use base64::Engine;
     use secrecy::SecretString;
     use tempfile::TempDir;
+
+    /// A keychain that won't keep the vault key says why and what to do,
+    /// not just "no master passphrase".
+    #[test]
+    fn keychain_unusable_says_why_and_what_to_try() {
+        let msg = VaultError::KeychainUnusable {
+            reason: "Platform secure storage failure: Windows error code 8".into(),
+        }
+        .to_string();
+        assert!(msg.contains("Windows error code 8"), "{msg}");
+        assert!(
+            msg.contains(peko_identity::keychain::unavailable_hint()),
+            "{msg}"
+        );
+        assert!(msg.contains(MASTER_PASSPHRASE_ENV), "{msg}");
+    }
 
     #[test]
     fn test_passphrase_vault_roundtrip() {

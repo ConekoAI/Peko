@@ -67,8 +67,12 @@ struct NameAlias {
 
 /// Passphrase resolution for headless/test operation: `PEKO_IDENTITY_PASSPHRASE`
 /// wins; `PEKO_MASTER_PASSPHRASE` (the vault master passphrase the test
-/// harnesses and headless daemons already set) is the fallback so tests
-/// never touch the OS keychain.
+/// harnesses and headless daemons already set) is the fallback.
+///
+/// This crate's own tests always get a passphrase, so they never touch the
+/// OS keychain: they used to store every identity they generated in the
+/// developer's real keychain and never remove it, until Windows Credential
+/// Manager filled up and refused every write (the vault's included).
 fn env_passphrase_from_env() -> Option<SecretString> {
     std::env::var("PEKO_IDENTITY_PASSPHRASE")
         .ok()
@@ -79,6 +83,18 @@ fn env_passphrase_from_env() -> Option<SecretString> {
                 .filter(|s| !s.is_empty())
         })
         .map(|s| SecretString::new(s.into()))
+        .or_else(|| {
+            #[cfg(test)]
+            {
+                Some(SecretString::new(
+                    "peko-identity-unit-test-passphrase-do-not-use".into(),
+                ))
+            }
+            #[cfg(not(test))]
+            {
+                None
+            }
+        })
 }
 
 /// Key storage manager
@@ -188,15 +204,18 @@ impl KeyStorage {
             let enc_path = self.encrypted_key_path(&identity.did);
             EncryptedKeyStorage::store_key(&enc_path, &export.private_key, test_passphrase)
                 .context("Failed to store key in encrypted file (test fallback)")?
-        } else if keychain.is_available() {
-            keychain
-                .store_key(&identity.did, &export.private_key)
-                .context("Failed to store key in OS keychain")?
         } else {
-            anyhow::bail!(
-                "OS keychain is unavailable and no passphrase was provided. \
-                 Set PEKO_IDENTITY_PASSPHRASE or PEKO_MASTER_PASSPHRASE, or use KeyStorage::with_passphrase() for headless environments."
-            );
+            match keychain.probe() {
+                Ok(()) => keychain
+                    .store_key(&identity.did, &export.private_key)
+                    .context("Failed to store key in OS keychain")?,
+                Err(reason) => anyhow::bail!(
+                    "OS keychain is unavailable ({reason}) and no passphrase was provided; {}. \
+                     Or set PEKO_IDENTITY_PASSPHRASE or PEKO_MASTER_PASSPHRASE, or use \
+                     KeyStorage::with_passphrase() for headless environments.",
+                    crate::keychain::unavailable_hint()
+                ),
+            }
         };
 
         let stored = StoredIdentity {
@@ -326,14 +345,17 @@ impl KeyStorage {
             let enc_path = self.encrypted_key_path(&did);
             EncryptedKeyStorage::store_key(&enc_path, &legacy.private_key, test_passphrase)
                 .context("Failed to migrate key to encrypted file")?
-        } else if keychain.is_available() {
-            keychain
-                .store_key(&did, &legacy.private_key)
-                .context("Failed to migrate key to OS keychain")?
         } else {
-            anyhow::bail!(
-                "Cannot migrate legacy identity {did}: OS keychain unavailable and no passphrase provided"
-            );
+            match keychain.probe() {
+                Ok(()) => keychain
+                    .store_key(&did, &legacy.private_key)
+                    .context("Failed to migrate key to OS keychain")?,
+                Err(reason) => anyhow::bail!(
+                    "Cannot migrate legacy identity {did}: OS keychain unavailable ({reason}) \
+                     and no passphrase provided; {}",
+                    crate::keychain::unavailable_hint()
+                ),
+            }
         };
 
         // 2. Build the new stored format
@@ -617,6 +639,17 @@ mod tests {
     use super::*;
     use secrecy::SecretString;
     use tempfile::TempDir;
+
+    /// Tests never put keys in the developer's real keychain: storage made
+    /// the way production makes it seals keys in a file even with no
+    /// passphrase in the environment.
+    #[test]
+    fn test_builds_never_store_keys_in_the_os_keychain() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = KeyStorage::with_path(temp_dir.path().to_path_buf()).unwrap();
+        let identity = storage.generate_identity(DIDScope::Local, None).unwrap();
+        assert!(storage.encrypted_key_path(&identity.did).exists());
+    }
 
     #[test]
     fn test_generate_and_store() {

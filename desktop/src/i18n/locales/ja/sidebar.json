@@ -4,6 +4,7 @@
   "people": "ユーザー",
   "pekos": "Peko",
   "loading": "読み込み中…",
+  "loadFailed": "peko を読み込めませんでした。",
   "wakingTitle": "この peko はまだ初期設定中です",
   "waking": "起動中…",
   "needsModel": "モデルが必要",

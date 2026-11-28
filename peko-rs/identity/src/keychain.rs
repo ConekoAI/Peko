@@ -111,50 +111,54 @@ impl KeychainStorage {
         Ok(())
     }
 
-    /// Check if the OS keychain is available.
-    ///
-    /// Tries to create a dummy entry with a random account, set a dummy password,
-    /// get it back, then delete it. Returns `true` if all steps succeed.
+    /// Check if the OS keychain is available. See [`Self::probe`].
     pub fn is_available(&self) -> bool {
+        match self.probe() {
+            Ok(()) => true,
+            Err(reason) => {
+                warn!("Keychain probe: {reason}");
+                false
+            }
+        }
+    }
+
+    /// Check that the OS keychain can keep a secret: write a throwaway
+    /// entry, read it back, delete it. `Err` says which step failed and
+    /// the OS's reason, for an error a person can act on.
+    pub fn probe(&self) -> std::result::Result<(), String> {
         let probe_account = format!("__peko_probe_{}", uuid::Uuid::new_v4());
         let probe_password = "__probe_password__";
 
-        let entry = match keyring::Entry::new(&self.service_name, &probe_account) {
-            Ok(e) => e,
-            Err(e) => {
-                warn!("Keychain probe: failed to create entry: {e}");
-                return false;
-            }
-        };
+        let entry = keyring::Entry::new(&self.service_name, &probe_account)
+            .map_err(|e| format!("failed to create entry: {e}"))?;
 
-        if let Err(e) = entry.set_password(probe_password) {
-            warn!("Keychain probe: failed to set password: {e}");
-            return false;
-        }
+        entry
+            .set_password(probe_password)
+            .map_err(|e| format!("failed to set password: {e}"))?;
 
-        match entry.get_password() {
-            Ok(p) => {
-                if p != probe_password {
-                    warn!("Keychain probe: retrieved password does not match");
-                    // Still try to clean up
-                    let _ = entry.delete_password();
-                    return false;
-                }
-            }
-            Err(e) => {
-                warn!("Keychain probe: failed to get password: {e}");
-                let _ = entry.delete_password();
-                return false;
-            }
-        }
-
+        let read = entry.get_password();
+        // Clean up before judging: a probe must not leave entries behind.
         if let Err(e) = entry.delete_password() {
+            // We could write; some backends don't support deletion.
             warn!("Keychain probe: failed to delete password: {e}");
-            // We were able to read/write, so consider it available even if
-            // cleanup failed. Some backends don't support deletion.
         }
+        match read {
+            Ok(p) if p == probe_password => Ok(()),
+            Ok(_) => Err("retrieved password does not match".to_string()),
+            Err(e) => Err(format!("failed to get password: {e}")),
+        }
+    }
+}
 
-        true
+/// What to try when the OS keychain refuses a secret, for the end of an
+/// error message. Windows Credential Manager has a size limit, and a full
+/// one refuses every write ("Windows error code 8").
+#[must_use]
+pub fn unavailable_hint() -> &'static str {
+    if cfg!(windows) {
+        "Windows Credential Manager may be full: remove credentials you no          longer need (Control Panel > Credential Manager > Windows Credentials),          then start Peko again"
+    } else {
+        "check that the OS keychain is unlocked and reachable from this session"
     }
 }
 

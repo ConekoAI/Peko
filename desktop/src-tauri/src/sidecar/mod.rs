@@ -732,9 +732,11 @@ fn handle_stderr_line(inner: &Arc<Mutex<Inner>>, app: &AppHandle, line: &str) {
         let mut g = inner.lock().unwrap();
         g.version = Some(version.clone());
         // Promote Starting → Running the first time we see a version.
+        // The crash counters stay: the runtime prints its version before
+        // it loads anything (vault, identity, pekos), so a daemon that
+        // dies while loading must still count toward giving up. They
+        // reset in `handle_terminated` once a run has lasted.
         if matches!(g.state, EngineState::Starting) {
-            g.first_exit_at = None;
-            g.restart_count = 0;
             let pid = g.child_pid.unwrap_or(0);
             g.state = EngineState::Running {
                 pid,
@@ -811,6 +813,15 @@ async fn handle_terminated(inner: &Arc<Mutex<Inner>>, app: &AppHandle, payload: 
         push_log_inner(&mut g, format!("[supervisor] {msg}"));
 
         let was_running = matches!(g.state, EngineState::Running { .. } | EngineState::Starting);
+        // A run that outlasted the give-up window was a healthy one: its
+        // exit gets a fresh restart. One that died sooner (say, while
+        // loading the vault) counts toward giving up.
+        if g.started_at
+            .is_some_and(|t| t.elapsed() >= RESTART_GIVEUP_WINDOW)
+        {
+            g.first_exit_at = None;
+            g.restart_count = 0;
+        }
         if was_running {
             // Nobody asked it to stop: say so in a crash report (exit
             // code, signal and version only; pekohub ADR-014).
@@ -838,9 +849,12 @@ async fn handle_terminated(inner: &Arc<Mutex<Inner>>, app: &AppHandle, payload: 
                 g.child_pid = None;
                 Action::Restart
             } else {
-                g.state = EngineState::Failed {
-                    message: format!("engine keeps stopping ({msg})"),
+                // Say why, in the daemon's own words when it gave any.
+                let message = match last_daemon_error(&g.log_ring) {
+                    Some(reason) => format!("engine keeps stopping ({msg}): {reason}"),
+                    None => format!("engine keeps stopping ({msg})"),
                 };
+                g.state = EngineState::Failed { message };
                 g.last_error = Some(msg.clone());
                 g.child = None;
                 g.child_pid = None;
@@ -873,6 +887,24 @@ async fn handle_terminated(inner: &Arc<Mutex<Inner>>, app: &AppHandle, payload: 
             }
         }
     }
+}
+
+/// The daemon's last error line in `log_ring`, without its `Error: `
+/// prefix: what `main` printed as it gave up (`Error: Failed to create
+/// AppState: …`), else the last `ERROR`-level log line. The supervisor's
+/// own lines don't count.
+fn last_daemon_error(log_ring: &VecDeque<String>) -> Option<String> {
+    let daemon_lines = || {
+        log_ring
+            .iter()
+            .rev()
+            .filter(|l| !l.starts_with("[supervisor]"))
+    };
+    daemon_lines()
+        .find_map(|l| l.strip_prefix("Error: "))
+        .or_else(|| daemon_lines().find_map(|l| l.split_once(" ERROR ").map(|(_, rest)| rest)))
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
 }
 
 fn emit_state_change(app: &AppHandle) {
@@ -1268,6 +1300,43 @@ mod tests {
             g.log_ring.back().unwrap(),
             &format!("line {}", LOG_RING_CAPACITY + 50 - 1)
         );
+    }
+
+    #[test]
+    fn last_daemon_error_is_what_the_daemon_gave_up_on() {
+        let ring: VecDeque<String> = [
+            "PEKO_VERSION=0.8.0",
+            "2026-11-28T14:24:28Z  WARN peko_identity::keychain: Keychain probe: failed",
+            "Error: Failed to create AppState: no master passphrase available",
+            "[supervisor] engine exited with code 1",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        assert_eq!(
+            last_daemon_error(&ring).as_deref(),
+            Some("Failed to create AppState: no master passphrase available")
+        );
+    }
+
+    #[test]
+    fn last_daemon_error_falls_back_to_an_error_log_line() {
+        let ring: VecDeque<String> = [
+            "2026-11-28T14:24:28Z ERROR peko_core::daemon: pipe already in use",
+            "[supervisor] engine exited with code 1",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        assert_eq!(
+            last_daemon_error(&ring).as_deref(),
+            Some("peko_core::daemon: pipe already in use")
+        );
+        let quiet: VecDeque<String> = ["PEKO_VERSION=0.8.0", "[supervisor] Error: not mine"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(last_daemon_error(&quiet), None);
     }
 
     #[test]

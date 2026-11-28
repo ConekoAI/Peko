@@ -52,6 +52,7 @@ import {
   Paperclip,
   Clock,
   Moon,
+  AlertTriangle,
 } from "lucide-react";
 import Markdown from "../components/chat/Markdown";
 import { copyText } from "../components/chat/copy";
@@ -661,7 +662,14 @@ export default function Chat() {
 
   const runtimeId = search.runtimeId ?? "local";
 
-  const { data: principals, isLoading } = usePrincipals();
+  const {
+    data: principals,
+    isLoading,
+    isError: principalsFailed,
+    error: principalsError,
+    isFetching: principalsFetching,
+    refetch: refetchPrincipals,
+  } = usePrincipals();
 
   // The peko comes from the same place as `runtimeId`: the URL. The
   // route's params lag it while a navigation settles, and the two mixed
@@ -1183,6 +1191,35 @@ export default function Chat() {
     return (
       <div className="flex h-full items-center justify-center">
         <Loader2 className="h-6 w-6 animate-spin text-fg-subtle" />
+      </div>
+    );
+  }
+
+  // The list never came (the engine is down, say): show why, not the
+  // "no pekos yet" page a fresh profile gets.
+  if (principalsFailed && !principals && !remotePeko) {
+    return (
+      <div
+        data-testid="chat-load-failed"
+        className="flex h-full animate-fade-in flex-col items-center justify-center gap-4 p-8"
+      >
+        <div className="tile h-14 w-14 rounded-2xl"><AlertTriangle className="h-6 w-6 text-danger" /></div>
+        <div className="max-w-md text-center">
+          <p className="h-section">{t("sidebar.loadFailed")}</p>
+          {principalsError && (
+            <p className="mt-1 break-words text-xs text-fg-muted">
+              {principalsError instanceof Error ? principalsError.message : String(principalsError)}
+            </p>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={() => refetchPrincipals()}
+          disabled={principalsFetching}
+          className="btn-secondary"
+        >
+          {t("common.retry")}
+        </button>
       </div>
     );
   }

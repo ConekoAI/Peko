@@ -13,6 +13,14 @@ pub enum TrayError {
 
 pub type Result<T> = std::result::Result<T, TrayError>;
 
+/// The favicon tile, filling the square like the icons beside it.
+#[cfg(not(target_os = "macos"))]
+const TRAY_ICON: &[u8] = include_bytes!("../../icons/tray.png");
+/// The favicon as a menu bar template: black where the tile shows, clear
+/// where the leaves are.
+#[cfg(target_os = "macos")]
+const TRAY_ICON: &[u8] = include_bytes!("../../icons/tray-template.png");
+
 /// The menu's items, kept so their labels can follow the app's language.
 pub struct TrayItems {
     open: MenuItem<tauri::Wry>,
@@ -72,8 +80,14 @@ pub fn build_tray(app: &AppHandle) -> Result<TrayIcon> {
         quit: quit_i.clone(),
     });
 
+    // PekoHub's favicon, not the window icon: the app icon's padding
+    // shrinks the sprout to a speck at tray size. macOS gets it as a
+    // template image the menu bar tints (`scripts/gen-tray-icon.py`).
+    let icon = tauri::image::Image::from_bytes(TRAY_ICON)
+        .map_err(|e| TrayError::BuildFailed(e.to_string()))?;
     let tray = TrayIconBuilder::new()
-        .icon(app.default_window_icon().unwrap().clone())
+        .icon(icon)
+        .icon_as_template(cfg!(target_os = "macos"))
         .tooltip("Peko Desktop")
         .menu(&menu)
         .on_menu_event(|app, event| match event.id().as_ref() {
@@ -96,4 +110,42 @@ pub fn build_tray(app: &AppHandle) -> Result<TrayIcon> {
         .build(app)
         .map_err(|e: tauri::Error| TrayError::BuildFailed(e.to_string()))?;
     Ok(tray)
+}
+
+#[cfg(test)]
+mod tests {
+    use tauri::image::Image;
+
+    fn decode(bytes: &[u8]) -> Image<'_> {
+        Image::from_bytes(bytes).unwrap()
+    }
+
+    /// Windows and Linux: the favicon tile fills the 32 px square, teal
+    /// to its edges, with rounded (clear) corners.
+    #[test]
+    fn tray_icon_is_the_favicon_tile() {
+        let icon = decode(include_bytes!("../../icons/tray.png"));
+        assert_eq!((icon.width(), icon.height()), (32, 32));
+        let px = |x: u32, y: u32| {
+            let i = ((y * icon.width() + x) * 4) as usize;
+            &icon.rgba()[i..i + 4]
+        };
+        assert_eq!(px(0, 0)[3], 0, "rounded corner is clear");
+        assert_eq!(px(16, 1), &[0, 136, 128, 255], "top edge is the teal tile");
+    }
+
+    /// macOS: a template image, so only black and clear, with clear air
+    /// around the tile.
+    #[test]
+    fn mac_tray_icon_is_a_template() {
+        let icon = decode(include_bytes!("../../icons/tray-template.png"));
+        assert_eq!((icon.width(), icon.height()), (36, 36));
+        for px in icon.rgba().chunks(4) {
+            assert!(
+                px[3] == 0 || px[..3] == [0, 0, 0],
+                "template pixels are black: {px:?}"
+            );
+        }
+        assert_eq!(icon.rgba()[(18 * 36 + 1) * 4 + 3], 0, "margin is clear");
+    }
 }
