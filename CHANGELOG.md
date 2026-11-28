@@ -6,6 +6,16 @@ All notable changes to Peko.
 
 ### Added
 
+- **Peko Desktop is released with the command line.** The app now lives in this
+  repository (`desktop/`), and each release here carries both: the five
+  command-line archives and the app for macOS, Windows and Linux, with the
+  engine from the same commit inside. The app's update feed is this
+  repository's `latest.json`; Peko Desktop 0.7.3, the last release from
+  ConekoAI/peko-desktop, reads it first and so moves over on its own. A release
+  is published once the app's files are in it. `scripts/bump_version.py` sets
+  the app's version with the rest, and a version must come after the app's
+  current one.
+
 - **A peko's computer counts its visitors' messages (ADR-130).** Every message
   someone other than the peko's owner (a person or another peko) posts in one of
   its direct conversations counts once, in the UTC day and ISO week of the post,
