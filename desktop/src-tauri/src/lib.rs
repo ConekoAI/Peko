@@ -1,0 +1,316 @@
+use tauri::{AppHandle, Emitter, Listener, Manager};
+
+pub mod clients;
+pub mod commands;
+pub mod computer;
+pub mod fs;
+pub mod ipc;
+pub mod sidecar;
+pub mod state;
+pub mod storage;
+pub mod telemetry;
+pub mod tray;
+pub mod updater;
+pub mod usage;
+pub mod window_fit;
+
+/// The peko-runtime version this app needs: the one its release bundles
+/// as the sidecar, and the oldest one it accepts from a daemon it didn't
+/// start (peko-runtime ADR-102 D4). It lives in `src-tauri/runtime-version`
+/// so the release workflow reads the same value. The app has its own
+/// version; the two no longer move together.
+fn expected_engine_version() -> String {
+    include_str!("../runtime-version").trim().to_string()
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    // Crash reports (pekohub ADR-014). Held until the app ends, so what is
+    // still queued is sent. `None` in a build without a Sentry address.
+    let _crash_reports = telemetry::init();
+    tauri::Builder::default()
+        // One copy of the app. Its window can be hidden while the engine
+        // keeps running (see the close handling in `run` below), so opening
+        // the app again must bring that window back, not start a second
+        // copy with its own tray and supervisor. Registered first, as the
+        // plugin requires; with `deep-link` it also hands a link that
+        // launched the second copy to this one.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            tray::show_main_window(app);
+        }))
+        // Pages a peko answers with (runtime ADR-118), served with their
+        // own sandboxing policy so their scripts run away from the app.
+        .register_uri_scheme_protocol("pekopage", |_ctx, request| {
+            commands::attachments::serve_page(&request)
+        })
+        .plugin(tauri_plugin_opener::init())
+        // The shortcut that stops a peko using the screen (runtime ADR-123).
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
+        // Size, position, and the like are restored; decorations and
+        // visibility are not. A window hidden to the tray when the app
+        // quit must still appear at the next start. They come from the window config (`tauri.macos.conf.json`
+        // gives macOS its native buttons), and a state file saved by an
+        // older build with `decorated: false` would otherwise hide them
+        // for good.
+        .plugin(
+            tauri_plugin_window_state::Builder::new()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::all()
+                        - tauri_plugin_window_state::StateFlags::DECORATIONS
+                        - tauri_plugin_window_state::StateFlags::VISIBLE,
+                )
+                .build(),
+        )
+        .plugin(tauri_plugin_os::init())
+        // In-app updates (commands/update.rs).
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_shell::init())
+        // PR #6: deep-link plugin. Wires the platform-specific URL
+        // handler (macOS Event Mgr, Windows registry, Linux .desktop).
+        // The actual scheme list comes from the runtime `register_all`
+        // call in the setup closure below + the OS-side metadata
+        // (Info.plist `CFBundleURLTypes`, NSIS installer, deb metadata).
+        .plugin(tauri_plugin_deep_link::init())
+        .manage(tauri::async_runtime::block_on(state::init_state()))
+        .setup(|app| {
+            // Attached audio and video play from the engine's copies
+            // through the asset protocol (WebKit streams them with range
+            // requests). Only the pekos' folders are reachable, and the
+            // conversations' file stores, where files from other computers
+            // are kept (runtime ADR-094) — the webview already reads those
+            // conversations over IPC.
+            if let Some(home) = crate::commands::system::peko_home() {
+                use tauri::Manager;
+                // `principals/` is where pekos lived before the runtime
+                // moved them to `pekos/`; it stays allowed until a runtime
+                // that still uses it has migrated.
+                for dir in [
+                    home.join("pekos"),
+                    home.join("principals"),
+                    home.join("runtime").join("channels"),
+                ] {
+                    if let Err(e) = app.asset_protocol_scope().allow_directory(&dir, true) {
+                        eprintln!(
+                            "[peko-desktop] attachment playback unavailable in {}: {e}",
+                            dir.display()
+                        );
+                    }
+                }
+            }
+            // PR #6: register the desktop scheme(s) so the OS routes
+            // share links into the running app. Windows and Linux register
+            // at runtime (`register_all` writes the registry / the
+            // `.desktop` MIME entry for every scheme in `tauri.conf.json`);
+            // macOS registers from the bundle's Info.plist
+            // (`CFBundleURLTypes`), so there is nothing to do here and the
+            // plugin would only report an unsupported platform. An
+            // unbundled `tauri dev` build on macOS receives no links.
+            #[cfg(any(windows, target_os = "linux"))]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                if let Err(e) = app.deep_link().register_all() {
+                    eprintln!("[peko-desktop] deep-link register_all failed: {e}");
+                }
+            }
+
+            // PR #6: forward incoming URLs from the OS to the React
+            // layer as a `deep-link-received` event. The handler on
+            // the JS side parses the URL, distinguishes
+            // `peko://add-peko?url=...` (legacy:
+            // `peko://add-principal?url=...`) from
+            // `https://${hub}/@${owner}/${name}?token=...` (older:
+            // `/peko/…`, `/p/…`), and either calls
+            // `remotePrincipalAdd` directly or opens
+            // the AddRemotePrincipalModal pre-filled. The runtime
+            // path keeps both shapes routed through one parser so
+            // the JS contract is uniform.
+            #[cfg(desktop)]
+            {
+                use tauri::Emitter;
+                use tauri_plugin_deep_link::DeepLinkExt;
+                let deep_link_handle = app.handle().clone();
+                app.deep_link().on_open_url(move |event| {
+                    for url in event.urls() {
+                        let _ = deep_link_handle.emit("deep-link-received", url.as_str());
+                    }
+                });
+            }
+
+            // The last size and position are back (window-state plugin);
+            // a window saved at another scale may not fit the screen now.
+            window_fit::fit_main_window(app.handle());
+
+            // The tray icon: it brings the window back and quits the app. A desktop without a tray still
+            // gets the app; there, closing the window quits it.
+            if let Err(e) = tray::build_tray(app.handle()) {
+                eprintln!("[peko-desktop] no tray icon: {e}");
+            }
+
+            // A peko using this computer (runtime ADR-123): the indicator
+            // strip and the global stop shortcut.
+            computer::start(app.handle());
+            computer::register_shortcut(app.handle());
+
+            // Install the sidecar supervisor (ADR-043). This is the
+            // canonical owner of the engine lifecycle from now on —
+            // the legacy `daemon` module defers to it.
+            let supervisor = sidecar::install(&app.handle().clone());
+            supervisor.set_expected_version(expected_engine_version());
+
+            // Kick off the first spawn from setup() so the engine is
+            // up by the time the UI mounts.
+            let supervisor_for_spawn = supervisor.clone();
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = supervisor_for_spawn.start() {
+                    eprintln!("[peko-desktop] sidecar spawn failed: {e}");
+                    let _ = app_handle.emit(
+                        "engine-state-changed",
+                        &sidecar::EngineState::Failed {
+                            message: format!("spawn failed: {e}"),
+                        },
+                    );
+                }
+            });
+
+            // Bridge: EngineState → RuntimeStatus.
+            //
+            // The supervisor is the single source of truth for engine
+            // lifecycle (ADR-043). The AppState's `RuntimeStatus` is
+            // a derived view of that state, updated reactively via the
+            // `engine-state-changed` event — never by an independent
+            // probe. The legacy init-state probe was racy: it ran
+            // before this supervisor existed and produced spurious
+            // "Disconnected" labels (and double-spawned the daemon).
+            //
+            // (a) Initial-state capture handles the race where the
+            // supervisor's first emit fires before the listener is
+            // registered — without this, a fast-starting engine would
+            // be reported as `Disconnected` until its next emit.
+            //
+            // (b) The listener's EventId is dropped intentionally:
+            // Tauri's event system keeps listeners alive for the
+            // AppHandle's lifetime, so no `unlisten` is needed. A
+            // future reader should not "fix" the dropped handle.
+            let app_handle_for_bridge = app.handle().clone();
+            let supervisor_for_bridge = supervisor.clone();
+            tauri::async_runtime::spawn(async move {
+                update_local_runtime(
+                    &app_handle_for_bridge,
+                    map_engine_state_to_runtime_status(&supervisor_for_bridge.state()),
+                )
+                .await;
+
+                let listener_handle = app_handle_for_bridge.clone();
+                let _ = app_handle_for_bridge.listen("engine-state-changed", move |event| {
+                    // Best-effort parse — the supervisor always
+                    // emits `EngineState`, but a malformed payload
+                    // shouldn't crash the listener. If parsing
+                    // fails, leave the current status; the next
+                    // emit will retry.
+                    if let Ok(engine_state) =
+                        serde_json::from_str::<sidecar::EngineState>(event.payload())
+                    {
+                        let handle = listener_handle.clone();
+                        let status = map_engine_state_to_runtime_status(&engine_state);
+                        tauri::async_runtime::spawn(async move {
+                            update_local_runtime(&handle, status).await;
+                        });
+                    }
+                });
+            });
+
+            Ok(())
+        })
+        .invoke_handler(commands::register_commands())
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // The window is the front end; the tray is the app. Closing
+            // the window hides it and leaves the engine running, so pekos
+            // keep working and notifications keep coming. The tray's
+            // "Quit" (and Cmd+Q on macOS) is what ends the app: it goes
+            // through `Exit` below, which stops the engine.
+            //
+            // Without a tray icon there would be no way back to a hidden
+            // window, so there closing the window quits, as it used to.
+            if let tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::CloseRequested { api, .. },
+                ..
+            } = &event
+            {
+                if tray::is_present(app_handle) {
+                    api.prevent_close();
+                    if let Some(window) = tauri::Manager::get_webview_window(app_handle, label) {
+                        let _ = window.hide();
+                    }
+                } else {
+                    app_handle.exit(0);
+                }
+                return;
+            }
+
+            // macOS: clicking the Dock icon while the window is hidden.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = &event {
+                tray::show_main_window(app_handle);
+                return;
+            }
+
+            // Graceful shutdown on app exit: stop the sidecar so we
+            // don't leave a zombie peko process holding the lockfile.
+            // RunEvent::Exit fires after ExitRequested is accepted
+            // and the main loop is tearing down.
+            if let tauri::RunEvent::Exit = event {
+                if let Some(sup) = app_handle.try_state::<std::sync::Arc<sidecar::Supervisor>>() {
+                    let sup = sup.inner().clone();
+                    let _ = sup.stop();
+                }
+            }
+        });
+}
+
+/// Map a supervisor `EngineState` to the AppState's `RuntimeStatus`.
+///
+/// The supervisor is the canonical owner of the engine lifecycle;
+/// this mapping is the single derivation point that turns supervisor
+/// state into the local-runtime status the AppState exposes.
+fn map_engine_state_to_runtime_status(state: &sidecar::EngineState) -> state::RuntimeStatus {
+    use sidecar::EngineState::*;
+    match state {
+        Running { .. } => state::RuntimeStatus::Connected,
+        Starting | Restarting { .. } => state::RuntimeStatus::Connecting,
+        Failed { .. } => state::RuntimeStatus::Error,
+        Stopped => state::RuntimeStatus::Disconnected,
+    }
+}
+
+/// Update the AppState's `local` runtime entry with the given status.
+///
+/// Cheap — the AppState holds an `RwLock<HashMap<…>>`, so this only
+/// takes a write lock for the duration of the map insert. The
+/// `RuntimeConnection` carries everything else (id, name, ipc_path)
+/// that the original `local_default()` set, so only the `status`
+/// field needs to change.
+async fn update_local_runtime(app_handle: &AppHandle, status: state::RuntimeStatus) {
+    let app_state = app_handle.state::<state::AppState>();
+    if let Some(mut local) = app_state.get_runtime("local").await {
+        local.status = status;
+        app_state.set_runtime(local).await;
+    }
+}
+
+#[cfg(test)]
+mod runtime_version_tests {
+    #[test]
+    fn the_pinned_runtime_version_is_a_plain_version() {
+        let v = super::expected_engine_version();
+        assert!(
+            crate::sidecar::parse_release(&v).is_some() && !v.contains(['-', '+']),
+            "src-tauri/runtime-version must be X.Y.Z, got {v:?}"
+        );
+    }
+}

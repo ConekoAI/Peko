@@ -1,0 +1,139 @@
+{
+  "attachments": {
+    "listLabel": "Attached files",
+    "remove": "Remove {{name}}",
+    "open": "Open {{name}}",
+    "play": "Play {{name}}",
+    "cantPlay": "Can't play this here; open it instead",
+    "missingTitle": "{{name}} didn't arrive from the other computer yet",
+    "missing": "not received yet",
+    "pageFull": "Open {{name}} full size",
+    "pageBrowser": "Open {{name}} in your browser"
+  },
+  "composer": {
+    "label": "Message",
+    "placeholder": "Message your peko…",
+    "attachTitle": "Attach files — or drop them on the window",
+    "modelLabel": "Model for this message",
+    "pekosModel": "Peko's model",
+    "hint": "↵ to send · ⇧↵ for a new line",
+    "sendTitle": "Send (Enter)"
+  },
+  "markdown": {
+    "svgImage": "SVG image",
+    "code": "code",
+    "showImage": "Show image",
+    "showCode": "Show code",
+    "image": "Image",
+    "codeLabel": "Code",
+    "copyCode": "Copy code"
+  },
+  "hostOffline": "<computer/> is offline, so {{peko}} can't work right now. What you send waits and reaches {{peko}} when that computer is back; you'll get a notification when {{peko}} answers.",
+  "hostOfflineSince": "<computer/> is offline (last online {{ago}}), so {{peko}} can't work right now. What you send waits and reaches {{peko}} when that computer is back; you'll get a notification when {{peko}} answers.",
+  "waitingFor": "Waiting for {{name}} to come online",
+  "suggestedReplies": "Suggested replies",
+  "questions": {
+    "label": "Questions",
+    "for": "For {{name}}",
+    "pickAny": "(pick any)",
+    "otherPlaceholder": "Or in your own words…",
+    "answerPlaceholder": "Your answer…",
+    "otherLabel": "Your answer to: {{question}}",
+    "send": "Send answers",
+    "answered": "Answered"
+  },
+  "runFailure": {
+    "reason": {
+      "peko_limit": "its spending limit is reached",
+      "provider_quota": "the model provider's quota is used up",
+      "provider_unreachable": "the model provider can't be reached"
+    },
+    "waiting": "Waiting — {{reason}}. It continues on its own, next try {{when}}.",
+    "failed": "The last reply didn't go through — {{reason}}."
+  },
+  "approval": {
+    "asker": "{{name}} ({{address}})",
+    "ownerTask": "You asked {{peko}} for something {{where}} that needs your full access. Approved, it runs as you, outside that conversation, with only this brief:",
+    "ownerTaskWhere": "in a shared conversation",
+    "toolRequest": "<asker/> asks {{peko}} to run <summary/>",
+    "approve": "Approve",
+    "alwaysTitle": "Approve, and always allow this for {{name}}",
+    "always": "Always allow",
+    "deny": "Deny",
+    "wakeLimit": "Other pekos have woken {{peko}} as often as its limit allows in a group. Their messages to it are waiting.",
+    "wakeLimitContinue": "Let it continue",
+    "wakeLimitNoLimit": "No limit in this group",
+    "wakeLimitNoLimitTitle": "Let it continue, and stop limiting how often other pekos wake {{peko}} in this group",
+    "wakeLimitNotNow": "Not now"
+  },
+  "secret": {
+    "request": "{{peko}} asks for <name/>",
+    "mcpRequest": "{{peko}} asks for <name/> for its MCP server <server/>",
+    "label": "Value of {{name}}",
+    "placeholder": "Paste or type it here",
+    "show": "Show",
+    "hide": "Hide",
+    "save": "Save securely",
+    "decline": "Decline",
+    "hint": "It goes to this computer's vault. {{peko}} is told it was saved, never the value. Don't paste secrets into the chat."
+  },
+  "browser": {
+    "needsYou": "{{peko}} needs you in its browser",
+    "open": "{{peko}} has a browser open",
+    "openButton": "Open browser",
+    "title": "{{peko}}'s browser",
+    "tab": "Tab",
+    "back": "Back",
+    "reload": "Reload",
+    "address": "Address",
+    "take": "Take control",
+    "release": "Hand back",
+    "watching": "You're watching. {{peko}} is using the browser.",
+    "handoff": "{{peko}} is waiting for you. Take control to step in.",
+    "controlling": "You have control. {{peko}} waits until you hand back.",
+    "other": "Another of your devices has control.",
+    "waiting": "Waiting for the page…",
+    "typeHere": "Type or paste text to send to the page",
+    "send": "Send",
+    "hint": "What you click and type goes straight to the page on the computer that runs {{peko}}. It isn't kept in the chat, and {{peko}} never sees it."
+  },
+  "changes": {
+    "summary_one": "{{peko}} changed {{count}} file",
+    "summary_other": "{{peko}} changed {{count}} files",
+    "undo": "Undo",
+    "dismiss": "Hide",
+    "kind": {
+      "added": "added",
+      "modified": "changed",
+      "deleted": "deleted"
+    },
+    "shell": "It also ran shell commands; files they changed outside its workspace aren't listed or undone.",
+    "restored_one": "Put back {{count}} file.",
+    "restored_other": "Put back {{count}} files.",
+    "skipped": "Left {{path}} alone: {{why}}"
+  },
+  "yourPeko": "Your peko",
+  "onComputer": "· on {{computer}}",
+  "ownersPeko": "{{owner}}'s peko",
+  "pekosComputer": "{{name}}'s computer",
+  "selectPeko": "Select a peko from the sidebar",
+  "noPekos": "No pekos yet",
+  "noPekosHint": "Create your first peko to start chatting.",
+  "createPeko": "Create a peko",
+  "signInPrompt": "Have pekos on another computer? <signIn>Sign in with PekoHub</signIn> to see them here.",
+  "dropFiles": "Drop files to attach",
+  "begin": "Send a message to begin...",
+  "working": "{{name}} is working",
+  "workingFor": "{{name}} is working · {{seconds}}s",
+  "waitsSameNetwork": "Waits until you are on the same network",
+  "message": {
+    "reply": "Reply",
+    "react": "React",
+    "otherEmoji": "Any emoji",
+    "reactedBy": "{{emoji}} by {{names}}",
+    "you": "You",
+    "notLoaded": "A message that isn't loaded",
+    "replyingTo": "Replying to {{name}}",
+    "reactFailed": "Couldn't react: {{reason}}"
+  }
+}

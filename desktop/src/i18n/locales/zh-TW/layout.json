@@ -1,0 +1,90 @@
+{
+  "rail": {
+    "chats": "聊天",
+    "groups": "群組",
+    "settings": "設定",
+    "newGroup": "新增群組",
+    "invitationLabel": "邀請：{{name}}",
+    "invitation": "邀請",
+    "invitationSummary_other": "{{count}} 位成員 · 來自 {{inviter}}",
+    "joining": "正在加入…",
+    "joinGroup": "加入群組",
+    "joinHint": "貼上邀請連結，或公開群組的 ID。",
+    "joinAsked": "已申請加入 {{name}}。群組擁有者的電腦放行後，它會出現在這裡。",
+    "asking": "正在申請…"
+  },
+  "titleBar": {
+    "minimize": "最小化",
+    "maximize": "最大化",
+    "restore": "還原",
+    "close": "關閉"
+  },
+  "engineFailure": {
+    "title": "引擎無法啟動",
+    "body": "在引擎執行之前，聊天和其他依賴引擎的功能都無法使用。",
+    "restart": "重新啟動引擎",
+    "restarting": "正在重新啟動…",
+    "hideDetails": "隱藏詳細資訊",
+    "showDetails": "顯示詳細資訊"
+  },
+  "statusBar": {
+    "failed": "{{label}}：{{detail}}",
+    "failedFallback": "引擎處於失敗狀態"
+  },
+  "keepAwake": {
+    "title": "peko 工作時讓這台電腦保持喚醒",
+    "hint": "這樣這台電腦上的 peko 就能完成你從其他電腦交給它們的事。只有在 peko 工作期間及之後一分鐘內才會阻止睡眠。闔上筆記型電腦的上蓋仍會讓它進入睡眠。"
+  },
+  "runtimeBadge": {
+    "local": "本機"
+  },
+  "versionMismatch": {
+    "newerTitle": "這個應用程式比你的 Peko 舊",
+    "newerBody": "正在執行的是 Peko <running/>，而這個應用程式是為 <needed/> 製作的。部分功能可能無法使用。請更新 Peko Desktop。",
+    "olderTitle": "你的 Peko 版本低於這個應用程式的需求",
+    "olderBody": "正在執行的是 Peko <running/>，而這個應用程式需要 <needed/> 或更新版本。部分功能可能無法使用。",
+    "unknownTitle": "無法判斷你的 Peko 是否適用於這個應用程式",
+    "unknownBody": "Peko 回報的版本是 <running/>，而這個應用程式需要 <needed/> 或更新版本。部分功能可能無法使用。",
+    "dismiss": "關閉版本不符提示"
+  },
+  "tray": {
+    "open": "開啟",
+    "quit": "結束"
+  },
+  "update": {
+    "available": "Peko Desktop {{version}} 已可使用。重新啟動時你的 peko 會暫停片刻。",
+    "install": "更新並重新啟動",
+    "downloading": "正在下載…",
+    "downloadingPercent": "正在下載… {{percent}}%",
+    "installing": "正在安裝…",
+    "failed": "更新沒有完成。請從下載頁面取得新版本。",
+    "downloadPage": "開啟下載頁面",
+    "dismiss": "關閉"
+  },
+  "deviceList": {
+    "notOn": "這台電腦還不在你帳戶的裝置中，所以它以你的身分傳送的內容會先等待。",
+    "join": "新增"
+  },
+  "computer": {
+    "strip": {
+      "using": "{{peko}} 正在使用這台電腦",
+      "paused": "{{peko}} 已暫停：你使用了電腦",
+      "stop": "停止",
+      "continue": "讓它繼續",
+      "somePeko": "一個 peko"
+    },
+    "setting": {
+      "title": "允許 peko 使用這台電腦",
+      "hint": "為你工作的 peko 可以看到螢幕，並在應用程式中點按和輸入，去做其他工具做不到的事。移動滑鼠或打字會讓它暫停；按 {{shortcut}} 可在任何應用程式中停止它。",
+      "permissions": "{{app}} 的權限",
+      "permissionsPlain": "權限",
+      "screenRecording": "螢幕錄製",
+      "accessibility": "輔助使用",
+      "granted": "已授權",
+      "notGranted": "未授權",
+      "ask": "要求權限",
+      "restartHint": "螢幕錄製在 Peko 重新啟動後生效。",
+      "unavailable": "這台電腦上無法使用：{{why}}"
+    }
+  }
+}

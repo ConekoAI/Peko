@@ -1,0 +1,296 @@
+// Tests for the principal profile modal's ADR-covered surfaces:
+//   • share link uses the canonical `/peko/{owner}/{name}` form
+//   • registration changes go through `principalRegister`; an
+//     `[exposure_conflict]` rejection renders the dedicated
+//     one-online-copy alert with the tag stripped
+//   • `.peko` export panel: key warning, validated path input,
+//     principalExport payload, success echo
+
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+
+const navigateMock = vi.fn();
+vi.mock("@tanstack/react-router", () => ({
+  useNavigate: () => navigateMock,
+}));
+
+// The share link comes from the backend (`peko_share_link`): the hub the
+// runtime is registered with, and the owner's handle there.
+const shareLinkState: { data: string | null } = { data: "https://pekohub.ai/peko/alice/helper" };
+vi.mock("@tanstack/react-query", () => ({
+  useQueryClient: () => ({ invalidateQueries: vi.fn() }),
+  useQuery: (opts: { enabled?: boolean }) => ({ data: opts.enabled ? shareLinkState.data : undefined }),
+}));
+
+interface MutState {
+  error: unknown;
+  isPending: boolean;
+  mutate: ReturnType<typeof vi.fn>;
+  reset: ReturnType<typeof vi.fn>;
+}
+
+function idleMut(): MutState {
+  return { error: null, isPending: false, mutate: vi.fn(), reset: vi.fn() };
+}
+
+const principalState: { data: unknown; isLoading: boolean } = {
+  data: undefined,
+  isLoading: false,
+};
+const updateState: MutState = idleMut();
+const removeState: MutState = idleMut();
+const exportState: MutState = idleMut();
+const linkedAccountState: { data: { id: string; name: string | null } | null } = {
+  data: null,
+};
+
+vi.mock("../hooks/usePrincipals", () => ({
+  usePrincipal: () => principalState,
+  usePrincipalUpdate: () => updateState,
+  usePrincipalRemove: () => removeState,
+  usePrincipalExport: () => exportState,
+  useLocalUserAccount: () => linkedAccountState,
+}));
+
+vi.mock("../hooks/usePrincipalStatus", () => ({
+  usePrincipalStatus: () => ({ data: { status: "online" }, isLoading: false }),
+  statusBadge: (s: string) => ({ label: s, color: "text-emerald-500" }),
+}));
+
+vi.mock("../hooks/useModels", () => ({
+  useModels: () => ({ data: [], isLoading: false }),
+}));
+
+vi.mock("../hooks/useSettings", () => ({
+  useSettings: () => ({
+    data: [{ key: "pekohub.base_url", value: "https://pekohub.org" }],
+  }),
+}));
+
+const principalRegisterMock = vi.fn();
+vi.mock("../lib/api", () => ({
+  principalSetStatus: vi.fn(),
+  principalMintInvite: vi.fn(),
+  principalRevokeInvite: vi.fn(),
+  principalRegister: (...args: unknown[]) => principalRegisterMock(...args),
+  pekoShareLink: vi.fn(),
+  DEFAULT_HUB_URL: "https://api.pekohub.ai",
+  configuredHubUrl: () => "https://api.pekohub.ai",
+}));
+
+// The usage panel has its own tests (UsagePanel.test.tsx).
+vi.mock("../components/peko/UsagePanel", () => ({ default: () => null }));
+// So has the sharing panel (SharingPanel.test.tsx).
+vi.mock("../components/peko/SharingPanel", () => ({ default: () => null }));
+
+import PrincipalProfileModal from "../components/modals/PrincipalProfileModal";
+
+/** Edit, pick a registration, Save; the config update succeeds. */
+function saveRegistration(value: string) {
+  updateState.mutate.mockImplementation(
+    (_payload: unknown, opts?: { onSuccess?: () => void }) => opts?.onSuccess?.(),
+  );
+  fireEvent.click(screen.getByTitle("Edit"));
+  fireEvent.change(screen.getByLabelText("PekoHub"), { target: { value } });
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+}
+
+const LOCAL_PUBLIC = {
+  name: "helper",
+  exposure: "public",
+  status: "online",
+  description: "personal assistant",
+  preferredModelId: null,
+  owner: "user:local",
+  runtimeId: "local",
+};
+
+function renderModal(principal: unknown = LOCAL_PUBLIC) {
+  principalState.data = principal;
+  return render(
+    <PrincipalProfileModal
+      open
+      principalName="helper"
+      onClose={vi.fn()}
+    />,
+  );
+}
+
+describe("PrincipalProfileModal", () => {
+  beforeEach(() => {
+    navigateMock.mockReset();
+    principalRegisterMock.mockReset();
+    principalState.data = undefined;
+    principalState.isLoading = false;
+    linkedAccountState.data = null;
+    for (const s of [updateState, removeState, exportState]) {
+      s.error = null;
+      s.isPending = false;
+      s.mutate.mockReset();
+      s.reset.mockReset();
+    }
+  });
+
+  it("shows the share link the hub gives, and none when there is none", () => {
+    shareLinkState.data = "https://pekohub.ai/peko/alice/helper";
+    const { unmount } = renderModal();
+    expect(screen.getByText("https://pekohub.ai/peko/alice/helper")).toBeInTheDocument();
+    unmount();
+    // Not registered, or the hub doesn't know it: no link rather than a wrong one.
+    shareLinkState.data = null;
+    renderModal();
+    expect(screen.queryByText(/\/peko\//)).toBeNull();
+    shareLinkState.data = "https://pekohub.ai/peko/alice/helper";
+  });
+
+  it("saves a registration change through principalRegister, not the config update", async () => {
+    principalRegisterMock.mockResolvedValue({});
+    renderModal();
+    saveRegistration("private");
+    await waitFor(() =>
+      expect(principalRegisterMock).toHaveBeenCalledWith({
+        name: "helper",
+        registration: "private",
+        runtimeId: "local",
+      }),
+    );
+    const payload = updateState.mutate.mock.calls[0][0] as Record<string, unknown>;
+    expect(payload).not.toHaveProperty("exposure");
+  });
+
+  it("renders the dedicated one-online-copy alert when registration rejects with [exposure_conflict]", async () => {
+    principalRegisterMock.mockRejectedValue(
+      new Error("[exposure_conflict] conflictingInstanceId: hub:hub.example.com"),
+    );
+    renderModal();
+    saveRegistration("private");
+    const alert = await screen.findByTestId("exposure-conflict");
+    expect(alert).toHaveTextContent(/already registered from another computer/i);
+    // The tag is stripped; the hub's detail rides along.
+    expect(alert).toHaveTextContent("conflictingInstanceId: hub:hub.example.com");
+    expect(alert.textContent).not.toContain("[exposure_conflict]");
+  });
+
+  it("renders a generic error box for non-conflict update failures", () => {
+    updateState.error = new Error("daemon unreachable");
+    renderModal();
+    expect(screen.queryByTestId("exposure-conflict")).toBeNull();
+    expect(screen.getByText("daemon unreachable")).toBeInTheDocument();
+  });
+
+  it("export panel warns about private keys and defaults to ~/.peko/exports/<name>.peko", () => {
+    renderModal();
+    expect(screen.getByText(/private keys/i)).toBeInTheDocument();
+    const input = screen.getByLabelText(/destination path/i) as HTMLInputElement;
+    expect(input.value).toBe("~/.peko/exports/helper.peko");
+  });
+
+  it("export calls principalExport with {name, output} and echoes the path on success", () => {
+    exportState.mutate.mockImplementation(
+      (_vars: unknown, opts?: { onSuccess?: () => void }) => opts?.onSuccess?.(),
+    );
+    renderModal();
+    fireEvent.click(screen.getByTestId("export-peko-submit"));
+    expect(exportState.mutate).toHaveBeenCalledWith(
+      { name: "helper", output: "~/.peko/exports/helper.peko" },
+      expect.objectContaining({ onSuccess: expect.any(Function) }),
+    );
+    expect(screen.getByTestId("export-peko-success")).toHaveTextContent(
+      "~/.peko/exports/helper.peko",
+    );
+  });
+
+  it("blocks export when the destination does not end in .peko", () => {
+    renderModal();
+    const input = screen.getByLabelText(/destination path/i);
+    fireEvent.change(input, { target: { value: "/tmp/helper.txt" } });
+    expect(screen.getByText(/must end in/i)).toBeInTheDocument();
+    const button = screen.getByTestId("export-peko-submit") as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    fireEvent.click(button);
+    expect(exportState.mutate).not.toHaveBeenCalled();
+  });
+
+  it("saves a picked avatar, and sends none when it is unchanged", () => {
+    renderModal({ ...LOCAL_PUBLIC, avatar: "🐱" });
+    fireEvent.click(screen.getByTitle("Edit"));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(updateState.mutate.mock.calls[0][0]).toMatchObject({ avatar: undefined });
+
+    // The mocked update never succeeds, so the form stays open.
+    fireEvent.click(screen.getByRole("button", { name: "Use 🦉" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(updateState.mutate.mock.calls[1][0]).toMatchObject({ avatar: "🦉" });
+  });
+
+  it("clears the avatar with an empty value", () => {
+    renderModal({ ...LOCAL_PUBLIC, avatar: "🐱" });
+    fireEvent.click(screen.getByTitle("Edit"));
+    fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(updateState.mutate.mock.calls[0][0]).toMatchObject({ avatar: "" });
+  });
+
+  it("edit mode uses peko copy for the description placeholder", () => {
+    renderModal();
+    fireEvent.click(screen.getByTitle("Edit"));
+    expect(
+      screen.getByPlaceholderText("What this peko does"),
+    ).toBeInTheDocument();
+  });
+
+  it("puts Remove in a Danger zone with one confirmation", () => {
+    const onClose = vi.fn();
+    const onRemoved = vi.fn();
+    principalState.data = LOCAL_PUBLIC;
+    removeState.mutate.mockImplementation(
+      (_vars: unknown, opts?: { onSuccess?: () => void }) => opts?.onSuccess?.(),
+    );
+    render(
+      <PrincipalProfileModal open principalName="helper" onClose={onClose} onRemoved={onRemoved} />,
+    );
+    // No Activity page any more; one footer, no stray cancel buttons.
+    expect(screen.queryByRole("button", { name: /activity/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /cancel/i })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove…" }));
+    expect(screen.getByText(/cannot be undone/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Keep helper" }));
+    expect(screen.queryByText(/cannot be undone/i)).toBeNull();
+    expect(removeState.mutate).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove…" }));
+    fireEvent.click(screen.getByTestId("confirm-remove-peko"));
+    expect(removeState.mutate).toHaveBeenCalledWith({ name: "helper" }, expect.any(Object));
+    expect(onRemoved).toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("names the owner \"You\" and hides the runtime of a local peko", () => {
+    renderModal();
+    const owner = screen.getByText("Owner").parentElement!;
+    expect(owner).toHaveTextContent("You (this computer only)");
+    expect(screen.queryByText("Runtime")).toBeNull();
+    expect(screen.getByRole("button", { name: "Edit" })).toBeInTheDocument();
+  });
+
+  it("names the linked PekoHub account, under either of the person's addresses", () => {
+    const id = "0b6c7a4e-0000-4000-8000-000000000000";
+    linkedAccountState.data = { id, name: "Alice" };
+    for (const address of ["user:local", `user:hub:${id}`]) {
+      const { unmount } = renderModal({ ...LOCAL_PUBLIC, owner: address });
+      const owner = screen.getByText("Owner").parentElement!;
+      expect(owner).toHaveTextContent("You (Alice on PekoHub)");
+      unmount();
+    }
+  });
+
+  it("shows someone else's address as the owner, not \"You\"", () => {
+    linkedAccountState.data = { id: "0b6c7a4e-0000-4000-8000-000000000000", name: "Alice" };
+    renderModal({ ...LOCAL_PUBLIC, owner: "user:hub:9a2f0000-0000-4000-8000-000000000000" });
+    const owner = screen.getByText("Owner").parentElement!;
+    expect(owner).toHaveTextContent("user:hub:9a2f0000-0000-4000-8000-000000000000");
+    expect(owner).not.toHaveTextContent("You");
+  });
+});
+

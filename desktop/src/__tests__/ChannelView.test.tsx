@@ -1,0 +1,364 @@
+// src/__tests__/ChannelView.test.tsx
+//
+// PR-1 / feature/desktop-channels: read-only channel view. Validates:
+//   • loading spinner while events are in-flight
+//   • chronological event list (posted / created / member_joined / member_left)
+//   • empty-state copy
+//   • the stream invalidator subscription (PR-2 surface) is wired even
+//     when the daemon-side `peko-stream` emit isn't present
+//
+// PR-3 adds the channel_members + principals mocks that the
+// ChannelView now needs for the Invite / Leave action gating.
+//
+// The Tauri event API is stubbed so `useChannelStreamInvalidator` doesn't
+// try to load the real `@tauri-apps/api/event` module under jsdom.
+
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+
+const channelEventsMock = vi.fn();
+const channelEventsWatchMock = vi.fn();
+const channelGetMock = vi.fn();
+const channelMembersMock = vi.fn();
+const channelLeaveMock = vi.fn();
+const personGroupsMock = vi.fn();
+const groupHistoryOlderMock = vi.fn();
+const personDmsMock = vi.fn();
+
+const markReadMock = vi.fn(async (_channel: string, _at: string) => true);
+vi.mock("../lib/api", () => ({
+  markRead: (channel: string, at: string) => markReadMock(channel, at),
+  channelEvents: (...args: unknown[]) => channelEventsMock(...args),
+  channelEventsWatch: (...args: unknown[]) => channelEventsWatchMock(...args),
+  channelGet: (...args: unknown[]) => channelGetMock(...args),
+  channelMembers: (...args: unknown[]) => channelMembersMock(...args),
+  channelLeave: (...args: unknown[]) => channelLeaveMock(...args),
+  personGroups: () => personGroupsMock(),
+  personDms: () => personDmsMock(),
+  groupHistoryOlder: (...args: unknown[]) => groupHistoryOlderMock(...args),
+}));
+
+// Stub the Tauri event API so the stream invalidator's `listen()` doesn't
+// error under jsdom. The hook treats a thrown listen() as "no live path",
+// falling back to refetchInterval polling (which we won't exercise here).
+const listenMock = vi.fn().mockRejectedValue(new Error("no tauri in test"));
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: (...args: unknown[]) => listenMock(...args),
+}));
+
+const navigateMock = vi.fn();
+vi.mock("@tanstack/react-router", () => ({
+  useParams: () => ({
+    channelId: "chan_alpha",
+  }),
+  useSearch: () => ({
+    runtimeId: "local",
+    sender: "alice",
+  }),
+  useNavigate: () => navigateMock,
+}));
+
+const usePrincipalsMock = vi.fn();
+vi.mock("../hooks/usePrincipals", () => ({
+  useLocalUserAccount: () => ({ data: null }),
+  useYourName: () => "maya",
+  useYou: () => ({ name: "maya", handle: null }),
+  usePrincipals: (...args: unknown[]) => usePrincipalsMock(...args),
+}));
+
+import ChannelView from "../pages/ChannelView";
+
+function renderView() {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <ChannelView />
+    </QueryClientProvider>,
+  );
+}
+
+const sampleEvents = [
+  {
+    kind: "created" as const,
+    name: "alpha",
+    creator: "alice",
+    at: "2026-08-06T12:00:00Z",
+  },
+  {
+    kind: "member_joined" as const,
+    member: "bob",
+    at: "2026-08-06T12:01:00Z",
+  },
+  {
+    kind: "posted" as const,
+    author: "alice",
+    text: "first message",
+    at: "2026-08-06T12:02:00Z",
+  },
+  {
+    kind: "member_left" as const,
+    member: "bob",
+    at: "2026-08-06T12:05:00Z",
+  },
+];
+
+describe("ChannelView", () => {
+  beforeEach(() => {
+    channelEventsMock.mockReset();
+    channelEventsWatchMock.mockReset();
+    channelEventsWatchMock.mockResolvedValue(undefined);
+    channelGetMock.mockReset();
+    channelMembersMock.mockReset();
+    channelLeaveMock.mockReset();
+    listenMock.mockClear();
+    navigateMock.mockReset();
+    personGroupsMock.mockReset().mockResolvedValue([]);
+    personDmsMock.mockReset().mockResolvedValue([]);
+    groupHistoryOlderMock.mockReset();
+    usePrincipalsMock.mockReset();
+    usePrincipalsMock.mockReturnValue({
+      data: [{ name: "alice" }, { name: "bob" }],
+    });
+    channelGetMock.mockResolvedValue({
+      channelId: "chan_alpha",
+      runtimeId: "local",
+      name: "alpha",
+      creator: "alice",
+      createdAt: "2026-08-06T12:00:00Z",
+      memberCount: 2,
+    });
+    channelMembersMock.mockResolvedValue({
+      channelId: "chan_alpha",
+      runtimeId: "local",
+      // Rosters name actors by id, as the engine sends them.
+      members: ["principal:prin_alice", "user:local"],
+    });
+  });
+
+  it("renders the loading spinner while events are in-flight", () => {
+    channelEventsMock.mockReturnValue(new Promise(() => {}));
+    renderView();
+    expect(screen.getByText(/Loading events/)).toBeInTheDocument();
+  });
+
+  it("tells the engine what is on screen has been read, and not while in the background", async () => {
+    const { resetUnread, setReadState, useGroupUnread } = await import("../lib/unread");
+    const { renderHook } = await import("@testing-library/react");
+    resetUnread();
+    markReadMock.mockClear();
+    setReadState([{ channel: "chan_alpha", kind: "group", unread: 3, marked: true }], []);
+    const dot = renderHook(() => useGroupUnread());
+    expect(dot.result.current.chan_alpha).toBe(3);
+
+    const focus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    channelEventsMock.mockResolvedValue(sampleEvents);
+    renderView();
+    await waitFor(() => expect(screen.getAllByTestId("channel-event-row")).toHaveLength(4));
+    expect(markReadMock).not.toHaveBeenCalled();
+
+    // You come back to the window: read up to the newest event shown.
+    focus.mockReturnValue(true);
+    fireEvent(window, new Event("focus"));
+    await waitFor(() =>
+      expect(markReadMock).toHaveBeenCalledWith("chan_alpha", "2026-08-06T12:05:00Z"),
+    );
+    await waitFor(() => expect(dot.result.current.chan_alpha).toBeUndefined());
+    focus.mockRestore();
+    resetUnread();
+  });
+
+  it("renders the chronological event list with each kind as a row", async () => {
+    channelEventsMock.mockResolvedValue(sampleEvents);
+    renderView();
+    await waitFor(() => {
+      expect(screen.getAllByTestId("channel-event-row")).toHaveLength(4);
+    });
+    // The "posted" event body surfaces in plain text.
+    expect(screen.getByText("first message")).toBeInTheDocument();
+  });
+
+  it("shows the empty-state copy when the event log is empty", async () => {
+    channelEventsMock.mockResolvedValue([]);
+    renderView();
+    await waitFor(() => {
+      expect(screen.getByText(/No events yet/)).toBeInTheDocument();
+    });
+  });
+
+  // P1.10 polish: empty events state surfaces the channel name as
+  // a "be the first to post" hint + a guest-viewer hint when the
+  // local user isn't a member.
+  it("empty events state surfaces the channel name + a 'be the first to post' hint", async () => {
+    channelGetMock.mockResolvedValue({
+      channelId: "chan_alpha",
+      name: "design",
+      creator: "prin_alice",
+      createdAt: "2026-08-05T12:00:00Z",
+      memberCount: 1,
+      runtimeId: "local",
+    });
+    channelEventsMock.mockResolvedValue([]);
+    renderView();
+    await waitFor(() => {
+      expect(screen.getByTestId("channel-events-empty")).toBeInTheDocument();
+    });
+    const empty = screen.getByTestId("channel-events-empty");
+    expect(empty).toHaveTextContent(/Be the first to post in/);
+    expect(empty).toHaveTextContent(/design/);
+  });
+
+  it("wires the peko-stream invalidator even when the Tauri event API is absent", async () => {
+    channelEventsMock.mockResolvedValue(sampleEvents);
+    renderView();
+    // The listen() rejection is swallowed; the hook falls back to polling.
+    // We just verify the hook attempted to subscribe at all.
+    await waitFor(() => {
+      expect(listenMock).toHaveBeenCalledWith(
+        "peko-stream",
+        expect.any(Function),
+      );
+    });
+  });
+
+  it("renders Invite + Leave action buttons in the header for current members", async () => {
+    channelEventsMock.mockResolvedValue(sampleEvents);
+    renderView();
+    await waitFor(() => {
+      expect(screen.getByTestId("channel-invite-button")).toBeInTheDocument();
+    });
+    expect(screen.getByTestId("channel-leave-button")).toBeInTheDocument();
+  });
+
+  it("hides Invite + Leave when the local user is not a member", async () => {
+    channelMembersMock.mockResolvedValue({
+      channelId: "chan_alpha",
+      runtimeId: "local",
+      members: ["principal:prin_alice"],
+    });
+    channelEventsMock.mockResolvedValue(sampleEvents);
+    renderView();
+    await waitFor(() => {
+      expect(screen.getByTestId("channel-toggle-members")).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId("channel-invite-button")).toBeNull();
+    expect(screen.queryByTestId("channel-leave-button")).toBeNull();
+  });
+
+  it("renders an error banner with a Retry button when channelEvents IPC fails", async () => {
+    channelEventsMock.mockRejectedValue(
+      new Error("IPC: channel_events connection refused"),
+    );
+    renderView();
+    // Audit fix (P1.4): pre-fix the page silently showed the
+    // empty-state when the fetch rejected. With the error UI the
+    // user sees what failed and can retry.
+    await waitFor(() => {
+      expect(screen.getByTestId("channel-events-error")).toBeInTheDocument();
+    });
+    expect(screen.getByTestId("channel-events-retry")).toBeInTheDocument();
+    expect(screen.getByText(/Couldn't load this group's messages/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/channel_events connection refused/),
+    ).toBeInTheDocument();
+    // The retry button re-fires the IPC.
+    channelEventsMock.mockResolvedValue(sampleEvents);
+    fireEvent.click(screen.getByTestId("channel-events-retry"));
+    await waitFor(() => {
+      expect(screen.getAllByTestId("channel-event-row")).toHaveLength(4);
+    });
+  });
+
+  it("renders a membership-gate notice (not the generic error) when the runtime forbids the read", async () => {
+    channelEventsMock.mockRejectedValue("[forbidden] not a member of chan_alpha");
+    renderView();
+    await waitFor(() => {
+      expect(screen.getByTestId("channel-events-forbidden")).toBeInTheDocument();
+    });
+    expect(
+      screen.getByText(/You aren't in this group/i),
+    ).toBeInTheDocument();
+    // The generic error + retry affordance must NOT render for a
+    // membership refusal — retrying won't mint membership.
+    expect(screen.queryByTestId("channel-events-error")).toBeNull();
+  });
+
+  // Runtime ADR-092 D3: a group joined from another computer reads earlier
+  // messages from its home; a local group has nothing more to load.
+  it("loads earlier messages of a group joined from another computer", async () => {
+    personGroupsMock.mockResolvedValue([{ channelId: "chan_alpha", name: "alpha", home: "did:key:zH" }]);
+    channelEventsMock.mockResolvedValue([
+      { kind: "posted", author: "alice", text: "latest", at: "2026-08-06T12:10:00Z", msg_id: "m9" },
+    ]);
+    groupHistoryOlderMock.mockResolvedValue({
+      events: [{ kind: "posted", author: "bob", text: "from before", at: "2026-08-06T12:00:00Z", msg_id: "m1" }],
+      hasMore: false,
+    });
+    renderView();
+    fireEvent.click(await screen.findByRole("button", { name: "Load earlier messages" }));
+    expect(await screen.findByText("from before")).toBeInTheDocument();
+    expect(groupHistoryOlderMock).toHaveBeenCalledWith("chan_alpha", "m9");
+    const rows = screen.getAllByTestId("channel-event-row").map((r) => r.textContent ?? "");
+    expect(rows.findIndex((t) => t.includes("from before"))).toBeLessThan(
+      rows.findIndex((t) => t.includes("latest")),
+    );
+    expect(screen.queryByRole("button", { name: "Load earlier messages" })).toBeNull();
+  });
+
+  // Runtime ADR-095 D6: a DM with another person. It is named for them,
+  // has no Invite / Leave, and says so while they haven't accepted.
+  it("shows a DM with a person by their name, waiting until they accept", async () => {
+    personDmsMock.mockResolvedValue([
+      { channelId: "chan_alpha", peer: "user:hub:bob-id", account: "bob-id", name: "bob", waiting: true },
+    ]);
+    channelEventsMock.mockResolvedValue([
+      { kind: "posted", author: "user:local", text: "hi bob", at: "2026-11-04T10:00:00Z", msg_id: "m1" },
+    ]);
+    renderView();
+    expect(await screen.findByTestId("person-dm-waiting")).toHaveTextContent(
+      /Waiting for bob to accept/,
+    );
+    expect(await screen.findByRole("heading", { name: "bob" })).toBeInTheDocument();
+    expect(screen.queryByTestId("channel-invite-button")).toBeNull();
+    expect(screen.queryByTestId("channel-leave-button")).toBeNull();
+    expect(screen.queryByTestId("channel-composer-no-sender")).toBeNull();
+    // Named for the person, not by their account ID; no "Group … created".
+    expect(screen.getByPlaceholderText("Message bob")).toBeInTheDocument();
+  });
+
+  it("names the other person on their posts in a DM with a person", async () => {
+    personDmsMock.mockResolvedValue([
+      { channelId: "chan_alpha", peer: "user:hub:bob-id", account: "bob-id", name: "Bob", waiting: false },
+    ]);
+    channelEventsMock.mockResolvedValue([
+      { kind: "created", name: "dm-Bob", creator: "user:local", at: "2026-11-04T09:59:00Z" },
+      { kind: "posted", author: "user:hub:bob-id", text: "hey", at: "2026-11-04T10:00:00Z", msg_id: "m2" },
+    ]);
+    renderView();
+    expect(await screen.findByText("hey")).toBeInTheDocument();
+    const rows = screen.getAllByTestId("channel-event-row").map((r) => r.textContent ?? "");
+    expect(rows[0]).toMatch(/^Conversation with Bob/);
+    expect(screen.queryByText(/^Created by/)).toBeNull();
+    expect(rows[1]).toContain("Bob");
+    expect(rows[1]).not.toContain("bob-id");
+  });
+
+  it("drops the waiting note once the person accepted", async () => {
+    personDmsMock.mockResolvedValue([
+      { channelId: "chan_alpha", peer: "user:hub:bob-id", account: "bob-id", name: null, waiting: false },
+    ]);
+    channelEventsMock.mockResolvedValue([]);
+    renderView();
+    expect(await screen.findByText(/Say hello to/)).toHaveTextContent("Say hello to bob-id.");
+    expect(screen.queryByTestId("person-dm-waiting")).toBeNull();
+  });
+
+  it("offers nothing earlier in a group hosted here", async () => {
+    channelEventsMock.mockResolvedValue([
+      { kind: "posted", author: "alice", text: "latest", at: "2026-08-06T12:10:00Z", msg_id: "m9" },
+    ]);
+    renderView();
+    expect(await screen.findByText("latest")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Load earlier messages" })).toBeNull();
+  });
+});

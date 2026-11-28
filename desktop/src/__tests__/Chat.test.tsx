@@ -1,0 +1,1040 @@
+// Chat page: sending, streaming, steering, approvals, and the thread.
+
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, fireEvent, waitFor, act, within } from "@testing-library/react";
+
+const navigateMock = vi.fn();
+// The chat route's search params (`?say=` hands over a first message).
+const searchState: Record<string, string | undefined> = {};
+// The open peko (`/chat/<name>`); a test switches pekos by changing it.
+const routeState = { pekoName: "alice" };
+vi.mock("@tanstack/react-router", () => ({
+  useNavigate: () => navigateMock,
+  useParams: () => ({ pekoName: routeState.pekoName }),
+  useRouterState: () => ({
+    location: { pathname: `/chat/${routeState.pekoName}`, search: searchState },
+  }),
+}));
+
+const sendMut = { mutateAsync: vi.fn() };
+const decideMut = { mutateAsync: vi.fn(), isPending: false };
+// The approval requests waiting for the owner.
+const approvalsState: { data: unknown; asked: unknown[][] } = { data: [], asked: [] };
+const logWatch = { pausedRef: { current: false }, flush: vi.fn() };
+// What the thread holds; a test sets it to simulate the refetch.
+const logState: { data: unknown } = { data: undefined };
+
+const principalsState: { data: unknown; isLoading: boolean } = {
+  data: [{ name: "alice", owner: "user:local", runtimeId: "local" }],
+  isLoading: false,
+};
+
+const pekohubBundleMock = vi.fn(() => ({ data: null as unknown }));
+vi.mock("../hooks/useRuntimes", () => ({
+  usePekohubBundle: () => pekohubBundleMock(),
+}));
+vi.mock("../hooks/usePrincipals", () => ({
+  usePrincipals: () => principalsState,
+  usePrincipalSend: () => sendMut,
+  usePrincipalLog: () => ({ data: logState.data, isSuccess: true, isError: false }),
+  usePrincipalApprovals: (...args: unknown[]) => (
+    approvalsState.asked.push(args), { data: approvalsState.data, refetch: vi.fn() }
+  ),
+  useDecideApproval: () => decideMut,
+  usePrincipalSecretRequests: () => ({ data: secretsState.data, refetch: vi.fn() }),
+  useAnswerSecret: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  usePrincipalTurnChanges: () => ({ data: [], refetch: vi.fn() }),
+  usePekoBrowser: () => ({ data: undefined, refetch: vi.fn() }),
+  useUndoTurn: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  usePrincipalLogWatch: () => logWatch,
+  useCallerSubject: () => "user:local",
+  useYourName: () => "maya",
+  newestLogCursor: () => null,
+  fetchOlderPrincipalLog: (args: unknown) => fetchOlderMock(args),
+}));
+
+const fetchOlderMock = vi.fn();
+const secretsState: { data: unknown[] } = { data: [] };
+
+const modelsState: { data: unknown } = { data: [] };
+// The pekos on other computers this desktop added, and the one open.
+const remoteState: {
+  list: unknown[];
+  record: unknown;
+  asked: string[];
+  status?: unknown;
+  undelivered?: string[];
+} = {
+  list: [],
+  record: undefined,
+  asked: [],
+};
+// How this computer connects (runtime ADR-125).
+const networkState: { data: unknown } = { data: undefined };
+vi.mock("../hooks/useNetwork", () => ({
+  useNetworkStatus: () => networkState,
+}));
+
+vi.mock("../hooks/useRemotePrincipals", () => ({
+  useRemotePrincipals: () => ({ data: remoteState.list }),
+  useUndeliveredMessages: () => ({ data: remoteState.undelivered }),
+  useRemotePeko: (runtimeId: string, name: string) => ({
+    record: (remoteState.asked.push(runtimeId), remoteState.record),
+    status: { data: remoteState.status },
+    identity: { name, avatar: null, initials: name.slice(0, 1).toUpperCase(), accent: "emerald" },
+    description: null,
+  }),
+}));
+
+// The models of the computer hosting a remote peko, and who asked.
+const hostModelsState: { data: unknown; asked: Array<[string, string, boolean]> } = {
+  data: undefined,
+  asked: [],
+};
+vi.mock("../hooks/useModels", () => ({
+  useModels: () => modelsState,
+  useRemotePekoModels: (runtimeId: string, name: string, enabled: boolean) => {
+    hostModelsState.asked.push([runtimeId, name, enabled]);
+    return { data: enabled ? hostModelsState.data : undefined };
+  },
+}));
+
+const copyMock = vi.fn(async (_text: string) => true);
+vi.mock("../components/chat/copy", () => ({
+  copyText: (text: string) => copyMock(text),
+}));
+
+// The first-turn panel has its own test (SetupPanel.test.tsx).
+vi.mock("../components/peko/SetupPanel", () => ({ default: () => null }));
+vi.mock("../components/modals/PrincipalProfileModal", () => ({
+  default: () => null,
+}));
+
+// The modal pulls in model/genesis hooks that are irrelevant here.
+vi.mock("../components/modals/CreatePrincipalModal", () => ({
+  default: () => null,
+}));
+
+import Chat from "../pages/Chat";
+
+function sendMessage(text: string) {
+  fireEvent.change(screen.getByRole("textbox", { name: "Message" }), {
+    target: { value: text },
+  });
+  fireEvent.click(screen.getByRole("button", { name: /send/i }));
+}
+
+describe("Chat ToS gate", () => {
+  beforeEach(() => {
+    remoteState.list = [];
+    remoteState.record = undefined;
+    remoteState.asked = [];
+    remoteState.status = undefined;
+    remoteState.undelivered = undefined;
+    routeState.pekoName = "alice";
+    hostModelsState.data = undefined;
+    hostModelsState.asked = [];
+    localStorage.clear();
+    navigateMock.mockReset();
+    sendMut.mutateAsync.mockReset();
+    decideMut.mutateAsync.mockReset();
+    approvalsState.data = [];
+    approvalsState.asked = [];
+    secretsState.data = [];
+    logWatch.flush.mockReset();
+    logWatch.pausedRef.current = false;
+    logState.data = undefined;
+    for (const k of Object.keys(searchState)) delete searchState[k];
+    modelsState.data = [];
+    copyMock.mockClear();
+    principalsState.data = [
+      { name: "alice", owner: "user:local", runtimeId: "local" },
+    ];
+    principalsState.isLoading = false;
+  });
+
+  it("keeps generic send failures in the plain error box", async () => {
+    sendMut.mutateAsync.mockRejectedValue(new Error("daemon unreachable"));
+    render(<Chat />);
+    sendMessage("hello");
+
+    expect(await screen.findByText("daemon unreachable")).toBeInTheDocument();
+    expect(screen.queryByTestId("tos-required-notice")).toBeNull();
+  });
+
+  it("treats a user stop as no error", async () => {
+    sendMut.mutateAsync.mockRejectedValue(
+      new Error("Couldn't send the message: receive failed: stopped by user"),
+    );
+    render(<Chat />);
+    sendMessage("hello");
+
+    await waitFor(() => expect(logWatch.flush).toHaveBeenCalled());
+    expect(screen.queryByText(/stopped by user/)).toBeNull();
+  });
+
+  it("shows that the peko is working, with no Stop, while a reply streams", async () => {
+    let settle: (v: string) => void = () => {};
+    sendMut.mutateAsync.mockReturnValue(new Promise<string>((r) => (settle = r)));
+    render(<Chat />);
+    sendMessage("hello");
+
+    expect(await screen.findByTestId("working-indicator")).toHaveTextContent("alice is working");
+    expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
+    // The composer stays open: the next message reaches the peko at once.
+    expect(screen.getByRole("textbox", { name: "Message" })).not.toBeDisabled();
+    // The stream pauses the log watch until it settles, then refetches.
+    expect(logWatch.pausedRef.current).toBe(true);
+    settle("");
+    await waitFor(() => expect(logWatch.flush).toHaveBeenCalled());
+    expect(logWatch.pausedRef.current).toBe(false);
+    expect(screen.queryByTestId("working-indicator")).toBeNull();
+  });
+
+  it("sends a message while the peko is working, shown as a plain message", async () => {
+    let settleFirst: (v: string) => void = () => {};
+    sendMut.mutateAsync
+      .mockReturnValueOnce(new Promise<string>((r) => (settleFirst = r)))
+      .mockImplementationOnce(async (vars: { onEvent: (m: unknown) => void }) => {
+        vars.onEvent({ kind: "queued", message: "busy" });
+        return "";
+      });
+    render(<Chat />);
+    sendMessage("first");
+    sendMessage("also check the weather");
+
+    expect(await screen.findByText("also check the weather")).toBeInTheDocument();
+    expect(screen.queryByText(/queued/i)).toBeNull();
+    expect(sendMut.mutateAsync).toHaveBeenCalledTimes(2);
+    // The second send settling does not end the turn or refetch yet.
+    expect(logWatch.flush).not.toHaveBeenCalled();
+    settleFirst("done");
+    await waitFor(() => expect(logWatch.flush).toHaveBeenCalledTimes(1));
+  });
+
+  it("keeps the peko's steps to itself and shows one bubble per reply", async () => {
+    let settle: (v: string) => void = () => {};
+    let emit: (m: unknown) => void = () => {};
+    sendMut.mutateAsync.mockImplementation(
+      (vars: { onEvent: (m: unknown) => void }) => {
+        emit = vars.onEvent;
+        return new Promise<string>((r) => (settle = r));
+      },
+    );
+    render(<Chat />);
+    sendMessage("what day is it?");
+
+    await act(async () => {
+      emit({ kind: "iteration", iteration: 1 });
+      emit({ kind: "chunk", delta: "Let me check." });
+      emit({ kind: "iteration", iteration: 2 });
+      emit({ kind: "toolStart", toolId: "c1", name: "Bash", input: '{"command":"date"}' });
+    });
+    // No tool steps; the step's text stays until the next step's comes.
+    expect(screen.queryByText(/bash/i)).toBeNull();
+    expect(screen.getByText("Let me check.")).toBeInTheDocument();
+    expect(screen.getByTestId("working-indicator")).toBeInTheDocument();
+
+    await act(async () => {
+      emit({ kind: "toolEnd", toolId: "c1", name: "Bash", success: true, durationMs: 12, output: "Tue" });
+      emit({ kind: "chunk", delta: "It is " });
+      emit({ kind: "chunk", delta: "Tuesday." });
+    });
+    // The reply is the last step's text, in one bubble.
+    expect(screen.getByText("It is Tuesday.")).toBeInTheDocument();
+    expect(screen.queryByText("Let me check.")).toBeNull();
+    expect(screen.queryByTestId("working-indicator")).toBeNull();
+    await act(async () => settle("It is Tuesday."));
+  });
+
+  it("names your own messages by your name, not You", () => {
+    logState.data = {
+      messages: [{ id: "chan_1", sender: "user:local", text: "hi", timestamp: "1" }],
+    };
+    render(<Chat />);
+    expect(screen.getByText("maya")).toBeInTheDocument();
+    expect(screen.queryByText("You")).toBeNull();
+  });
+
+  it("shows why a reply is waiting beside the thread, not in it", () => {
+    logState.data = {
+      messages: [{ id: "chan_1", sender: "user:local", text: "hi", timestamp: "1" }],
+      runFailure: {
+        at: "2026-10-31T10:00:00Z",
+        kind: "provider_unreachable",
+        message: "error sending request",
+        nextAttemptAt: "2026-10-31T10:05:00Z",
+      },
+    };
+    render(<Chat />);
+    expect(screen.getByTestId("run-status")).toHaveTextContent(
+      /Waiting — the model provider can't be reached\. It continues on its own/,
+    );
+    expect(screen.queryByText(/error sending request/)).toBeNull();
+  });
+
+  // Use case 1: your peko's computer is asleep. The chat says so, and
+  // your message shows as waiting until that computer takes it.
+  it("says when your peko's computer is offline and marks what waits for it", () => {
+    principalsState.data = [];
+    const mine = {
+      runtimeId: "hub:https://pekohub.example",
+      principalName: "alice",
+      owner: "yumo",
+      hubUrl: "https://pekohub.example",
+      fromAccount: true,
+      runtimeName: "Mac mini",
+    };
+    remoteState.list = [mine];
+    remoteState.record = mine;
+    remoteState.status = { status: "offline", lastSeenAt: new Date(Date.now() - 2 * 3_600_000).toISOString() };
+    remoteState.undelivered = ["msg_2"];
+    searchState.runtimeId = mine.runtimeId;
+    logState.data = {
+      messages: [
+        { id: "12", msgId: "msg_1", sender: "user:local", text: "earlier", timestamp: "1" },
+        { id: "13", msgId: "msg_2", sender: "user:local", text: "run the tests", timestamp: "2" },
+      ],
+    };
+    const { unmount } = render(<Chat />);
+    expect(screen.getByTestId("host-offline")).toHaveTextContent(
+      /Mac mini is offline \(last online 2 hours ago\), so alice can't work right now/,
+    );
+    const waiting = screen.getAllByTestId("message-waiting");
+    expect(waiting).toHaveLength(1);
+    expect(waiting[0]).toHaveTextContent("Waiting for Mac mini to come online");
+    unmount();
+
+    // Back online, everything delivered: nothing to say.
+    remoteState.status = { status: "online", lastSeenAt: null };
+    remoteState.undelivered = [];
+    const { unmount: again } = render(<Chat />);
+    expect(screen.queryByTestId("host-offline")).toBeNull();
+    expect(screen.queryByTestId("message-waiting")).toBeNull();
+    again();
+
+    // Runtime ADR-125 D7: no link and no relay to it: it waits for the
+    // same network, not for the computer to come online.
+    remoteState.undelivered = ["msg_2"];
+    networkState.data = {
+      connection: "automatic",
+      peers: [{ runtimeId: "did:key:zMini", name: "Mac mini", path: "waiting" }],
+    };
+    render(<Chat />);
+    expect(screen.getByTestId("message-waiting")).toHaveTextContent(
+      "Waits until you are on the same network",
+    );
+    networkState.data = undefined;
+  });
+
+  it("lets the owner approve or deny a waiting request", async () => {
+    approvalsState.data = [
+      {
+        id: "apr_0123456789ab",
+        actor: "user:hub:x",
+        actorName: "Alice",
+        trust: "untrusted",
+        summary: "`Read` (file_path=finances/q3.md)",
+        reason: "finances are private",
+        createdAt: "2026-10-31T10:00:00Z",
+        expiresAt: "2026-11-01T10:00:00Z",
+      },
+    ];
+    decideMut.mutateAsync.mockResolvedValue("Approved apr_0123456789ab. Running it for user:hub:x now.");
+    render(<Chat />);
+    const cards = screen.getByTestId("approval-cards");
+    expect(cards).toHaveTextContent("Alice (user:hub:x) asks alice to run Read (file_path=finances/q3.md)");
+    expect(cards).toHaveTextContent("finances are private");
+
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() =>
+      expect(decideMut.mutateAsync).toHaveBeenCalledWith({
+        name: "alice",
+        id: "apr_0123456789ab",
+        approve: true,
+        always: false,
+        runtimeId: "local",
+      }),
+    );
+    expect(await screen.findByText(/Running it for user:hub:x/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Deny" }));
+    await waitFor(() =>
+      expect(decideMut.mutateAsync).toHaveBeenLastCalledWith(
+        expect.objectContaining({ approve: false }),
+      ),
+    );
+  });
+
+  it("shows a secret the peko asked for above the composer", () => {
+    secretsState.data = [
+      {
+        id: "sec_0123456789ab",
+        secret: "GITHUB_TOKEN",
+        kind: "peko",
+        why: "to open pull requests with gh",
+        createdAt: "2026-11-22T10:00:00Z",
+        expiresAt: "2026-11-23T10:00:00Z",
+      },
+    ];
+    render(<Chat />);
+    const card = screen.getByTestId("secret-card-sec_0123456789ab");
+    expect(card).toHaveTextContent("alice asks for GITHUB_TOKEN");
+    expect(card).toHaveTextContent("to open pull requests with gh");
+    expect(screen.getByTestId("secret-input-sec_0123456789ab")).toHaveAttribute("type", "password");
+  });
+
+  it("shows a task handed to the owner whole, and approves it only once", async () => {
+    approvalsState.data = [
+      {
+        id: "apr_ab0123456789",
+        actor: "user:local:me",
+        actorName: "Me",
+        trust: "untrusted",
+        summary: "Run cargo test in ~/repo.\nReport which tests fail.",
+        reason: "in \u201crepo-team\u201d (4 members)",
+        createdAt: "2026-11-08T10:00:00Z",
+        expiresAt: "2026-11-09T10:00:00Z",
+        kind: "owner_task",
+      },
+    ];
+    decideMut.mutateAsync.mockResolvedValue("Approved apr_ab0123456789. Running it as you now.");
+    render(<Chat />);
+    const cards = screen.getByTestId("approval-cards");
+    expect(cards).toHaveTextContent("You asked alice for something in \u201crepo-team\u201d (4 members)");
+    expect(screen.getByTestId("owner-task-brief").textContent).toBe(
+      "Run cargo test in ~/repo.\nReport which tests fail.",
+    );
+    expect(screen.queryByRole("button", { name: "Always allow" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() =>
+      expect(decideMut.mutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "apr_ab0123456789", approve: true, always: false }),
+      ),
+    );
+  });
+
+  // Runtime ADR-128 D6: posts to the peko held by its wake limit.
+  it("words a wake-limit request as its own, with its three answers", async () => {
+    approvalsState.data = [
+      {
+        id: "wakes-group.3A.team",
+        actor: "runtime",
+        actorName: "Peko",
+        trust: "owner",
+        summary:
+          "Other pekos reached the limit of 60 wakes an hour in group:team: 3 posts to this peko wait. Let it continue?",
+        reason: "Other pekos may wake it 60 times an hour and 300 a day in this group.",
+        createdAt: "2026-11-26T10:00:00Z",
+        expiresAt: "2026-11-27T10:00:00Z",
+        kind: "wake_limit",
+      },
+    ];
+    decideMut.mutateAsync.mockResolvedValue("It continues in group:team.");
+    render(<Chat />);
+    const cards = screen.getByTestId("approval-cards");
+    expect(cards).toHaveTextContent("Other pekos have woken alice as often as its limit allows");
+    expect(screen.getByTestId("wake-limit-summary")).toHaveTextContent("3 posts to this peko wait");
+    expect(cards).not.toHaveTextContent("asks alice to run");
+    // The runtime's reason speaks of the command line; the card leaves it out.
+    expect(cards).not.toHaveTextContent("Other pekos may wake it 60 times");
+    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Not now" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "No limit in this group" }));
+    await waitFor(() =>
+      expect(decideMut.mutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "wakes-group.3A.team", approve: true, always: true }),
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Let it continue" }));
+    await waitFor(() =>
+      expect(decideMut.mutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "wakes-group.3A.team", approve: true, always: false }),
+      ),
+    );
+  });
+
+  it("leaves what is about your account to Settings, not to the peko's chat", async () => {
+    approvalsState.data = (["owner_change", "key_change", "devices_reset"] as const).map((kind, n) => ({
+      id: `apr_account${n}`,
+      actor: "user:hub:x",
+      actorName: "PekoHub",
+      trust: "owner",
+      summary: `PekoHub says something about your account (${kind}).`,
+      reason: "",
+      createdAt: "2026-11-17T10:00:00Z",
+      expiresAt: "2026-11-18T10:00:00Z",
+      kind,
+    }));
+    render(<Chat />);
+    expect(screen.queryByTestId("approval-cards")).toBeNull();
+    expect(screen.queryByText(/something about your account/)).toBeNull();
+  });
+
+  it("sends on Enter, adds a line on Shift+Enter, and never mid-composition", async () => {
+    sendMut.mutateAsync.mockResolvedValue("");
+    render(<Chat />);
+    const box = screen.getByRole("textbox", { name: "Message" });
+    fireEvent.change(box, { target: { value: "line one" } });
+    fireEvent.keyDown(box, { key: "Enter", shiftKey: true });
+    fireEvent.keyDown(box, { key: "Enter", isComposing: true });
+    expect(sendMut.mutateAsync).not.toHaveBeenCalled();
+    fireEvent.keyDown(box, { key: "Enter" });
+    await waitFor(() => expect(sendMut.mutateAsync).toHaveBeenCalledTimes(1));
+    expect(sendMut.mutateAsync.mock.calls[0][0]).toMatchObject({ message: "line one" });
+  });
+
+  it("sends with the model picked for this message", async () => {
+    modelsState.data = [
+      { id: "fast", displayName: "Fast model", enabled: true },
+      { id: "off", displayName: "Disabled", enabled: false },
+    ];
+    sendMut.mutateAsync.mockResolvedValue("");
+    render(<Chat />);
+    const picker = screen.getByRole("combobox", { name: /model for this message/i });
+    expect(screen.queryByRole("option", { name: "Disabled" })).toBeNull();
+    sendMessage("default first");
+    await waitFor(() => expect(sendMut.mutateAsync).toHaveBeenCalledTimes(1));
+    expect(sendMut.mutateAsync.mock.calls[0][0].overrideModel).toBeUndefined();
+
+    fireEvent.change(picker, { target: { value: "fast" } });
+    sendMessage("now fast");
+    await waitFor(() => expect(sendMut.mutateAsync).toHaveBeenCalledTimes(2));
+    expect(sendMut.mutateAsync.mock.calls[1][0].overrideModel).toBe("fast");
+  });
+
+  it("remembers each peko's model when switching pekos", async () => {
+    modelsState.data = [{ id: "fast", displayName: "Fast model", enabled: true }];
+    principalsState.data = [
+      { name: "alice", owner: "user:local", runtimeId: "local" },
+      { name: "bob", owner: "user:local", runtimeId: "local" },
+    ];
+    sendMut.mutateAsync.mockResolvedValue("");
+    const { rerender } = render(<Chat />);
+    const picker = () =>
+      screen.getByRole<HTMLSelectElement>("combobox", { name: /model for this message/i });
+    fireEvent.change(picker(), { target: { value: "fast" } });
+    routeState.pekoName = "bob";
+    rerender(<Chat />);
+    expect(picker().value).toBe("");
+    routeState.pekoName = "alice";
+    rerender(<Chat />);
+    expect(picker().value).toBe("fast");
+    sendMessage("still fast");
+    await waitFor(() => expect(sendMut.mutateAsync).toHaveBeenCalledTimes(1));
+    expect(sendMut.mutateAsync.mock.calls[0][0]).toMatchObject({ name: "alice", overrideModel: "fast" });
+
+    // A pick whose model is gone falls back to the peko's own.
+    modelsState.data = [{ id: "other", displayName: "Other", enabled: true }];
+    rerender(<Chat />);
+    expect(picker().value).toBe("");
+    sendMessage("own model");
+    await waitFor(() => expect(sendMut.mutateAsync).toHaveBeenCalledTimes(2));
+    expect(sendMut.mutateAsync.mock.calls[1][0].overrideModel).toBeUndefined();
+  });
+
+  it("offers your peko on another computer that computer's models, and none for others' pekos", async () => {
+    principalsState.data = [];
+    // This computer's own models are not the host's.
+    modelsState.data = [{ id: "fast", displayName: "Fast model", enabled: true }];
+    hostModelsState.data = [{ id: "work", displayName: "Work model" }];
+    const mine = {
+      runtimeId: "hub:https://pekohub.example",
+      principalName: "alice",
+      owner: "yumo",
+      hubUrl: "https://pekohub.example",
+      fromAccount: true,
+    };
+    remoteState.list = [mine];
+    remoteState.record = mine;
+    searchState.runtimeId = mine.runtimeId;
+    sendMut.mutateAsync.mockResolvedValue("");
+    const { rerender, unmount } = render(<Chat />);
+    const picker = screen.getByRole("combobox", { name: /model for this message/i });
+    expect(screen.getByRole("option", { name: "Work model" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Fast model" })).toBeNull();
+    expect(hostModelsState.asked).toContainEqual([mine.runtimeId, "alice", true]);
+    fireEvent.change(picker, { target: { value: "work" } });
+    sendMessage("on the work model");
+    await waitFor(() => expect(sendMut.mutateAsync).toHaveBeenCalledTimes(1));
+    expect(sendMut.mutateAsync.mock.calls[0][0]).toMatchObject({
+      runtimeId: mine.runtimeId,
+      overrideModel: "work",
+    });
+    rerender(<Chat />);
+    unmount();
+
+    // Someone else's peko: no picker, and its host is not asked.
+    const theirs = { ...mine, owner: "ada", fromAccount: false };
+    remoteState.list = [theirs];
+    remoteState.record = theirs;
+    hostModelsState.asked = [];
+    render(<Chat />);
+    expect(screen.queryByRole("combobox", { name: /model for this message/i })).toBeNull();
+    expect(hostModelsState.asked.every(([, , enabled]) => !enabled)).toBe(true);
+  });
+
+  it("lets you decide your peko's requests on another computer, and shows none for others' pekos", async () => {
+    principalsState.data = [];
+    const mine = {
+      runtimeId: "hub:https://pekohub.example",
+      principalName: "alice",
+      owner: "yumo",
+      hubUrl: "https://pekohub.example",
+      fromAccount: true,
+    };
+    remoteState.list = [mine];
+    remoteState.record = mine;
+    searchState.runtimeId = mine.runtimeId;
+    approvalsState.data = [
+      {
+        id: "apr_0123456789ab",
+        actor: "user:hub:noah",
+        actorName: "Noah",
+        trust: "untrusted",
+        summary: "`Read` (file_path=finances/q3.md)",
+        reason: "finances are private",
+        createdAt: "2026-11-07T10:00:00Z",
+        expiresAt: "2026-11-08T10:00:00Z",
+      },
+    ];
+    decideMut.mutateAsync.mockResolvedValue("Denied apr_0123456789ab.");
+    const { unmount } = render(<Chat />);
+    expect(approvalsState.asked).toContainEqual(["alice", true, mine.runtimeId]);
+    expect(screen.getByTestId("approval-cards")).toHaveTextContent(
+      "Noah (user:hub:noah) asks alice to run Read (file_path=finances/q3.md)",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Deny" }));
+    await waitFor(() =>
+      expect(decideMut.mutateAsync).toHaveBeenCalledWith({
+        name: "alice",
+        id: "apr_0123456789ab",
+        approve: false,
+        always: false,
+        runtimeId: mine.runtimeId,
+      }),
+    );
+    expect(await screen.findByText("Denied apr_0123456789ab.")).toBeInTheDocument();
+    unmount();
+
+    // Someone else's peko: its host is not asked, and no cards show.
+    const theirs = { ...mine, owner: "ada", fromAccount: false };
+    remoteState.list = [theirs];
+    remoteState.record = theirs;
+    approvalsState.asked = [];
+    render(<Chat />);
+    expect(approvalsState.asked.every(([, enabled]) => !enabled)).toBe(true);
+    expect(screen.queryByTestId("approval-cards")).toBeNull();
+  });
+
+  it("retries the latest reply by sending its message again, and copies messages", async () => {
+    logState.data = {
+      messages: [
+        { id: "chan_1", sender: "user:local", text: "summarize the doc", timestamp: "1" },
+        { id: "chan_2", sender: "principal:prin_a", text: "Here it is.", timestamp: "2" },
+      ],
+    };
+    sendMut.mutateAsync.mockResolvedValue("");
+    render(<Chat />);
+    // Only the latest reply offers Retry.
+    const retries = screen.getAllByRole("button", { name: "Retry" });
+    expect(retries).toHaveLength(1);
+    fireEvent.click(retries[0]);
+    await waitFor(() => expect(sendMut.mutateAsync).toHaveBeenCalledTimes(1));
+    expect(sendMut.mutateAsync.mock.calls[0][0]).toMatchObject({ message: "summarize the doc" });
+
+    // The reply's own Copy: the retried message may already show below it
+    // with a Copy of its own, so "the last Copy" isn't the reply's.
+    const reply = screen.getByText("Here it is.").closest(".group") as HTMLElement;
+    fireEvent.click(within(reply).getByRole("button", { name: "Copy" }));
+    await waitFor(() => expect(copyMock).toHaveBeenCalledWith("Here it is."));
+  });
+
+  it("sends a suggested reply with one tap, as your own message", async () => {
+    logState.data = {
+      messages: [
+        { id: "chan_1", sender: "user:local", text: "the build is green", timestamp: "1" },
+        {
+          id: "chan_2",
+          sender: "principal:prin_a",
+          text: "Ship today?",
+          timestamp: "2",
+          options: ["Ship it", "Hold off"],
+        },
+      ],
+    };
+    sendMut.mutateAsync.mockResolvedValue("");
+    render(<Chat />);
+    const group = screen.getByRole("group", { name: "Suggested replies" });
+    expect(within(group).getAllByRole("button").map((b) => b.textContent)).toEqual([
+      "Ship it",
+      "Hold off",
+    ]);
+    fireEvent.click(within(group).getByRole("button", { name: "Ship it" }));
+    await waitFor(() => expect(sendMut.mutateAsync).toHaveBeenCalledTimes(1));
+    expect(sendMut.mutateAsync.mock.calls[0][0]).toMatchObject({ message: "Ship it" });
+    // The composer stays as it was.
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("");
+  });
+
+  it("shows suggested replies only on the latest message, and not while a reply streams", async () => {
+    logState.data = {
+      messages: [
+        {
+          id: "chan_1",
+          sender: "principal:prin_a",
+          text: "Tuesday or Thursday?",
+          timestamp: "1",
+          options: ["Tuesday", "Thursday"],
+        },
+        { id: "chan_2", sender: "user:local", text: "next week, actually", timestamp: "2" },
+      ],
+    };
+    const { unmount } = render(<Chat />);
+    expect(screen.queryByTestId("suggested-replies")).toBeNull();
+    unmount();
+
+    logState.data = {
+      messages: [
+        {
+          id: "chan_1",
+          sender: "principal:prin_a",
+          text: "Ship today?",
+          timestamp: "1",
+          options: ["Ship it", "Hold off"],
+        },
+      ],
+    };
+    let finish: (v: string) => void = () => {};
+    sendMut.mutateAsync.mockReturnValue(new Promise<string>((r) => (finish = r)));
+    render(<Chat />);
+    expect(screen.getByTestId("suggested-replies")).toBeTruthy();
+    sendMessage("one more thing");
+    await waitFor(() => expect(screen.queryByTestId("suggested-replies")).toBeNull());
+    await act(async () => finish(""));
+  });
+
+  it("never shows suggested replies on your own messages", () => {
+    logState.data = {
+      messages: [
+        { id: "chan_1", sender: "user:local", text: "hi", timestamp: "1", options: ["A", "B"] },
+      ],
+    };
+    render(<Chat />);
+    expect(screen.queryByTestId("suggested-replies")).toBeNull();
+  });
+
+  // Runtime ADR-114: a peko's questions are one card you answer together.
+  const card = {
+    id: "chan_1",
+    sender: "principal:prin_a",
+    text: "A few quick questions:",
+    timestamp: "1",
+    msgId: "msg_card",
+    ask: {
+      questions: [
+        { text: "Which day?", options: ["Tue", "Thu"] },
+        { text: "Which rooms?", options: ["A", "B", "C"], multi: true },
+        { text: "Anything else?" },
+      ],
+    },
+  };
+
+  it("answers a question card as one message carrying the answers", async () => {
+    logState.data = { messages: [card] };
+    sendMut.mutateAsync.mockResolvedValue("");
+    render(<Chat />);
+    const box = screen.getByTestId("question-card");
+    const send = within(box).getByRole("button", { name: /send answers/i }) as HTMLButtonElement;
+    expect(send.disabled).toBe(true);
+    fireEvent.click(within(box).getByRole("button", { name: "Tue" }));
+    fireEvent.click(within(box).getByRole("button", { name: "Thu" }));
+    fireEvent.click(within(box).getByRole("button", { name: "A" }));
+    fireEvent.click(within(box).getByRole("button", { name: "C" }));
+    expect(send.disabled).toBe(true);
+    fireEvent.change(within(box).getByRole("textbox", { name: /Anything else/ }), {
+      target: { value: " bring snacks " },
+    });
+    expect(send.disabled).toBe(false);
+    fireEvent.click(send);
+    await waitFor(() => expect(sendMut.mutateAsync).toHaveBeenCalledTimes(1));
+    expect(sendMut.mutateAsync.mock.calls[0][0]).toMatchObject({
+      message: "Which day? → Thu\nWhich rooms? → A, C\nAnything else? → bring snacks",
+      answers: {
+        to: "msg_card",
+        picks: [{ chosen: ["Thu"] }, { chosen: ["A", "C"] }, { other: "bring snacks" }],
+      },
+    });
+  });
+
+  it("keeps a card open past the peko's other messages, and closes it when you write", () => {
+    logState.data = {
+      messages: [
+        card,
+        { id: "chan_2", sender: "principal:prin_a", text: "Morning check-in.", timestamp: "2" },
+      ],
+    };
+    const { unmount } = render(<Chat />);
+    expect(screen.getByTestId("question-card").dataset.open).toBe("true");
+    unmount();
+    logState.data = {
+      messages: [card, { id: "chan_2", sender: "user:local", text: "Tuesday, two rooms", timestamp: "2" }],
+    };
+    render(<Chat />);
+    expect(screen.getByTestId("question-card").dataset.open).toBe("false");
+  });
+
+  it("shows what was chosen on an answered card", () => {
+    logState.data = {
+      messages: [
+        card,
+        {
+          id: "chan_2",
+          sender: "user:local",
+          text: "Which day? → Tue",
+          timestamp: "2",
+          answers: { to: "msg_card", picks: [{ chosen: ["Tue"] }, { chosen: ["B"] }, { other: "no" }] },
+        },
+      ],
+    };
+    render(<Chat />);
+    const box = screen.getByTestId("question-card");
+    expect(box.dataset.open).toBe("false");
+    expect(within(box).getByTestId("question-card-answered")).toBeTruthy();
+    expect(within(box).getByRole("button", { name: "Tue" }).getAttribute("aria-pressed")).toBe("true");
+    expect(within(box).getByRole("button", { name: "Thu" }).getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("shows the peko's name on its replies", () => {
+    logState.data = {
+      messages: [{ id: "chan_1", sender: "principal:prin_a", text: "hi", timestamp: "1" }],
+    };
+    render(<Chat />);
+    // The header names the peko once; its reply names it again.
+    expect(screen.getAllByText("alice").length).toBeGreaterThan(1);
+    expect(screen.queryByText("Assistant")).toBeNull();
+  });
+
+  it("sends a first message handed over in the URL once, and drops it", async () => {
+    searchState.say = "Help me plan my week.";
+    sendMut.mutateAsync.mockResolvedValue("");
+    const { rerender } = render(<Chat />);
+    await waitFor(() => expect(sendMut.mutateAsync).toHaveBeenCalledTimes(1));
+    expect(sendMut.mutateAsync.mock.calls[0][0]).toMatchObject({ message: "Help me plan my week." });
+    expect(navigateMock).toHaveBeenCalledWith(
+      expect.objectContaining({ to: "/chat/$pekoName", replace: true, search: { runtimeId: undefined } }),
+    );
+    rerender(<Chat />);
+    expect(sendMut.mutateAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens a peko on another computer when this one has none of its own", () => {
+    principalsState.data = [];
+    const bolt = {
+      runtimeId: "hub:https://pekohub.example",
+      principalName: "alice",
+      owner: "yumo",
+      hubUrl: "https://pekohub.example",
+    };
+    remoteState.list = [bolt];
+    remoteState.record = bolt;
+    // The runtime comes from the whole URL (`?runtimeId=`), read where the
+    // page renders, at `/chat`.
+    searchState.runtimeId = bolt.runtimeId;
+    render(<Chat />);
+    expect(remoteState.asked).toContain(bolt.runtimeId);
+    expect(screen.queryByText("No pekos yet")).toBeNull();
+    expect(screen.getByRole("textbox")).toBeInTheDocument();
+  });
+
+  // The header reads like a local peko's for yours, and names the owner
+  // for someone else's — even one known by its Hub ID through a DM.
+  it.each([
+    [true, "Your peko"],
+    [false, "bob's peko"],
+  ])("a remote peko from your account (%s) is headed %s", (fromAccount, subtitle) => {
+    principalsState.data = [];
+    const scout = {
+      runtimeId: "hub:https://pekohub.example",
+      principalName: "scout",
+      owner: "bob",
+      hubUrl: "https://pekohub.example",
+      hubId: "7f700f07-e081-4dd8-b0db-ae41c7efbaeb",
+      fromAccount,
+    };
+    remoteState.list = [scout];
+    remoteState.record = scout;
+    searchState.runtimeId = scout.runtimeId;
+    render(<Chat />);
+    expect(screen.getByText(subtitle)).toBeInTheDocument();
+  });
+
+  it("with only pekos on other computers and none open, asks to pick one", () => {
+    principalsState.data = [];
+    remoteState.list = [{ runtimeId: "hub:https://pekohub.example", principalName: "bolt" }];
+    render(<Chat />);
+    expect(screen.getByText("Select a peko from the sidebar")).toBeInTheDocument();
+    expect(screen.queryByText("No pekos yet")).toBeNull();
+  });
+
+  it("names the other computer one of your pekos runs on", () => {
+    principalsState.data = [];
+    const mine = {
+      runtimeId: "hub:https://pekohub.example",
+      principalName: "alice",
+      owner: "yumo",
+      hubUrl: "https://pekohub.example",
+      fromAccount: true,
+      runtimeName: "Maya's MacBook",
+    };
+    remoteState.list = [mine];
+    remoteState.record = mine;
+    searchState.runtimeId = mine.runtimeId;
+    render(<Chat />);
+    expect(screen.getByTestId("peko-computer")).toHaveTextContent("on Maya's MacBook");
+  });
+
+  it("empty state uses peko copy", () => {
+    principalsState.data = [];
+    render(<Chat />);
+    expect(screen.getByText("No pekos yet")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /create a peko/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("a fresh computer not signed in points to signing in, which the profile menu starts", () => {
+    principalsState.data = [];
+    pekohubBundleMock.mockReturnValue({ data: null });
+    const asked = vi.fn();
+    window.addEventListener("peko:pekohub-sign-in", asked);
+    render(<Chat />);
+    fireEvent.click(screen.getByTestId("empty-sign-in"));
+    expect(asked).toHaveBeenCalledTimes(1);
+    window.removeEventListener("peko:pekohub-sign-in", asked);
+  });
+
+  it("a signed-in computer with no pekos does not ask to sign in", () => {
+    principalsState.data = [];
+    pekohubBundleMock.mockReturnValue({ data: { access_token: "t" } });
+    render(<Chat />);
+    expect(screen.queryByTestId("empty-sign-in")).toBeNull();
+    pekohubBundleMock.mockReturnValue({ data: null });
+  });
+});
+
+const msg = (id: string, sender: string, text: string) => ({
+  id,
+  sender,
+  text,
+  timestamp: "2026-10-28T10:00:00Z",
+});
+
+describe("Chat thread and peko lifecycle", () => {
+  beforeEach(() => {
+    navigateMock.mockReset();
+    fetchOlderMock.mockReset();
+    logState.data = undefined;
+    principalsState.data = [{ name: "alice", owner: "user:local", runtimeId: "local" }];
+    principalsState.isLoading = false;
+  });
+
+  it("leaves the address of a peko that no longer exists", () => {
+    principalsState.data = [{ name: "bob", owner: "user:local", runtimeId: "local" }];
+    render(<Chat />);
+    expect(navigateMock).toHaveBeenCalledWith({ to: "/chat", replace: true });
+  });
+
+  it("leaves it even while the list refetches (a busy engine can hold that up)", () => {
+    principalsState.data = [{ name: "bob", owner: "user:local", runtimeId: "local" }];
+    (principalsState as Record<string, unknown>).isFetching = true;
+    render(<Chat />);
+    expect(navigateMock).toHaveBeenCalledWith({ to: "/chat", replace: true });
+    delete (principalsState as Record<string, unknown>).isFetching;
+  });
+
+  it("stays on a peko that exists", () => {
+    render(<Chat />);
+    expect(navigateMock).not.toHaveBeenCalledWith({ to: "/chat", replace: true });
+  });
+
+  it("loads earlier messages above the latest page", async () => {
+    logState.data = {
+      messages: [msg("m3", "user:local", "latest question")],
+      nextCursor: "c1",
+      hasMore: true,
+    };
+    fetchOlderMock.mockResolvedValue({
+      messages: [msg("m1", "user:local", "first question"), msg("m2", "principal:alice", "first answer")],
+      nextCursor: null,
+      hasMore: false,
+    });
+    render(<Chat />);
+    expect(screen.queryByText("first question")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Load earlier messages" }));
+
+    expect(await screen.findByText("first question")).toBeInTheDocument();
+    expect(fetchOlderMock).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "alice", cursor: "c1", peer: "user:local" }),
+    );
+    const order = ["first question", "first answer", "latest question"].map(
+      (t) => screen.getByText(t).compareDocumentPosition(screen.getByText("latest question")),
+    );
+    expect(order.slice(0, 2).every((pos) => pos & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+    // Nothing older remains.
+    expect(screen.queryByRole("button", { name: "Load earlier messages" })).toBeNull();
+  });
+
+  // Runtime ADR-091: past the start of this computer's copy of a chat
+  // with a peko on another computer, earlier messages come from its host
+  // (`msg:` cursors), page by page, until there are none.
+  it("keeps loading earlier messages from the host of a remote peko", async () => {
+    logState.data = {
+      messages: [msg("m5", "user:local", "latest question")],
+      nextCursor: "msg:m5",
+      hasMore: true,
+    };
+    fetchOlderMock
+      .mockResolvedValueOnce({
+        messages: [msg("m3", "user:local", "asked on my laptop"), msg("m4", "principal:hub:x", "answered there")],
+        nextCursor: "msg:m3",
+        hasMore: true,
+      })
+      .mockResolvedValueOnce({
+        messages: [msg("m1", "user:local", "the very first")],
+        nextCursor: null,
+        hasMore: false,
+      });
+    render(<Chat />);
+    fireEvent.click(screen.getByRole("button", { name: "Load earlier messages" }));
+    expect(await screen.findByText("asked on my laptop")).toBeInTheDocument();
+    expect(fetchOlderMock).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: "msg:m5" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Load earlier messages" }));
+    expect(await screen.findByText("the very first")).toBeInTheDocument();
+    expect(fetchOlderMock).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: "msg:m3" }));
+    const before = (a: string, b: string) =>
+      Boolean(screen.getByText(a).compareDocumentPosition(screen.getByText(b)) & Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(before("the very first", "asked on my laptop")).toBe(true);
+    expect(before("answered there", "latest question")).toBe(true);
+    expect(screen.queryByRole("button", { name: "Load earlier messages" })).toBeNull();
+  });
+
+  it("says so when the host can't be reached for earlier messages", async () => {
+    logState.data = { messages: [msg("m5", "user:local", "latest")], nextCursor: "msg:m5", hasMore: true };
+    fetchOlderMock.mockImplementation(async () => {
+      throw new Error("Older messages couldn't be read from the computer hosting this peko.");
+    });
+    render(<Chat />);
+    fireEvent.click(screen.getByRole("button", { name: "Load earlier messages" }));
+    expect(await screen.findByText(/couldn't be read from the computer hosting this peko/)).toBeInTheDocument();
+    expect(screen.getByText("latest")).toBeInTheDocument();
+  });
+
+  it("offers no earlier messages on a short thread", () => {
+
+    logState.data = { messages: [msg("m1", "user:local", "hi")], nextCursor: null, hasMore: false };
+    render(<Chat />);
+    expect(screen.queryByRole("button", { name: "Load earlier messages" })).toBeNull();
+  });
+});

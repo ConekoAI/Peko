@@ -1,0 +1,137 @@
+{
+  "attachments": {
+    "listLabel": "첨부한 파일",
+    "remove": "{{name}} 제거",
+    "open": "{{name}} 열기",
+    "play": "{{name}} 재생",
+    "cantPlay": "여기서는 재생할 수 없습니다. 파일을 열어 주세요",
+    "missingTitle": "{{name}}이(가) 아직 다른 컴퓨터에서 도착하지 않았습니다",
+    "missing": "아직 받지 못함",
+    "pageFull": "{{name}} 크게 열기",
+    "pageBrowser": "{{name}} 브라우저에서 열기"
+  },
+  "composer": {
+    "label": "메시지",
+    "placeholder": "peko에게 메시지 보내기…",
+    "attachTitle": "파일 첨부 — 또는 창에 끌어다 놓기",
+    "modelLabel": "이 메시지에 사용할 모델",
+    "pekosModel": "Peko의 모델",
+    "hint": "↵ 보내기 · ⇧↵ 줄바꿈",
+    "sendTitle": "보내기 (Enter)"
+  },
+  "markdown": {
+    "svgImage": "SVG 이미지",
+    "code": "코드",
+    "showImage": "이미지 보기",
+    "showCode": "코드 보기",
+    "image": "이미지",
+    "codeLabel": "코드",
+    "copyCode": "코드 복사"
+  },
+  "hostOffline": "<computer/>이(가) 오프라인이라 {{peko}}이(가) 지금은 작업할 수 없습니다. 보낸 내용은 대기했다가 그 컴퓨터가 돌아오면 {{peko}}에게 전달됩니다. {{peko}}이(가) 답하면 알림을 받습니다.",
+  "hostOfflineSince": "<computer/>이(가) 오프라인(마지막 접속: {{ago}})이라 {{peko}}이(가) 지금은 작업할 수 없습니다. 보낸 내용은 대기했다가 그 컴퓨터가 돌아오면 {{peko}}에게 전달됩니다. {{peko}}이(가) 답하면 알림을 받습니다.",
+  "waitingFor": "{{name}}이(가) 온라인이 되기를 기다리는 중",
+  "suggestedReplies": "추천 답장",
+  "questions": {
+    "label": "질문",
+    "for": "{{name}}님에게",
+    "pickAny": "(여러 개 선택 가능)",
+    "otherPlaceholder": "또는 직접 입력…",
+    "answerPlaceholder": "답변…",
+    "otherLabel": "{{question}}에 대한 답변",
+    "send": "답변 보내기",
+    "answered": "답변함"
+  },
+  "runFailure": {
+    "reason": {
+      "peko_limit": "지출 한도에 도달했습니다",
+      "provider_quota": "모델 제공업체의 할당량을 모두 사용했습니다",
+      "provider_unreachable": "모델 제공업체에 연결할 수 없습니다"
+    },
+    "waiting": "대기 중 — {{reason}}. 자동으로 이어서 진행하며, 다음 시도는 {{when}}입니다.",
+    "failed": "마지막 답장이 완료되지 않았습니다 — {{reason}}."
+  },
+  "approval": {
+    "asker": "{{name}} ({{address}})",
+    "ownerTask": "{{where}} {{peko}}에게 내 전체 권한이 필요한 일을 요청했습니다. 승인하면 그 대화 밖에서, 아래 지시만 가지고 나의 자격으로 실행됩니다:",
+    "ownerTaskWhere": "공유 대화에서",
+    "toolRequest": "<asker/> 님이 {{peko}}에게 <summary/> 실행을 요청합니다",
+    "approve": "승인",
+    "alwaysTitle": "승인하고, {{name}}에게는 이 작업을 항상 허용",
+    "always": "항상 허용",
+    "deny": "거부",
+    "wakeLimit": "그룹에서 다른 페코가 {{peko}}을(를) 한도만큼 깨웠습니다. {{peko}}에게 온 메시지가 대기 중입니다.",
+    "wakeLimitContinue": "계속하게 하기",
+    "wakeLimitNoLimit": "이 그룹에서는 제한 없음",
+    "wakeLimitNoLimitTitle": "계속하게 하고, 이 그룹에서 다른 페코가 {{peko}}을(를) 깨우는 횟수를 더는 제한하지 않습니다",
+    "wakeLimitNotNow": "나중에"
+  },
+  "secret": {
+    "request": "{{peko}}이(가) <name/>을(를) 요청합니다",
+    "mcpRequest": "{{peko}}이(가) MCP 서버 <server/>용 <name/>을(를) 요청합니다",
+    "label": "{{name}} 값",
+    "placeholder": "여기에 붙여넣거나 입력하세요",
+    "show": "보기",
+    "hide": "숨기기",
+    "save": "안전하게 저장",
+    "decline": "거절",
+    "hint": "이 컴퓨터의 보관함에 저장됩니다. {{peko}}에게는 저장되었다는 사실만 전해지고 값은 전해지지 않습니다. 채팅에 비밀 값을 붙여넣지 마세요."
+  },
+  "browser": {
+    "needsYou": "{{peko}}이(가) 브라우저에서 당신을 기다립니다",
+    "open": "{{peko}}이(가) 브라우저를 열어 두었습니다",
+    "openButton": "브라우저 열기",
+    "title": "{{peko}}의 브라우저",
+    "tab": "탭",
+    "back": "뒤로",
+    "reload": "새로 고침",
+    "address": "주소",
+    "take": "제어하기",
+    "release": "돌려주기",
+    "watching": "보고만 있습니다. {{peko}}이(가) 브라우저를 쓰고 있습니다.",
+    "handoff": "{{peko}}이(가) 기다리고 있습니다. 제어권을 가져와 직접 처리하세요.",
+    "controlling": "당신이 제어 중입니다. 돌려줄 때까지 {{peko}}이(가) 기다립니다.",
+    "other": "당신의 다른 기기가 제어 중입니다.",
+    "waiting": "페이지를 기다리는 중…",
+    "typeHere": "페이지로 보낼 텍스트를 입력하거나 붙여넣기",
+    "send": "보내기",
+    "hint": "클릭하고 입력한 내용은 {{peko}}이(가) 실행되는 컴퓨터의 페이지로 바로 갑니다. 채팅에 남지 않으며 {{peko}}은(는) 볼 수 없습니다."
+  },
+  "changes": {
+    "summary_other": "{{peko}}이(가) 파일 {{count}}개를 변경했습니다",
+    "undo": "되돌리기",
+    "dismiss": "숨기기",
+    "kind": {
+      "added": "추가",
+      "modified": "변경",
+      "deleted": "삭제"
+    },
+    "shell": "셸 명령도 실행했습니다. 작업 공간 밖에서 변경된 파일은 표시되지 않으며 되돌릴 수 없습니다.",
+    "restored_other": "파일 {{count}}개를 되돌렸습니다.",
+    "skipped": "{{path}}은(는) 그대로 두었습니다: {{why}}"
+  },
+  "yourPeko": "내 peko",
+  "onComputer": "· {{computer}}에서",
+  "ownersPeko": "{{owner}}의 peko",
+  "pekosComputer": "{{name}}의 컴퓨터",
+  "selectPeko": "사이드바에서 peko를 선택하세요",
+  "noPekos": "아직 peko가 없습니다",
+  "noPekosHint": "첫 peko를 만들어 대화를 시작하세요.",
+  "createPeko": "peko 만들기",
+  "signInPrompt": "다른 컴퓨터에 peko가 있나요? <signIn>PekoHub로 로그인</signIn>하면 여기에서 볼 수 있습니다.",
+  "dropFiles": "놓아서 첨부",
+  "begin": "메시지를 보내 시작하세요…",
+  "working": "{{name}} 작업 중",
+  "workingFor": "{{name}} 작업 중 · {{seconds}}초",
+  "waitsSameNetwork": "같은 네트워크에 올 때까지 기다리는 중",
+  "message": {
+    "reply": "답장",
+    "react": "반응",
+    "otherEmoji": "다른 이모지",
+    "reactedBy": "{{names}}님의 {{emoji}}",
+    "you": "나",
+    "notLoaded": "불러오지 않은 메시지",
+    "replyingTo": "{{name}}님에게 답장",
+    "reactFailed": "반응하지 못했어요: {{reason}}"
+  }
+}

@@ -1,0 +1,718 @@
+use serde::{Deserialize, Serialize};
+use tauri::State;
+
+use crate::state::{AppState, RuntimeConnection, RuntimeConnectionType, RuntimeStatus};
+
+/// One runtime in `runtime_list`, in the frontend's camelCase
+/// (`connectionType`). Sent snake_case, the local engine read as remote
+/// with a blank type.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeSummary {
+    pub id: String,
+    pub name: String,
+    pub connection_type: String,
+    pub status: String,
+}
+
+impl From<RuntimeConnection> for RuntimeSummary {
+    fn from(conn: RuntimeConnection) -> Self {
+        Self {
+            id: conn.id,
+            name: conn.name,
+            connection_type: match conn.connection_type {
+                RuntimeConnectionType::Local => "local".to_string(),
+                RuntimeConnectionType::Remote => "remote".to_string(),
+            },
+            status: match conn.status {
+                RuntimeStatus::Connected => "connected".to_string(),
+                RuntimeStatus::Disconnected => "disconnected".to_string(),
+                RuntimeStatus::Connecting => "connecting".to_string(),
+                RuntimeStatus::Error => "error".to_string(),
+            },
+        }
+    }
+}
+
+/// List all configured runtimes.
+#[tauri::command]
+pub async fn runtime_list(state: State<'_, AppState>) -> Result<Vec<RuntimeSummary>, String> {
+    let runtimes = state.list_runtimes().await;
+    Ok(runtimes.into_iter().map(Into::into).collect())
+}
+
+/// This computer's runtime DID, as the engine states it. PekoHub lists
+/// each of your pekos with the DID of the computer it runs on, so the app
+/// knows which listed pekos are this computer's: those are here, or gone,
+/// never pekos on another computer.
+#[tauri::command]
+pub async fn runtime_did() -> Result<String, String> {
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    let value = client
+        .runtime_id()
+        .await
+        .map_err(|e| format!("runtime_id failed: {e}"))?;
+    did_from(&value)
+}
+
+fn did_from(value: &serde_json::Value) -> Result<String, String> {
+    match value.get("type").and_then(|t| t.as_str()) {
+        Some("runtime_id") => value
+            .get("did")
+            .and_then(|d| d.as_str())
+            .filter(|d| !d.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| "runtime_id answered no DID".to_string()),
+        Some("error") => Err(value
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("refused")
+            .to_string()),
+        other => Err(format!("unexpected response to runtime_id: {other:?}")),
+    }
+}
+
+/// This computer's runtime, registered with PekoHub.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubRegistration {
+    pub hub: String,
+    pub runtime_did: String,
+    /// The PekoHub account the runtime and its local user belong to.
+    pub account: String,
+}
+
+/// Register the local runtime with the hub at `hub` under the account
+/// the signed-in `token` belongs to (pekohub ADR-007). The daemon
+/// connects the tunnel at once, so this computer's pekos can go online.
+#[tauri::command]
+pub async fn runtime_hub_register(hub: String, token: String) -> Result<HubRegistration, String> {
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    let value = client
+        .runtime_register(&hub, &token)
+        .await
+        .map_err(|e| format!("runtime_register failed: {e}"))?;
+    hub_registration_from(&value)
+}
+
+fn hub_registration_from(value: &serde_json::Value) -> Result<HubRegistration, String> {
+    match value.get("type").and_then(|t| t.as_str()) {
+        Some("runtime_registered") => {
+            let field = |name: &str| {
+                value
+                    .get(name)
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .ok_or_else(|| format!("runtime_registered carried no {name}"))
+            };
+            Ok(HubRegistration {
+                hub: field("hub")?,
+                runtime_did: field("runtime_did")?,
+                account: field("account")?,
+            })
+        }
+        Some("error") => Err(value
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("the runtime refused to register")
+            .to_string()),
+        _ => Err("This runtime is too old to register from the app. Update Peko, or run `peko runtime register`.".to_string()),
+    }
+}
+
+/// The PekoHub account this computer's person (the runtime's local
+/// user) is linked to (runtime ADR-081 D3). A peko owned by
+/// `user:hub:<id>` is theirs as much as one owned by `user:local`.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalUserAccount {
+    /// The account's UUID.
+    pub id: String,
+    /// Its name as PekoHub gave it at registration.
+    pub name: Option<String>,
+}
+
+/// The local user's linked PekoHub account, or `None` when the runtime
+/// isn't registered (or predates reporting it).
+#[tauri::command]
+pub async fn local_user_account() -> Result<Option<LocalUserAccount>, String> {
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    let status = client
+        .tunnel_status()
+        .await
+        .map_err(|e| format!("tunnel_status failed: {e}"))?;
+    Ok(local_user_account_from(&status))
+}
+
+fn local_user_account_from(status: &serde_json::Value) -> Option<LocalUserAccount> {
+    let text = |key: &str| {
+        status
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    Some(LocalUserAccount {
+        id: text("account")?,
+        name: text("account_name"),
+    })
+}
+
+/// What this computer's person is called, and their PekoHub handle
+/// (runtime ADR-124).
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalPerson {
+    /// Their PekoHub name once signed in, else the name they chose here,
+    /// else their login name. `None` from a runtime too old to say.
+    pub name: Option<String>,
+    /// Their PekoHub handle, while signed in.
+    pub handle: Option<String>,
+}
+
+#[tauri::command]
+pub async fn local_person() -> Result<LocalPerson, String> {
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    let status = client
+        .tunnel_status()
+        .await
+        .map_err(|e| format!("tunnel_status failed: {e}"))?;
+    Ok(person_from(&status))
+}
+
+/// Set what this computer's person is called (runtime `person_name_set`).
+/// Signed in, PekoHub takes it first and may refuse it.
+#[tauri::command]
+pub async fn person_name_set(name: String) -> Result<(), String> {
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    let value = client
+        .person_name_set(&name)
+        .await
+        .map_err(|e| format!("person_name_set failed: {e}"))?;
+    match value.get("type").and_then(|t| t.as_str()) {
+        Some("done") => Ok(()),
+        Some("error") => Err(value
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("the runtime did not take the name")
+            .to_string()),
+        _ => Err("This runtime is too old to set your name. Update Peko.".to_string()),
+    }
+}
+
+fn person_from(status: &serde_json::Value) -> LocalPerson {
+    let text = |key: &str| {
+        status
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    LocalPerson {
+        name: text("person_name").or_else(|| text("account_name")),
+        handle: text("person_handle"),
+    }
+}
+
+/// What disconnecting this computer from PekoHub came to.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HubDisconnect {
+    /// The runtime is no longer registered.
+    pub done: bool,
+    /// Messages to pekos on other computers not delivered yet; nothing
+    /// changed. Disconnecting anyway loses them.
+    pub unsent: Option<u32>,
+    /// Pekos that went local-only on the way.
+    pub local_only: Vec<String>,
+}
+
+/// Disconnect this computer from the PekoHub account at `hub` (runtime
+/// ADR-091 D5): its pekos go local-only, and the runtime deletes its
+/// copies of the person's conversations with pekos on other computers
+/// (their hosts keep them). With messages still undelivered nothing
+/// changes and `unsent` says how many, unless `discard_unsent`.
+#[tauri::command]
+pub async fn runtime_hub_disconnect(
+    hub: String,
+    discard_unsent: bool,
+) -> Result<HubDisconnect, String> {
+    let http = reqwest::Client::new();
+    let token = crate::clients::hub_auth::access_token(&http, hub.trim_end_matches('/'))
+        .await
+        .ok_or_else(|| "Sign in to PekoHub first.".to_string())?;
+    let client = crate::ipc::IpcClient::new()
+        .await
+        .map_err(|e| format!("IpcClient::new failed: {e}"))?;
+    let unregister = |discard: bool| {
+        let client = &client;
+        let token = &token;
+        async move {
+            client
+                .runtime_unregister(token, discard)
+                .await
+                .map_err(|e| format!("runtime_unregister failed: {e}"))
+        }
+    };
+    let mut local_only = Vec::new();
+    let mut answer = unregister(discard_unsent).await?;
+    // The runtime refuses while pekos are registered: they go first.
+    if refusal(&answer).is_some_and(|m| m.contains("Unregister these principals first")) {
+        let list = client
+            .principal_list()
+            .await
+            .map_err(|e| format!("Couldn't list your pekos: {e}"))?;
+        for name in registered_pekos(&list) {
+            let set = client
+                .principal_register(&name, "local_only")
+                .await
+                .map_err(|e| format!("Couldn't put the peko online: {e}"))?;
+            if let Some(message) = refusal(&set) {
+                return Err(format!("{name} couldn't go local-only: {message}"));
+            }
+            local_only.push(name);
+        }
+        answer = unregister(discard_unsent).await?;
+    }
+    disconnect_outcome(&answer, local_only)
+}
+
+/// The runtime's refusal, if `answer` is one.
+fn refusal(answer: &serde_json::Value) -> Option<&str> {
+    (answer.get("type").and_then(|t| t.as_str()) == Some("error")).then(|| {
+        answer
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("refused")
+    })
+}
+
+/// Names of the pekos registered with PekoHub in a `principal_list`.
+fn registered_pekos(list: &serde_json::Value) -> Vec<String> {
+    list.get("principals")
+        .and_then(|p| p.as_array())
+        .into_iter()
+        .flatten()
+        .filter(|p| {
+            p.get("exposure")
+                .and_then(|e| e.as_str())
+                .is_some_and(|e| e != "local_only")
+        })
+        .filter_map(|p| p.get("name").and_then(|n| n.as_str()).map(str::to_string))
+        .collect()
+}
+
+fn disconnect_outcome(
+    answer: &serde_json::Value,
+    local_only: Vec<String>,
+) -> Result<HubDisconnect, String> {
+    match refusal(answer) {
+        None => Ok(HubDisconnect {
+            done: true,
+            unsent: None,
+            local_only,
+        }),
+        Some(message) if message.contains("have not been delivered yet") => {
+            let count = message
+                .split_whitespace()
+                .next()
+                .and_then(|n| n.parse().ok())
+                .unwrap_or(1);
+            Ok(HubDisconnect {
+                done: false,
+                unsent: Some(count),
+                local_only,
+            })
+        }
+        Some(message) => Err(message.to_string()),
+    }
+}
+
+/// Add a new remote runtime connection.
+#[tauri::command]
+pub async fn runtime_add(
+    state: State<'_, AppState>,
+    id: String,
+    name: String,
+    pekohub_url: Option<String>,
+) -> Result<RuntimeSummary, String> {
+    let conn = RuntimeConnection {
+        id: id.clone(),
+        name,
+        connection_type: RuntimeConnectionType::Remote,
+        status: RuntimeStatus::Connecting,
+        ipc_path: None,
+        pekohub_url,
+    };
+    state.set_runtime(conn.clone()).await;
+
+    // Attempt a quick health check via pekohub
+    match state.pekohub_client.system_status(&id).await {
+        Ok(_) => {
+            let mut updated = conn;
+            updated.status = RuntimeStatus::Connected;
+            state.set_runtime(updated.clone()).await;
+            Ok(updated.into())
+        }
+        Err(e) => {
+            let mut updated = conn;
+            updated.status = RuntimeStatus::Error;
+            state.set_runtime(updated.clone()).await;
+            Err(format!(
+                "Failed to connect to remote runtime '{}': {}",
+                id, e
+            ))
+        }
+    }
+}
+
+/// Remove a runtime connection.
+#[tauri::command]
+pub async fn runtime_remove(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    if id == "local" {
+        return Err("Cannot remove the local runtime".to_string());
+    }
+    state.remove_runtime(&id).await;
+    Ok(())
+}
+
+/// Reconnect / refresh status for a runtime.
+#[tauri::command]
+pub async fn runtime_reconnect(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<RuntimeSummary, String> {
+    let mut conn = state
+        .get_runtime(&id)
+        .await
+        .ok_or_else(|| format!("Runtime '{}' not found", id))?;
+
+    conn.status = RuntimeStatus::Connecting;
+    state.set_runtime(conn.clone()).await;
+
+    let result: Result<(), String> = match conn.connection_type {
+        RuntimeConnectionType::Local => {
+            state.check_local_runtime().await.map_err(|e| e.to_string())
+        }
+        RuntimeConnectionType::Remote => state
+            .pekohub_client
+            .system_status(&conn.id)
+            .await
+            .map(|_| ()),
+    };
+
+    match result {
+        Ok(()) => {
+            conn.status = RuntimeStatus::Connected;
+        }
+        Err(_) => {
+            conn.status = RuntimeStatus::Disconnected;
+        }
+    }
+
+    state.set_runtime(conn.clone()).await;
+    Ok(conn.into())
+}
+
+#[cfg(test)]
+mod tests {
+
+    #[test]
+    fn the_runtime_did_is_read_from_the_engine_answer() {
+        let ok = serde_json::json!({"type": "runtime_id", "request_id": 1, "did": "did:key:zMac"});
+        assert_eq!(super::did_from(&ok).unwrap(), "did:key:zMac");
+        let empty = serde_json::json!({"type": "runtime_id", "request_id": 1, "did": ""});
+        assert!(super::did_from(&empty).is_err());
+        let refused = serde_json::json!({"type": "error", "request_id": 1, "message": "no"});
+        assert_eq!(super::did_from(&refused).unwrap_err(), "no");
+    }
+
+    #[test]
+    fn disconnecting_reports_unsent_messages_or_finishes() {
+        let done = serde_json::json!({"type": "done", "request_id": 1, "success": true});
+        assert_eq!(
+            disconnect_outcome(&done, vec!["ada".into()]).unwrap(),
+            HubDisconnect {
+                done: true,
+                unsent: None,
+                local_only: vec!["ada".into()]
+            }
+        );
+        let unsent = serde_json::json!({
+            "type": "error",
+            "message": "3 message(s) to pekos on other computers have not been delivered yet. Unregistering deletes …",
+        });
+        assert_eq!(
+            disconnect_outcome(&unsent, vec![]).unwrap(),
+            HubDisconnect {
+                done: false,
+                unsent: Some(3),
+                local_only: vec![]
+            }
+        );
+        let other = serde_json::json!({"type": "error", "message": "PekoHub refused to unregister the runtime: HTTP 401"});
+        assert!(disconnect_outcome(&other, vec![])
+            .unwrap_err()
+            .contains("HTTP 401"));
+    }
+
+    #[test]
+    fn only_registered_pekos_go_local_only() {
+        let list = serde_json::json!({"principals": [
+            {"name": "ada", "exposure": "public"},
+            {"name": "bob", "exposure": "private"},
+            {"name": "cy", "exposure": "local_only"},
+        ]});
+        assert_eq!(registered_pekos(&list), ["ada", "bob"]);
+    }
+    use super::*;
+
+    fn test_state() -> AppState {
+        AppState::new(crate::clients::pekohub::PekohubClient::new())
+    }
+
+    // Helper to wrap AppState in a fake Tauri State for testing.
+    // Safety: we only use this in tests and never drop the reference early.
+    fn fake_state(state: &AppState) -> State<'_, AppState> {
+        // tauri::State is a transparent wrapper around &T, so we can transmute.
+        unsafe { std::mem::transmute(state) }
+    }
+
+    #[tokio::test]
+    async fn test_runtime_list_returns_all() {
+        let state = test_state();
+        state
+            .set_runtime(RuntimeConnection {
+                id: "local".to_string(),
+                name: "Local".to_string(),
+                connection_type: RuntimeConnectionType::Local,
+                status: RuntimeStatus::Connected,
+                ipc_path: None,
+                pekohub_url: None,
+            })
+            .await;
+        state
+            .set_runtime(RuntimeConnection {
+                id: "remote-1".to_string(),
+                name: "Remote".to_string(),
+                connection_type: RuntimeConnectionType::Remote,
+                status: RuntimeStatus::Disconnected,
+                ipc_path: None,
+                pekohub_url: Some("https://hub.example.com".to_string()),
+            })
+            .await;
+
+        let list = runtime_list(fake_state(&state)).await.unwrap();
+        assert_eq!(list.len(), 2);
+        let ids: Vec<String> = list.iter().map(|r| r.id.clone()).collect();
+        assert!(ids.contains(&"local".to_string()));
+        assert!(ids.contains(&"remote-1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_runtime_remove_blocks_local() {
+        let state = test_state();
+        let result = runtime_remove(fake_state(&state), "local".to_string()).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Cannot remove"));
+    }
+
+    #[tokio::test]
+    async fn test_runtime_remove_deletes_remote() {
+        let state = test_state();
+        state
+            .set_runtime(RuntimeConnection {
+                id: "remote-1".to_string(),
+                name: "Remote".to_string(),
+                connection_type: RuntimeConnectionType::Remote,
+                status: RuntimeStatus::Connected,
+                ipc_path: None,
+                pekohub_url: None,
+            })
+            .await;
+
+        let result = runtime_remove(fake_state(&state), "remote-1".to_string()).await;
+        assert!(result.is_ok());
+        assert!(state.get_runtime("remote-1").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_runtime_rename_updates_name() {
+        let state = test_state();
+        state
+            .set_runtime(RuntimeConnection {
+                id: "local".to_string(),
+                name: "Old Name".to_string(),
+                connection_type: RuntimeConnectionType::Local,
+                status: RuntimeStatus::Connected,
+                ipc_path: None,
+                pekohub_url: None,
+            })
+            .await;
+
+        let summary = runtime_rename(
+            fake_state(&state),
+            "local".to_string(),
+            "New Name".to_string(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(summary.name, "New Name");
+        let fetched = state.get_runtime("local").await.unwrap();
+        assert_eq!(fetched.name, "New Name");
+    }
+
+    #[tokio::test]
+    async fn test_runtime_rename_not_found() {
+        let state = test_state();
+        let result =
+            runtime_rename(fake_state(&state), "missing".to_string(), "X".to_string()).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn test_runtime_summary_from_local_connected() {
+        let conn = RuntimeConnection {
+            id: "local".to_string(),
+            name: "Local".to_string(),
+            connection_type: RuntimeConnectionType::Local,
+            status: RuntimeStatus::Connected,
+            ipc_path: None,
+            pekohub_url: None,
+        };
+        let summary: RuntimeSummary = conn.into();
+        assert_eq!(summary.id, "local");
+        assert_eq!(summary.connection_type, "local");
+        let wire = serde_json::to_value(&summary).unwrap();
+        assert_eq!(
+            wire["connectionType"], "local",
+            "the frontend reads camelCase"
+        );
+        assert_eq!(summary.status, "connected");
+    }
+
+    #[test]
+    fn test_runtime_summary_from_remote_error() {
+        let conn = RuntimeConnection {
+            id: "r1".to_string(),
+            name: "Remote".to_string(),
+            connection_type: RuntimeConnectionType::Remote,
+            status: RuntimeStatus::Error,
+            ipc_path: None,
+            pekohub_url: None,
+        };
+        let summary: RuntimeSummary = conn.into();
+        assert_eq!(summary.connection_type, "remote");
+        assert_eq!(summary.status, "error");
+    }
+}
+
+/// Update the display name of a runtime.
+#[tauri::command]
+pub async fn runtime_rename(
+    state: State<'_, AppState>,
+    id: String,
+    name: String,
+) -> Result<RuntimeSummary, String> {
+    let mut conn = state
+        .get_runtime(&id)
+        .await
+        .ok_or_else(|| format!("Runtime '{}' not found", id))?;
+    conn.name = name;
+    state.set_runtime(conn.clone()).await;
+    Ok(conn.into())
+}
+
+#[cfg(test)]
+mod hub_registration_tests {
+    use super::*;
+
+    #[test]
+    fn registration_answers_map_to_results() {
+        let ok = serde_json::json!({
+            "type": "runtime_registered",
+            "hub": "https://api.pekohub.ai",
+            "runtime_did": "did:key:z6Mk",
+            "account": "acct",
+        });
+        let reg = hub_registration_from(&ok).unwrap();
+        assert_eq!(reg.hub, "https://api.pekohub.ai");
+        assert_eq!(reg.account, "acct");
+
+        let refused = serde_json::json!({"type": "error", "message": "PekoHub rejected the API key: HTTP 401"});
+        assert_eq!(
+            hub_registration_from(&refused).unwrap_err(),
+            "PekoHub rejected the API key: HTTP 401"
+        );
+
+        // A daemon that predates `runtime_register` answers something else.
+        let old = serde_json::json!({"type": "done", "success": false});
+        assert!(hub_registration_from(&old).unwrap_err().contains("too old"));
+    }
+
+    #[test]
+    fn tunnel_status_maps_to_the_linked_account() {
+        let linked = serde_json::json!({
+            "type": "tunnel_status",
+            "connected": true,
+            "account": "0b6c7a4e-0000-4000-8000-000000000000",
+            "account_name": "Alice",
+        });
+        assert_eq!(
+            local_user_account_from(&linked),
+            Some(LocalUserAccount {
+                id: "0b6c7a4e-0000-4000-8000-000000000000".into(),
+                name: Some("Alice".into()),
+            })
+        );
+        let unnamed = serde_json::json!({"type": "tunnel_status", "account": "acct"});
+        assert_eq!(local_user_account_from(&unnamed).unwrap().name, None);
+        // Unregistered, or a daemon that predates the field.
+        let none = serde_json::json!({"type": "tunnel_status", "connected": false});
+        assert_eq!(local_user_account_from(&none), None);
+    }
+
+    #[test]
+    fn the_person_is_named_signed_in_or_not() {
+        let signed_out = serde_json::json!({"type": "tunnel_status", "person_name": "maya"});
+        assert_eq!(
+            person_from(&signed_out),
+            LocalPerson {
+                name: Some("maya".into()),
+                handle: None
+            }
+        );
+        let signed_in = serde_json::json!({
+            "type": "tunnel_status",
+            "account": "acct",
+            "account_name": "Maya Lin",
+            "person_name": "Maya Lin",
+            "person_handle": "maya",
+        });
+        assert_eq!(
+            person_from(&signed_in),
+            LocalPerson {
+                name: Some("Maya Lin".into()),
+                handle: Some("maya".into())
+            }
+        );
+        // A runtime that predates `person_name`.
+        let older = serde_json::json!({"type": "tunnel_status", "account_name": "Maya Lin"});
+        assert_eq!(person_from(&older).name.as_deref(), Some("Maya Lin"));
+        let nameless = serde_json::json!({"type": "tunnel_status", "person_name": "  "});
+        assert_eq!(person_from(&nameless).name, None);
+    }
+}

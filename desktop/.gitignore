@@ -1,0 +1,30 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Tauri sidecar binaries — populated by `npm run sidecar:fetch`
+# from the freshly-built peko-runtime binary. Not checked in because
+# they are host-specific (target-triple suffix) and rebuilt on demand.
+# See ADR-043 and scripts/fetch-peko-sidecar.sh.
+src-tauri/binaries/
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

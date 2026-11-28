@@ -1,0 +1,450 @@
+import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import {
+  runtimeList,
+  runtimeAdd,
+  runtimeRemove,
+  runtimeReconnect,
+  runtimeRename,
+  oauthTokenExchange,
+  oauthTokenRefresh,
+  runtimeHubRegister,
+  hubOAuthRevoke,
+  DEFAULT_HUB_URL,
+  credentialSetRaw,
+  credentialGetRaw,
+  pekohubLogout,
+  startOAuthCallbackListener,
+  type StoredTokenBundle,
+  type OAuthTokenResponse,
+  hubApiBase,
+} from "../lib/api";
+import {
+  generateCodeVerifier,
+  generateCodeChallenge,
+  generateState,
+  buildAuthorizeUrl,
+} from "../lib/oauth";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { t } from "../i18n";
+
+export function useRuntimes() {
+  return useQuery({
+    queryKey: ["runtimes"],
+    queryFn: runtimeList,
+    refetchInterval: 30000,
+  });
+}
+
+export function useAddRuntime() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: { id: string; name: string; pekohubUrl?: string }) =>
+      runtimeAdd(payload.id, payload.name, payload.pekohubUrl),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["runtimes"] }),
+  });
+}
+
+export function useRemoveRuntime() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => runtimeRemove(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["runtimes"] }),
+  });
+}
+
+export function useReconnectRuntime() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => runtimeReconnect(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["runtimes"] }),
+  });
+}
+
+export function useRenameRuntime() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: { id: string; name: string }) =>
+      runtimeRename(payload.id, payload.name),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["runtimes"] }),
+  });
+}
+
+// ─── OAuth2 PKCE Flow ───────────────────────────────────────
+
+/**
+ * In-flight OAuth flow state (verifier + state + endpoints).
+ *
+ * Persisted to `sessionStorage` so that an accidental page reload
+ * between `startOAuthConnect` and `exchangeOAuthCode` doesn't drop
+ * the PKCE verifier — the user would otherwise have to restart the
+ * whole flow. `sessionStorage` is scoped to the current tab and is
+ * cleared when the tab closes, which matches the OAuth flow's
+ * natural lifetime: a flow that survives a tab close is suspect
+ * anyway (the browser redirect went somewhere unexpected).
+ *
+ * Implementation note (D3): the original code held this in a
+ * module-level `let`. Module state is reset on Vite HMR and lost on
+ * reload. sessionStorage is reload-survivable without a new
+ * dependency — adding zustand for one piece of state would be
+ * over-engineering.
+ */
+const OAUTH_FLOW_KEY = "peko:oauth-flow";
+
+interface OAuthFlowState {
+  verifier: string;
+  state: string;
+  redirectUri: string;
+  baseUrl: string;
+}
+
+export function readActiveFlow(): OAuthFlowState | null {
+  try {
+    const raw = sessionStorage.getItem(OAUTH_FLOW_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as OAuthFlowState;
+  } catch {
+    return null;
+  }
+}
+
+export function writeActiveFlow(flow: OAuthFlowState | null): void {
+  try {
+    if (flow === null) {
+      sessionStorage.removeItem(OAUTH_FLOW_KEY);
+    } else {
+      sessionStorage.setItem(OAUTH_FLOW_KEY, JSON.stringify(flow));
+    }
+  } catch {
+    // sessionStorage may throw in private mode or when quota is
+    // exhausted — fall back to the previous in-memory behaviour by
+    // silently dropping persistence. The flow still works within the
+    // current page.
+  }
+}
+
+export interface OAuthConnectInput {
+  /** PekoHub base URL (e.g. https://pekohub.org) */
+  baseUrl: string;
+  /** OAuth client ID (default: peko-desktop) */
+  clientId?: string;
+  /** Redirect URI shown to the user (e.g. http://localhost:0/callback) */
+  redirectUri?: string;
+  /** Optional scopes */
+  scope?: string;
+}
+
+/**
+ * Signing in registers this computer's runtime with the account, so its
+ * pekos can go online. `registered: false` means sign-in worked but the
+ * registration didn't; `error` says why.
+ */
+export interface OAuthConnectResult {
+  registered: boolean;
+  account?: string;
+  error?: string;
+}
+
+/**
+ * Initiate the OAuth2 PKCE flow by opening the system browser.
+ * Returns the authorize URL and stores the verifier/state locally.
+ * The caller is responsible for collecting the authorization code
+ * (via manual paste, local HTTP server, or custom protocol) and
+ * passing it to `exchangeOAuthCode`.
+ *
+ * D6 deprecated the manual-paste path: prefer `runOAuthFlow` which
+ * spawns a localhost listener and captures the redirect server-side.
+ */
+export async function startOAuthConnect(
+  input: OAuthConnectInput,
+): Promise<string> {
+  const baseUrl = input.baseUrl.replace(/\/+$/, "");
+  const clientId = input.clientId ?? "peko-desktop";
+  const redirectUri = input.redirectUri ?? "http://localhost:0/callback";
+
+  const verifier = generateCodeVerifier();
+  const state = generateState();
+  const challenge = await generateCodeChallenge(verifier);
+
+  writeActiveFlow({ verifier, state, redirectUri, baseUrl });
+
+  const authorizeUrl = buildAuthorizeUrl({
+    baseUrl,
+    clientId,
+    redirectUri,
+    codeChallenge: challenge,
+    state,
+    scope: input.scope,
+  });
+
+  await openUrl(authorizeUrl);
+  return authorizeUrl;
+}
+
+/**
+ * Default port the OAuth callback listener binds to. Hard-coded
+ * because the PekoHub `redirect_uri` must be registered in advance
+ * (it's a static OAuth client config) — using 0 / random would
+ * fail server-side validation.
+ */
+const PEKOHUB_CALLBACK_PORT = 19876;
+const PEKOHUB_CALLBACK_PATH = "/callback";
+
+/**
+ * End-to-end OAuth sign-in: bind the localhost listener, open
+ * the authorize URL, capture the redirect, exchange, and discover
+ * runtimes. The Rust-side `start_oauth_callback_listener` resolves
+ * once the browser hits the redirect, or rejects after 2 minutes.
+ *
+ * Listener and browser-redirect are started in parallel so the
+ * browser doesn't beat the listener to the bind (race-free; the
+ * Tauri command is awaitable and returns once the connection is
+ * accepted, not once the request is read).
+ */
+export async function runOAuthFlow(
+  input: OAuthConnectInput,
+): Promise<OAuthConnectResult> {
+  const baseUrl = input.baseUrl.replace(/\/+$/, "");
+  const clientId = input.clientId ?? "peko-desktop";
+  const redirectUri =
+    input.redirectUri ?? `http://localhost:${PEKOHUB_CALLBACK_PORT}${PEKOHUB_CALLBACK_PATH}`;
+
+  const verifier = generateCodeVerifier();
+  const state = generateState();
+  const challenge = await generateCodeChallenge(verifier);
+  writeActiveFlow({ verifier, state, redirectUri, baseUrl });
+
+  // Start the listener + open the browser in parallel. Whichever
+  // finishes second, the listener will catch the redirect (the
+  // browser has to round-trip through PekoHub, so the listener
+  // bind is always first).
+  const listenerPromise = startOAuthCallbackListener(
+    PEKOHUB_CALLBACK_PORT,
+    PEKOHUB_CALLBACK_PATH,
+  );
+
+  const authorizeUrl = buildAuthorizeUrl({
+    baseUrl,
+    clientId,
+    redirectUri,
+    codeChallenge: challenge,
+    state,
+    scope: input.scope,
+  });
+  await openUrl(authorizeUrl);
+
+  const { code, state: returnedState } = await listenerPromise;
+  return exchangeOAuthCode(code, returnedState, clientId);
+}
+
+/**
+ * Build a token bundle for storage, computing expiry if expires_in is provided.
+ */
+function buildTokenBundle(resp: OAuthTokenResponse, hub: string): StoredTokenBundle {
+  const bundle: StoredTokenBundle = {
+    access_token: resp.access_token,
+    hub: hubApiBase(hub),
+  };
+  if (resp.refresh_token) {
+    bundle.refresh_token = resp.refresh_token;
+  }
+  if (resp.expires_in) {
+    const expiresAt = new Date(Date.now() + resp.expires_in * 1000);
+    bundle.expires_at = expiresAt.toISOString();
+  }
+  return bundle;
+}
+
+/**
+ * Store the OAuth token bundle in the OS keychain as JSON.
+ */
+async function storeOAuthBundle(bundle: StoredTokenBundle): Promise<void> {
+  await credentialSetRaw("pekohub", JSON.stringify(bundle));
+}
+
+/**
+ * Load the OAuth token bundle from the OS keychain.
+ * Returns null if no credential is stored or parsing fails.
+ */
+export async function loadOAuthBundle(): Promise<StoredTokenBundle | null> {
+  const raw = await credentialGetRaw("pekohub");
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as StoredTokenBundle;
+    if (!parsed.access_token) return null;
+    return parsed;
+  } catch {
+    // Legacy: raw token stored before bundle format
+    return { access_token: raw };
+  }
+}
+
+/**
+ * Check if the stored access token is expired (with 60s clock skew buffer).
+ */
+export function isTokenExpired(bundle: StoredTokenBundle): boolean {
+  if (!bundle.expires_at) return false;
+  const expiry = new Date(bundle.expires_at).getTime();
+  return Date.now() >= expiry - 60_000;
+}
+
+/**
+ * Refresh the stored access token if a refresh_token is available.
+ * Updates the stored bundle on success.
+ */
+export async function refreshStoredToken(
+  baseUrl: string,
+  clientId = "peko-desktop",
+): Promise<StoredTokenBundle | null> {
+  const bundle = await loadOAuthBundle();
+  if (!bundle?.refresh_token) return null;
+
+  const resp = await oauthTokenRefresh({
+    // Only the hub that issued the refresh token sees it.
+    baseUrl: bundle.hub ?? baseUrl,
+    clientId,
+    refreshToken: bundle.refresh_token,
+  });
+
+  const newBundle = buildTokenBundle(resp, bundle.hub ?? baseUrl);
+  await storeOAuthBundle(newBundle);
+  return newBundle;
+}
+
+/**
+ * Exchange an authorization code for tokens, store the token bundle
+ * securely, discover runtimes on PekoHub, and add them locally.
+ */
+export async function exchangeOAuthCode(
+  code: string,
+  returnedState: string,
+  clientId = "peko-desktop",
+): Promise<OAuthConnectResult> {
+  const activeFlow = readActiveFlow();
+  if (!activeFlow) {
+    throw new Error(t("errors.oauthNoActiveFlow"));
+  }
+  const { verifier, state, redirectUri, baseUrl } = activeFlow;
+
+  if (returnedState !== state) {
+    throw new Error(t("errors.oauthStateMismatch"));
+  }
+
+  const tokenResp = await oauthTokenExchange({
+    baseUrl,
+    clientId,
+    code,
+    redirectUri,
+    codeVerifier: verifier,
+  });
+
+  const accessToken = tokenResp.access_token;
+  if (!accessToken) {
+    throw new Error(t("errors.oauthNoAccessToken"));
+  }
+
+  // Store full token bundle (access + refresh + expiry) in OS keychain
+  const bundle = buildTokenBundle(tokenResp, baseUrl);
+  await storeOAuthBundle(bundle);
+
+  // Register this computer's runtime under the account (pekohub ADR-007),
+  // so its pekos can go online. Sign-in stands even if this fails.
+  let result: OAuthConnectResult;
+  try {
+    const registration = await runtimeHubRegister(baseUrl, accessToken);
+    result = { registered: true, account: registration.account };
+  } catch (e) {
+    result = { registered: false, error: e instanceof Error ? e.message : String(e) };
+  }
+
+  // Clear the persisted flow now that we've successfully exchanged.
+  // Leaving it would let a stale verifier be replayed against a
+  // future OAuth flow (low impact, but unnecessary surface).
+  writeActiveFlow(null);
+  return result;
+}
+
+/**
+ * After a PekoHub sign-in: re-read what depends on it — the stored
+ * bundle (the profile menu's signed-in state), the account's runtimes and
+ * credentials, and its notifications.
+ */
+export async function afterPekohubSignIn(qc: QueryClient): Promise<void> {
+  await Promise.all([
+    qc.invalidateQueries({ queryKey: ["pekohub-bundle"] }),
+    qc.invalidateQueries({ queryKey: ["runtimes"] }),
+    qc.invalidateQueries({ queryKey: ["credentials", "pekohub"] }),
+    qc.invalidateQueries({ queryKey: ["hub-notifications"] }),
+    qc.invalidateQueries({ queryKey: ["hub-account"] }),
+    qc.invalidateQueries({ queryKey: ["local-user-account"] }),
+  ]);
+}
+
+/** TanStack Query mutation wrapper for the full OAuth exchange. */
+export function useOAuthConnect() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      code,
+      state,
+    }: {
+      code: string;
+      state: string;
+    }) => exchangeOAuthCode(code, state),
+    onSuccess: () => afterPekohubSignIn(qc),
+  });
+}
+
+/**
+ * Forget the PekoHub OAuth bundle + clear the in-flight PKCE flow.
+ *
+ * Server-side (`pekohub_logout` Tauri command) deletes the
+ * `provider:pekohub/default` credential. The runtime's
+ * `RuntimeConnection` rows with `connectionType === "pekohub"` are
+ * the user's discovered-runtimes list and are NOT touched by the
+ * server — the SPA simply invalidates the `runtimes` query so the
+ * user re-lists from a clean slate on the next "Sign in with
+ * PekoHub" click. Cached `pekohub` credential entries are also
+ * invalidated so the UI re-fetches and reflects the empty state.
+ *
+ * Also clears any in-flight PKCE flow state from sessionStorage — a
+ * stale verifier from a prior aborted sign-in is dead state.
+ */
+export function usePekohubLogout() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (baseUrl?: string) => {
+      // Revoke the refresh token at the hub (RFC 7009), then forget it
+      // here. A hub that can't be reached doesn't block signing out.
+      const bundle = await loadOAuthBundle().catch(() => null);
+      if (bundle?.refresh_token) {
+        await hubOAuthRevoke(bundle.hub ?? baseUrl ?? DEFAULT_HUB_URL, bundle.refresh_token).catch(
+          () => undefined,
+        );
+      }
+      await pekohubLogout();
+    },
+    onSuccess: () => {
+      writeActiveFlow(null);
+      qc.invalidateQueries({ queryKey: ["runtimes"] });
+      qc.invalidateQueries({ queryKey: ["credentials", "pekohub"] });
+      qc.invalidateQueries({ queryKey: ["pekohub-bundle"] });
+    },
+  });
+}
+
+/**
+ * Reactive check: is a PekoHub OAuth bundle currently stored?
+ *
+ * Used by the Settings UI to decide whether to render the
+ * "Sign out of PekoHub" affordance — without it, the button would
+ * either lie ("you're signed out!") or no-op silently. The query
+ * mirrors the `credentials/pekohub` cache key the OAuth flow
+ * invalidates on success, so signing in flips the result live.
+ */
+export function usePekohubBundle() {
+  return useQuery({
+    queryKey: ["pekohub-bundle"],
+    queryFn: () => loadOAuthBundle(),
+    staleTime: 30_000,
+  });
+}

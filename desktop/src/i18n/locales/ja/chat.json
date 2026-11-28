@@ -1,0 +1,137 @@
+{
+  "attachments": {
+    "listLabel": "添付ファイル",
+    "remove": "{{name}} を削除",
+    "open": "{{name}} を開く",
+    "play": "{{name}} を再生",
+    "cantPlay": "ここでは再生できません。ファイルを開いてください",
+    "missingTitle": "{{name}} はまだ別のコンピューターから届いていません",
+    "missing": "未受信",
+    "pageFull": "{{name}} を大きく開く",
+    "pageBrowser": "{{name}} をブラウザで開く"
+  },
+  "composer": {
+    "label": "メッセージ",
+    "placeholder": "peko にメッセージ…",
+    "attachTitle": "ファイルを添付 — またはウィンドウにドロップ",
+    "modelLabel": "このメッセージに使うモデル",
+    "pekosModel": "Peko のモデル",
+    "hint": "↵ で送信 · ⇧↵ で改行",
+    "sendTitle": "送信（Enter）"
+  },
+  "markdown": {
+    "svgImage": "SVG 画像",
+    "code": "コード",
+    "showImage": "画像を表示",
+    "showCode": "コードを表示",
+    "image": "画像",
+    "codeLabel": "コード",
+    "copyCode": "コードをコピー"
+  },
+  "hostOffline": "<computer/> がオフラインのため、{{peko}} は今は作業できません。送信した内容は保留され、そのコンピューターが復帰すると {{peko}} に届きます。{{peko}} が返信すると通知が届きます。",
+  "hostOfflineSince": "<computer/> がオフライン（最終オンライン: {{ago}}）のため、{{peko}} は今は作業できません。送信した内容は保留され、そのコンピューターが復帰すると {{peko}} に届きます。{{peko}} が返信すると通知が届きます。",
+  "waitingFor": "{{name}} がオンラインになるのを待っています",
+  "suggestedReplies": "返信の候補",
+  "questions": {
+    "label": "質問",
+    "for": "{{name}}さん宛て",
+    "pickAny": "（複数選択可）",
+    "otherPlaceholder": "または自分の言葉で…",
+    "answerPlaceholder": "回答…",
+    "otherLabel": "「{{question}}」への回答",
+    "send": "回答を送信",
+    "answered": "回答済み"
+  },
+  "runFailure": {
+    "reason": {
+      "peko_limit": "利用上限額に達しました",
+      "provider_quota": "モデルプロバイダーの割り当てを使い切りました",
+      "provider_unreachable": "モデルプロバイダーに接続できません"
+    },
+    "waiting": "待機中 — {{reason}}。自動的に再開します。次回の試行: {{when}}。",
+    "failed": "前回の返信は完了しませんでした — {{reason}}。"
+  },
+  "approval": {
+    "asker": "{{name}}（{{address}}）",
+    "ownerTask": "あなたは{{where}} {{peko}} に、あなたの完全な権限が必要な依頼をしました。承認すると、その会話の外で、次の指示だけをもとに、あなたとして実行されます:",
+    "ownerTaskWhere": "共有の会話で",
+    "toolRequest": "<asker/> が {{peko}} に <summary/> の実行を求めています",
+    "approve": "承認",
+    "alwaysTitle": "承認し、今後 {{name}} にはこれを常に許可する",
+    "always": "常に許可",
+    "deny": "拒否",
+    "wakeLimit": "グループで他のペコが {{peko}} を上限まで起こしました。{{peko}} 宛てのメッセージが待機しています。",
+    "wakeLimitContinue": "続行させる",
+    "wakeLimitNoLimit": "このグループでは上限なし",
+    "wakeLimitNoLimitTitle": "続行させ、このグループで他のペコが {{peko}} を起こす回数の上限をなくします",
+    "wakeLimitNotNow": "今はしない"
+  },
+  "secret": {
+    "request": "{{peko}} が <name/> を求めています",
+    "mcpRequest": "{{peko}} が MCP サーバー <server/> 用に <name/> を求めています",
+    "label": "{{name}} の値",
+    "placeholder": "ここに貼り付けるか入力",
+    "show": "表示",
+    "hide": "隠す",
+    "save": "安全に保存",
+    "decline": "断る",
+    "hint": "このコンピューターの保管庫に入ります。{{peko}} には保存されたことだけが伝わり、値は伝わりません。チャットにシークレットを貼り付けないでください。"
+  },
+  "browser": {
+    "needsYou": "{{peko}} がブラウザであなたを待っています",
+    "open": "{{peko}} がブラウザを開いています",
+    "openButton": "ブラウザを開く",
+    "title": "{{peko}} のブラウザ",
+    "tab": "タブ",
+    "back": "戻る",
+    "reload": "再読み込み",
+    "address": "アドレス",
+    "take": "操作を引き受ける",
+    "release": "操作を返す",
+    "watching": "見ているだけです。{{peko}} がブラウザを使っています。",
+    "handoff": "{{peko}} があなたを待っています。操作を引き継いで対応してください。",
+    "controlling": "あなたが操作中です。返すまで {{peko}} は待ちます。",
+    "other": "あなたの別のデバイスが操作中です。",
+    "waiting": "ページを待っています…",
+    "typeHere": "ページに送るテキストを入力または貼り付け",
+    "send": "送信",
+    "hint": "クリックや入力は、{{peko}} が動いているコンピューターのページに直接届きます。チャットには残らず、{{peko}} が見ることもありません。"
+  },
+  "changes": {
+    "summary_other": "{{peko}} が {{count}} 個のファイルを変更しました",
+    "undo": "元に戻す",
+    "dismiss": "閉じる",
+    "kind": {
+      "added": "追加",
+      "modified": "変更",
+      "deleted": "削除"
+    },
+    "shell": "シェルコマンドも実行しました。ワークスペースの外で変更されたファイルは表示されず、元に戻せません。",
+    "restored_other": "{{count}} 個のファイルを元に戻しました。",
+    "skipped": "{{path}} はそのままにしました: {{why}}"
+  },
+  "yourPeko": "あなたの peko",
+  "onComputer": "· {{computer}} 上",
+  "ownersPeko": "{{owner}} の peko",
+  "pekosComputer": "{{name}} のコンピューター",
+  "selectPeko": "サイドバーから peko を選んでください",
+  "noPekos": "まだ peko がいません",
+  "noPekosHint": "最初の peko を作成してチャットを始めましょう。",
+  "createPeko": "peko を作成",
+  "signInPrompt": "別のコンピューターに peko がいますか？<signIn>PekoHub でサインイン</signIn>すると、ここに表示されます。",
+  "dropFiles": "ドロップして添付",
+  "begin": "メッセージを送って始めましょう…",
+  "working": "{{name}} が作業中",
+  "workingFor": "{{name}} が作業中 · {{seconds}} 秒",
+  "waitsSameNetwork": "同じネットワークに来るまで待っています",
+  "message": {
+    "reply": "返信",
+    "react": "リアクション",
+    "otherEmoji": "ほかの絵文字",
+    "reactedBy": "{{names}} が {{emoji}}",
+    "you": "あなた",
+    "notLoaded": "読み込まれていないメッセージ",
+    "replyingTo": "{{name}} に返信",
+    "reactFailed": "リアクションできませんでした: {{reason}}"
+  }
+}

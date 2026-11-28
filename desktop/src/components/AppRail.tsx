@@ -1,0 +1,77 @@
+import { useNavigate, useLocation } from "@tanstack/react-router";
+import { useTranslation } from "react-i18next";
+import { Settings } from "lucide-react";
+import PekoMark from "./PekoMark";
+import ProfileMenu from "./ProfileMenu";
+import HubNotificationBell from "./HubNotificationBell";
+import GroupRail from "./rail/GroupRail";
+import { RailDivider, RailItem } from "./rail/RailItem";
+import { useUnreadCounts } from "../lib/unread";
+import { useAccountDevices } from "../hooks/useAccountDevices";
+
+/**
+ * The far-left rail: Chats on top, then every group you are in as its own
+ * tile, then account and settings at the foot.
+ */
+export default function AppRail({ onCreateGroup }: { onCreateGroup?: () => void } = {}) {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const unread = Object.values(useUnreadCounts()).reduce((sum, n) => sum + n, 0);
+
+  const isHome =
+    location.pathname === "/" ||
+    location.pathname === "/chat" ||
+    location.pathname.startsWith("/chat/") ||
+    location.pathname === "/discover" ||
+    // Runtime ADR-095 D6: DMs with people sit with the chats.
+    location.pathname.startsWith("/people/");
+
+  const isSettings = location.pathname === "/settings";
+  // Runtime ADR-111 D6: what waits about your account shows on Settings.
+  const waiting = useAccountDevices().data?.security.length ?? 0;
+
+  return (
+    <aside className="flex h-full w-[72px] shrink-0 flex-col items-center bg-surface-rail pb-3 pt-3">
+      <RailItem
+        label={t("layout.rail.chats")}
+        active={isHome}
+        ariaCurrent={isHome}
+        unread={unread > 0}
+        badge={unread}
+        onClick={() => navigate({ to: "/chat" })}
+        testId="app-rail-chats"
+        variant="mark"
+      >
+        <PekoMark className="h-6 w-6" />
+      </RailItem>
+
+      <RailDivider />
+
+      <nav
+        aria-label={t("layout.rail.groups")}
+        className="flex min-h-0 w-full flex-1 flex-col items-center gap-2 overflow-y-auto py-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        data-testid="app-rail-groups"
+      >
+        <GroupRail onCreateClick={onCreateGroup} />
+      </nav>
+
+      <div className="mt-2 flex w-full flex-col items-center gap-2 pt-2">
+        <HubNotificationBell />
+        <RailItem
+          label={t("layout.rail.settings")}
+          active={isSettings}
+          ariaCurrent={isSettings}
+          unread={waiting > 0}
+          badge={waiting}
+          onClick={() => navigate({ to: "/settings", hash: waiting > 0 ? "devices" : undefined })}
+          testId="app-rail-settings"
+        >
+          <Settings className="h-5 w-5" />
+        </RailItem>
+        {/* PekoHub account — sign in / out from any route. */}
+        <ProfileMenu />
+      </div>
+    </aside>
+  );
+}

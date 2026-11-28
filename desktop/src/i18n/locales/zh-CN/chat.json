@@ -1,0 +1,137 @@
+{
+  "attachments": {
+    "listLabel": "已添加的附件",
+    "remove": "移除 {{name}}",
+    "open": "打开 {{name}}",
+    "play": "播放 {{name}}",
+    "cantPlay": "无法在此播放；请直接打开文件",
+    "missingTitle": "{{name}} 尚未从另一台电脑传到",
+    "missing": "尚未收到",
+    "pageFull": "全屏打开 {{name}}",
+    "pageBrowser": "在浏览器中打开 {{name}}"
+  },
+  "composer": {
+    "label": "消息",
+    "placeholder": "给你的 peko 发消息…",
+    "attachTitle": "添加附件——或把文件拖到窗口上",
+    "modelLabel": "这条消息使用的模型",
+    "pekosModel": "Peko 的模型",
+    "hint": "↵ 发送 · ⇧↵ 换行",
+    "sendTitle": "发送（Enter）"
+  },
+  "markdown": {
+    "svgImage": "SVG 图像",
+    "code": "代码",
+    "showImage": "显示图像",
+    "showCode": "显示代码",
+    "image": "图像",
+    "codeLabel": "代码",
+    "copyCode": "复制代码"
+  },
+  "hostOffline": "<computer/> 已离线，所以 {{peko}} 现在无法工作。你发送的内容会先等待，等那台电脑恢复后送达 {{peko}}；{{peko}} 回复时你会收到通知。",
+  "hostOfflineSince": "<computer/> 已离线（上次在线：{{ago}}），所以 {{peko}} 现在无法工作。你发送的内容会先等待，等那台电脑恢复后送达 {{peko}}；{{peko}} 回复时你会收到通知。",
+  "waitingFor": "正在等待 {{name}} 上线",
+  "suggestedReplies": "建议回复",
+  "questions": {
+    "label": "问题",
+    "for": "给 {{name}}",
+    "pickAny": "（可多选）",
+    "otherPlaceholder": "或用自己的话回答…",
+    "answerPlaceholder": "你的回答…",
+    "otherLabel": "你对“{{question}}”的回答",
+    "send": "发送回答",
+    "answered": "已回答"
+  },
+  "runFailure": {
+    "reason": {
+      "peko_limit": "已达到它的支出上限",
+      "provider_quota": "模型服务商的配额已用完",
+      "provider_unreachable": "无法连接模型服务商"
+    },
+    "waiting": "等待中——{{reason}}。它会自行继续，下次尝试时间：{{when}}。",
+    "failed": "上一条回复未能完成——{{reason}}。"
+  },
+  "approval": {
+    "asker": "{{name}}（{{address}}）",
+    "ownerTask": "你{{where}}向 {{peko}} 提出了一项需要你完整权限的请求。批准后，它会以你的身份在那个对话之外执行，并且只依据以下说明：",
+    "ownerTaskWhere": "在一个共享对话中",
+    "toolRequest": "<asker/> 请 {{peko}} 运行 <summary/>",
+    "approve": "批准",
+    "alwaysTitle": "批准，并始终允许 {{name}} 这样做",
+    "always": "始终允许",
+    "deny": "拒绝",
+    "wakeLimit": "在一个群组里，其他 peko 唤醒 {{peko}} 的次数已达上限。发给它的消息正在等待。",
+    "wakeLimitContinue": "让它继续",
+    "wakeLimitNoLimit": "此群组不限制",
+    "wakeLimitNoLimitTitle": "让它继续，并且不再限制其他 peko 在此群组唤醒 {{peko}} 的次数",
+    "wakeLimitNotNow": "暂不"
+  },
+  "secret": {
+    "request": "{{peko}} 请求 <name/>",
+    "mcpRequest": "{{peko}} 为其 MCP 服务器 <server/> 请求 <name/>",
+    "label": "{{name}} 的值",
+    "placeholder": "在此粘贴或输入",
+    "show": "显示",
+    "hide": "隐藏",
+    "save": "安全保存",
+    "decline": "拒绝",
+    "hint": "它会存入这台电脑的保险库。{{peko}} 只会得知已保存，不会看到值。请不要把密钥粘贴到聊天里。"
+  },
+  "browser": {
+    "needsYou": "{{peko}} 需要你到它的浏览器里帮忙",
+    "open": "{{peko}} 打开了浏览器",
+    "openButton": "打开浏览器",
+    "title": "{{peko}} 的浏览器",
+    "tab": "标签页",
+    "back": "后退",
+    "reload": "刷新",
+    "address": "地址",
+    "take": "接管",
+    "release": "交还",
+    "watching": "你正在观看。{{peko}} 正在使用浏览器。",
+    "handoff": "{{peko}} 在等你。接管控制后即可操作。",
+    "controlling": "你正在操作。交还之前 {{peko}} 会等待。",
+    "other": "你的另一台设备正在操作。",
+    "waiting": "正在等待页面…",
+    "typeHere": "输入或粘贴要发送到页面的文字",
+    "send": "发送",
+    "hint": "你的点击和输入会直接发送到运行 {{peko}} 的电脑上的页面，不会保存在聊天里，{{peko}} 也看不到。"
+  },
+  "changes": {
+    "summary_other": "{{peko}} 修改了 {{count}} 个文件",
+    "undo": "撤销",
+    "dismiss": "隐藏",
+    "kind": {
+      "added": "新增",
+      "modified": "修改",
+      "deleted": "删除"
+    },
+    "shell": "它还运行了 shell 命令；它们在工作区之外修改的文件不会列出，也不会撤销。",
+    "restored_other": "已恢复 {{count}} 个文件。",
+    "skipped": "未改动 {{path}}：{{why}}"
+  },
+  "yourPeko": "你的 peko",
+  "onComputer": "· 在 {{computer}} 上",
+  "ownersPeko": "{{owner}} 的 peko",
+  "pekosComputer": "{{name}} 所在的电脑",
+  "selectPeko": "从侧边栏选择一个 peko",
+  "noPekos": "还没有 peko",
+  "noPekosHint": "创建你的第一个 peko，开始聊天。",
+  "createPeko": "创建 peko",
+  "signInPrompt": "在另一台电脑上有 peko？<signIn>登录 PekoHub</signIn>即可在这里看到它们。",
+  "dropFiles": "松开即可添加附件",
+  "begin": "发一条消息开始吧…",
+  "working": "{{name}} 正在工作",
+  "workingFor": "{{name}} 正在工作 · {{seconds}} 秒",
+  "waitsSameNetwork": "等到你们在同一网络时发送",
+  "message": {
+    "reply": "回复",
+    "react": "回应",
+    "otherEmoji": "其他表情",
+    "reactedBy": "{{names}}：{{emoji}}",
+    "you": "你",
+    "notLoaded": "未加载的消息",
+    "replyingTo": "回复 {{name}}",
+    "reactFailed": "无法回应：{{reason}}"
+  }
+}

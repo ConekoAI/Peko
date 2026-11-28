@@ -1,0 +1,184 @@
+{
+  "title": "設定",
+  "sectionsLabel": "設定分區",
+  "sections": {
+    "general": "一般",
+    "models": "模型",
+    "advanced": "進階",
+    "about": "關於"
+  },
+  "yourName": {
+    "title": "你的名字",
+    "hintSignedIn": "人們和 peko 對你的稱呼。這是你在 PekoHub 上的名字，你的其他電腦也會同步；你的帳號名稱 @{{handle}} 保持不變。",
+    "hintSignedOut": "你的 peko 對你的稱呼。在你登入 PekoHub 之前，它只會保存在這台電腦上。",
+    "placeholder": "你的名字",
+    "saving": "正在儲存…"
+  },
+  "appearance": {
+    "title": "外觀",
+    "hint": "深色與 PekoHub 一致。",
+    "theme": "主題",
+    "light": "淺色",
+    "dark": "深色",
+    "system": "跟隨系統"
+  },
+  "keys": {
+    "title": "已儲存的金鑰",
+    "hint": "引擎保險庫中的所有機密。模型金鑰在「模型」中管理；這個清單用於其他工具使用的金鑰。",
+    "add": "新增金鑰",
+    "namespace": "命名空間",
+    "namePlaceholder": "例如 github",
+    "kind": "類型",
+    "kinds": {
+      "api_key": "API 金鑰",
+      "bearer_token": "Bearer 權杖",
+      "oauth_token": "OAuth 權杖",
+      "basic_auth": "Basic 驗證",
+      "private_key": "私密金鑰",
+      "generic_secret": "其他機密"
+    },
+    "secret": "機密內容",
+    "save": "儲存金鑰",
+    "loading": "正在載入憑證…",
+    "empty": "沒有已儲存的金鑰",
+    "emptyHint": "你為模型或工具新增的金鑰會顯示在這裡。",
+    "hide": "隱藏機密",
+    "reveal": "顯示機密"
+  },
+  "models": {
+    "intro": "你的 peko 用來思考的端點。每個模型各自保存 API 金鑰；可在「編輯」中變更。",
+    "add": "新增模型",
+    "usePlan": "使用 ChatGPT 方案",
+    "loading": "正在載入模型…",
+    "empty": "還沒有設定模型",
+    "emptyHint": "新增一個端點及其 API 金鑰，開始和你的 peko 對話。",
+    "addFirst": "新增你的第一個模型",
+    "unavailable": "模型目錄無法使用",
+    "unavailableHint": "無法載入模型目錄。請確認引擎正在執行，然後重新載入這個頁面。"
+  },
+  "folder": {
+    "title": "Peko 資料夾",
+    "hint": "引擎存放你的 peko、模型和金鑰的位置。",
+    "unknown": "未知",
+    "show": "顯示資料夾"
+  },
+  "about": {
+    "appVersion": "應用程式版本",
+    "engineVersion": "引擎版本",
+    "notRunning": "未執行",
+    "help": "說明",
+    "gettingStarted": "入門指南",
+    "report": "回報問題",
+    "onboarding": "新手導覽",
+    "onboardingHint": "重新走一遍連接模型和建立 peko 的流程。",
+    "replay": "重新進行導覽",
+    "updates": "更新",
+    "checkUpdates": "檢查更新",
+    "checking": "正在檢查…",
+    "upToDate": "已是最新版本。",
+    "updateAvailable": "版本 {{version}} 已可使用。",
+    "checkFailed": "無法檢查更新。請檢查網路連線後再試一次。"
+  },
+  "language": {
+    "title": "語言",
+    "hint": "Peko Desktop 的顯示語言。",
+    "system": "跟隨系統"
+  },
+  "devices": {
+    "title": "裝置",
+    "hint": "你 PekoHub 帳戶中的電腦和手機。清單上的裝置可以以你的身分讀取和行事；沒有已在清單上的裝置所顯示的代碼，任何裝置都無法加入。",
+    "notSignedIn": "請先登入 PekoHub。你的裝置透過 PekoHub 互相找到。",
+    "notOnList": "這台電腦還不在你帳戶的裝置中。",
+    "joinHow": "在已加入你帳戶的電腦或手機上選擇「新增裝置」，然後在這裡輸入它顯示的代碼。",
+    "codeLabel": "代碼",
+    "join": "加入",
+    "joining": "正在加入…",
+    "computer": "電腦",
+    "phone": "手機",
+    "thisComputer": "這台電腦",
+    "addedAt": "{{when}}新增",
+    "lastSeen": "{{when}}使用過",
+    "remove": "移除",
+    "removeConfirm": "移除它？它將無法再以你的身分行事。",
+    "removeThisConfirm": "移除這台電腦？在重新加入之前，它將不再以你的身分行事。",
+    "add": "新增裝置",
+    "scanOrType": "用手機上的 Peko 掃描它，或在另一台電腦上輸入代碼。",
+    "warning": "使用它的人將以你的身分行事。只給你自己的裝置看。",
+    "expires": "只能使用一次，有效至 {{time}}。",
+    "expired": "此代碼已過期。",
+    "codeAlt": "新增裝置的代碼",
+    "joined": "{{name}} 已加入你的帳戶。",
+    "waiting": "等待你處理",
+    "devicesReset": "PekoHub 說與你交談的某人重新設定了他們的所有裝置。只有在對方告訴過你時才批准；在此之前，不會傳送任何內容到他們的新裝置。",
+    "approve": "批准",
+    "deny": "拒絕",
+    "ownerChange": "PekoHub 表示 {{peko}} 現在屬於另一個帳號。要移交嗎？如果你沒有轉讓過它，請拒絕：它仍然歸你。",
+    "keyChange": "PekoHub 表示與你交流的一個 peko 換了新身分。peko 搬到另一台電腦時身分不會改變，所以只有在它的主人告訴你重新設定過時才核准。在你決定之前，你傳送的內容都不會送達它。",
+    "codePlaceholder": "ABCD-EFGH-JKMN",
+    "accountCode": "你的帳戶代碼",
+    "accountCodeHint": "想確認聯絡的確實是你的人，可以請你唸出這個代碼。只有在你重新設定所有裝置時它才會改變。",
+    "itsCode": "它的代碼",
+    "untilNow": "先前",
+    "compare": "請它的主人唸出他們螢幕上的代碼。只有一致時才核准。",
+    "path": {
+      "direct": "直接",
+      "relay": "透過 PekoHub",
+      "waiting": "等待同一網路",
+      "offline": "離線"
+    }
+  },
+  "privacy": {
+    "title": "隱私",
+    "noticeTitle": "Peko 會向我們傳送什麼",
+    "noticeBody": "Peko 可以向我們傳送兩類資訊，協助我們修復和改進它。兩者都不包含你的訊息、名稱、檔案或金鑰。",
+    "crash": {
+      "title": "傳送當機報告",
+      "hint": "當 Peko 出錯時：錯誤訊息、應用程式版本和你的作業系統。"
+    },
+    "usage": {
+      "title": "傳送使用統計",
+      "hint": "哪些功能被使用，僅為次數。絕不包含你或你的 peko 寫下的內容。"
+    },
+    "changeLater": "你可以隨時在設定中變更。",
+    "continue": "繼續"
+  },
+  "network": {
+    "title": "網路",
+    "hint": "這台電腦如何連到你的其他電腦和與你交談的人。訊息無論如何都會密封；直接連線還能讓 PekoHub 看不到誰在和誰交談。",
+    "how": "這台電腦的連線方式",
+    "automatic": {
+      "label": "自動",
+      "hint": "對方電腦在同一網路時直接連線，否則透過 PekoHub。"
+    },
+    "pekohub": {
+      "label": "僅 PekoHub",
+      "hint": "一切都透過 PekoHub。"
+    },
+    "direct": {
+      "label": "僅直接",
+      "hint": "從不經過 PekoHub。訊息會等到對方電腦在同一網路時再送出。"
+    },
+    "listenError": "這台電腦無法接受直接連線：{{reason}}。它仍會連到其他電腦。",
+    "accepts": "這台電腦會接受同一網路中你其他電腦的連線。macOS 或 Windows 可能會請你允許。",
+    "directStops": "選擇「僅直接」後，對話的任何內容都不經過 PekoHub：",
+    "stopsWait": "傳給其他網路中電腦的訊息，會等到它們在同一網路時再送出。",
+    "stopsPhones": "你的手機收不到回覆和通知。",
+    "stopsWebChat": "與你公開 peko 的網頁聊天會停止。",
+    "turnOnDirect": "開啟「僅直接」",
+    "turnOnAutomatic": "開啟「自動」",
+    "with": {
+      "title": "直接連線對象",
+      "mine": "我的電腦",
+      "people": "與我交談的人"
+    },
+    "advanced": {
+      "title": "進階",
+      "listen": "監聽位址",
+      "listenHint": "這台電腦上的位址和連接埠（預設 0.0.0.0:11438）。目前：{{listening}}",
+      "tell": "告訴其他電腦的位址",
+      "tellHint": "每行一個，host:port。留空則使用這台電腦自己的網路位址（{{told}}）。",
+      "try": "嘗試連線的位址",
+      "tryHint": "每行一個，host:port：即使對方沒有告知位址也要連線的電腦。"
+    }
+  }
+}

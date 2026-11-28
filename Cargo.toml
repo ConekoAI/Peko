@@ -22,6 +22,9 @@ members = [
     "peko-rs/subject",
     "peko-rs/tools-core",
 ]
+# The desktop app's Tauri crate is its own workspace: its dependencies stay
+# out of this lockfile and out of `cargo test` here.
+exclude = ["desktop/src-tauri"]
 
 # ---------------------------------------------------------------------------
 # Cargo-shear intent block (Phase 0 of the post-migration cleanup).

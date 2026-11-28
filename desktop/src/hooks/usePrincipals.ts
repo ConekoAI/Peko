@@ -1,0 +1,630 @@
+import { track, trackFirstReply } from "../lib/usage";
+import { t as translate } from "../i18n";
+import type { Answers, BrowserState } from "../types";
+import { useEffect, useRef } from "react";
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type QueryClient,
+} from "@tanstack/react-query";
+
+import {
+  principalApprovals,
+  localUserAccount,
+  localPerson,
+  setPersonName,
+  principalCreate,
+  principalDecideApproval,
+  principalBrowser,
+  principalSecretRequests,
+  principalAnswerSecret,
+  principalTurnChanges,
+  principalUndoTurn,
+  principalExport,
+  principalGet,
+  principalImport,
+  principalImportPreview,
+  principalList,
+  principalLog,
+  principalRemove,
+  principalSend,
+  principalSendStream,
+  principalLogWatch,
+  principalUpdate,
+  type ChatStreamMsg,
+  type PrincipalCreateRequest,
+  type PrincipalSummary,
+  type PrincipalUpdateRequest,
+  type RuntimeId,
+} from "../lib/api";
+
+export type { PrincipalSummary };
+
+const DEFAULT_RUNTIME_ID = "local";
+
+/** PR #3: tiny helper that normalizes `RuntimeId` to `"local"`. */
+function effectiveRuntimeId(runtimeId?: RuntimeId): string {
+  return runtimeId ?? DEFAULT_RUNTIME_ID;
+}
+
+// ─── Genesis / boot_state (ADR-054) ──────────────────────────────
+//
+// `peko create` now runs a genesis boot sequence, so a freshly
+// created principal can appear on `principal_list` /
+// `principal_get` with `bootState: "genesis_pending"` (or earlier)
+// before it is ready to chat. The hooks below expose `bootState`
+// verbatim (it rides along on `PrincipalSummary`) and keep polling
+// until the principal reaches `organized`.
+
+/**
+ * True when the summary carries a `bootState` that is not yet
+ * `organized`. Runtimes older than the genesis pipeline omit the
+ * field entirely — those principals count as already organized.
+ */
+export function isGenesisPending(
+  p: Pick<PrincipalSummary, "bootState"> | null | undefined,
+): boolean {
+  return !!p?.bootState && p.bootState !== "organized";
+}
+
+/** Poll cadence while any principal is mid-genesis. */
+const GENESIS_POLL_INTERVAL_MS = 2_000;
+// ─── Principal list / detail ─────────────────────────────────────
+
+export function usePrincipals(runtimeId?: RuntimeId) {
+  const rid = effectiveRuntimeId(runtimeId);
+  return useQuery({
+    // PR #3: query key now varies by runtimeId so the React Query
+    // cache routes correctly across local + remote principals.
+    queryKey: ["principals", rid],
+    queryFn: () => principalList(rid),
+    // The runtime list call is ~5 ms via CLI, but the desktop path goes
+    // through Tauri -> IPC ensure_daemon probe -> daemon roundtrip, so
+    // each fetch is tens-to-hundreds of milliseconds. Keep the list fresh
+    // enough without re-running that path on every mount or window focus.
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: true,
+    refetchInterval: (query) => {
+      // Genesis (ADR-054): while any principal reports a non-organized
+      // bootState, poll fast so the sidebar / create flow can render
+      // live boot progress. Pauses when the tab is hidden; returns to
+      // the normal cadence once every row is organized (or the field
+      // is absent on older runtimes).
+      if (typeof document !== "undefined" && document.hidden) return false;
+      const rows = query.state.data;
+      return Array.isArray(rows) && rows.some(isGenesisPending)
+        ? GENESIS_POLL_INTERVAL_MS
+        : false;
+    },
+  });
+}
+
+export function usePrincipal(name: string | undefined, runtimeId?: RuntimeId) {
+  const rid = effectiveRuntimeId(runtimeId);
+  return useQuery({
+    queryKey: ["principals", rid, name],
+    queryFn: () => {
+      if (!name) throw new Error("peko name required");
+      return principalGet(name, rid);
+    },
+    enabled: !!name,
+  });
+}
+
+// ─── Principal create (T-105) ───────────────────────────────────
+
+/**
+ * Detached post-create boot_state watcher. When `principal_create`
+ * returns before genesis completes (the summary still says
+ * `genesis_pending` or earlier), keep polling `principal_get` and
+ * refreshing the list/detail caches until the principal reaches
+ * `organized`. Runs detached so the mutation settles as soon as the
+ * runtime answers; the UI renders progress from `bootState` on the
+ * list query in the meantime.
+ */
+async function pollBootStateUntilOrganized(
+  qc: QueryClient,
+  name: string,
+  rid: string,
+): Promise<void> {
+  try {
+    // No time limit: a first turn takes as long as its setup takes, and
+    // the person can watch and stop it (`SetupPanel`). A peko that is
+    // removed meanwhile reads as not pending, which ends the loop.
+    for (;;) {
+      await new Promise((resolve) => setTimeout(resolve, GENESIS_POLL_INTERVAL_MS));
+      const current = await principalGet(name, rid).catch(() => null);
+      if (!isGenesisPending(current)) break;
+      void qc.invalidateQueries({ queryKey: ["principals"] });
+    }
+  } finally {
+    void qc.invalidateQueries({ queryKey: ["principals"] });
+    void qc.invalidateQueries({ queryKey: ["principals", rid, name] });
+  }
+}
+
+/**
+ * Create a new Principal on the local runtime. Invalidates the
+ * `["principals"]` query so the sidebar / Chat principal picker
+ * pick up the new entry without a manual refresh. Errors (name
+ * validation, AlreadyExists, daemon unreachable) propagate to the
+ * caller; the modal/walkthrough surfaces them inline.
+ *
+ * Genesis-aware (ADR-054): the runtime may block inside
+ * `principal_create` for the length of the genesis boot, or return early with `bootState: "genesis_pending"`. In
+ * the early-return case this hook keeps the list/detail caches
+ * refreshing until the principal reports `organized`, so
+ * UI progress states driven by `bootState` resolve on their own.
+ */
+export function usePrincipalCreate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (req: PrincipalCreateRequest) => principalCreate(req),
+    onSuccess: (created, vars) => {
+      track("peko_created", { from: vars.seed ? "seed" : "blank" });
+      const rid = effectiveRuntimeId(vars.runtimeId);
+      // Listed at once, so the chat that opens next finds it.
+      qc.setQueryData<PrincipalSummary[]>(["principals", rid], (list) =>
+        list && !list.some((p) => p.name === created.name) ? [...list, created] : list,
+      );
+      void qc.invalidateQueries({ queryKey: ["principals"] });
+      if (isGenesisPending(created)) {
+        void pollBootStateUntilOrganized(qc, created.name, rid);
+      }
+    },
+  });
+}
+
+/**
+ * Update an existing Principal's mutable config. Invalidates both
+ * the principal list and the detail query so all surfaces reflect
+ * the change immediately.
+ */
+export function usePrincipalUpdate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (req: PrincipalUpdateRequest) => principalUpdate(req),
+    onSuccess: (_data, vars) => {
+      const rid = effectiveRuntimeId(vars.runtimeId);
+      qc.invalidateQueries({ queryKey: ["principals"] });
+      qc.invalidateQueries({ queryKey: ["principals", rid, vars.name] });
+    },
+  });
+}
+
+/**
+ * Remove a Principal and its on-disk workspace. Invalidates the
+ * principal list; callers should navigate away from any route that
+ * references the removed principal.
+ */
+export function usePrincipalRemove() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { name: string; runtimeId?: RuntimeId }) =>
+      principalRemove(vars.name, vars.runtimeId),
+    onSuccess: (_data, vars) => {
+      const rid = effectiveRuntimeId(vars.runtimeId);
+      // Gone at once: no view may fall back to it, and a new peko of
+      // the same name starts with an empty thread.
+      qc.setQueryData<PrincipalSummary[]>(["principals", rid], (list) =>
+        list?.filter((p) => p.name !== vars.name),
+      );
+      qc.removeQueries({ queryKey: ["principals", rid, vars.name] });
+      qc.removeQueries({ queryKey: ["principal-log", rid, vars.name] });
+      void qc.invalidateQueries({ queryKey: ["principals"] });
+    },
+  });
+}
+
+// ─── `.peko` package export / import (ADR-056) ───────────────────
+
+/**
+ * Export a principal's full existence (workspace, memory, private
+ * keys) to a `.peko` package at `output`. No cache invalidation —
+ * export doesn't change runtime state. The UI must surface the
+ * key-sensitivity warning before calling this.
+ */
+export function usePrincipalExport() {
+  return useMutation({
+    mutationFn: (args: { name: string; output: string }) =>
+      principalExport(args),
+  });
+}
+
+/**
+ * Wake a principal from a `.peko` package at `path`. The Tauri
+ * command follows a successful import with `principal_reload`
+ * itself, so on success the peko is live daemon-side and only the
+ * list cache needs refreshing. Runtime errors propagate verbatim —
+ * keyless packages reject with the "ground it with `peko create`"
+ * guidance, which the UI renders as-is.
+ */
+/** Preview a `.peko` package before importing it. */
+export function usePrincipalImportPreview() {
+  return useMutation({
+    mutationFn: (args: { path: string; rotateKeys?: boolean }) => principalImportPreview(args),
+  });
+}
+
+export function usePrincipalImport() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: { path: string; manifestChecksum: string; rotateKeys?: boolean }) =>
+      principalImport(args),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["principals"] });
+    },
+  });
+}
+
+// ─── Caller identity (for the ADR-042 privacy gate) ─────────────
+
+/**
+ * Who the desktop speaks as: always the runtime's local user (runtime
+ * ADR-081 D3 — the terminal is the local user, signed in or not). The
+ * privacy-gate UI passes it to `principal_log` as the peer. Signing in
+ * doesn't change it: the runtime links the PekoHub account to the same
+ * local user (see `useLocalUserAccount`).
+ */
+export function useCallerSubject(): string {
+  return "user:local";
+}
+
+/**
+ * The PekoHub account this computer's person is linked to, or `null`
+ * when the runtime isn't registered. A peko owned by
+ * `user:hub:<id>` of this account is the person's own.
+ */
+export function useLocalUserAccount() {
+  return useQuery({
+    queryKey: ["local-user-account"],
+    queryFn: localUserAccount,
+    staleTime: 60_000,
+    retry: false,
+  });
+}
+
+/**
+ * This computer's person: their name (PekoHub's once signed in, else
+ * the one they chose here, else their login name) and handle. Under the
+ * account's key, so signing in or out refreshes it too.
+ */
+export function useLocalPerson() {
+  return useQuery({
+    queryKey: ["local-user-account", "person"],
+    queryFn: localPerson,
+    staleTime: 60_000,
+    retry: false,
+  });
+}
+
+/** Set your name; everything that shows it follows. */
+export function useSetPersonName() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => setPersonName(name),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["local-user-account"] });
+      void qc.invalidateQueries({ queryKey: ["channel-info"] });
+    },
+  });
+}
+
+/**
+ * You, as chat shows you: the runtime's name for you, else your
+ * account's name, else "You" (a runtime too old to say); and your
+ * PekoHub handle while signed in.
+ */
+export function useYou(): { name: string; handle: string | null } {
+  const { data: person } = useLocalPerson();
+  const { data: account } = useLocalUserAccount();
+  return {
+    name: person?.name || account?.name || translate("common.you"),
+    handle: person?.handle ?? null,
+  };
+}
+
+/** What to call you where you posted (see `useYou`). */
+export function useYourName(): string {
+  return useYou().name;
+}
+
+// ─── Principal send (chat) ──────────────────────────────────────
+
+export interface PrincipalSendOptions {
+  onEvent?: (msg: ChatStreamMsg) => void;
+}
+
+/**
+ * Monotonically increasing `requestId` source for streaming sends.
+ *
+ * Caps at `2^62 - 1` then wraps to 1 so the desktop's namespace
+ * stays disjoint from the runtime's steering-successor ids (`2^63`+). Without the cap a long-lived desktop session could
+ * drift into the runtime's namespace after ~292 years of continuous
+ * use — the cap also documents the invariant so future readers don't
+ * "fix" the wrap by switching the modulo.
+ */
+let nextRequestIdCounter = 1;
+const REQUEST_ID_CAP = (1n << 62n) - 1n;
+function nextRequestId(): number {
+  const cur = nextRequestIdCounter++;
+  if (BigInt(cur) >= REQUEST_ID_CAP) {
+    nextRequestIdCounter = 2;
+    return 1;
+  }
+  return cur;
+}
+
+/**
+ * Send a message to a principal. Returns the supervisor's final
+ * response as a string.
+ *
+ * If `onEvent` is provided, the supervisor's streaming events
+ * (chunk deltas and agentic-iteration boundary markers) are pushed
+ * through the callback as the response unfolds. The `Channel` wire
+ * type is required by Tauri's IPC layer for streaming.
+ *
+ * Sending while a run is in flight is safe: the runtime queues the
+ * message for the running turn and the stream settles with a
+ * `queued` event and empty content.
+ */
+export function usePrincipalSend() {
+  return useMutation({
+    mutationFn: async (vars: {
+      name: string;
+      message: string;
+      onEvent?: (msg: ChatStreamMsg) => void;
+      runtimeId?: RuntimeId;
+      /** A configured model id for this message only. */
+      overrideModel?: string;
+      /** Absolute paths of files to attach (local pekos only). */
+      attachments?: string[];
+      /** Answers to a message's questions (runtime ADR-114). */
+      answers?: Answers;
+      /** The DM message this one replies to (runtime ADR-126). */
+      replyTo?: string | null;
+    }): Promise<string> => {
+      const rid = effectiveRuntimeId(vars.runtimeId);
+      if (!vars.onEvent) {
+        return principalSend(vars.name, vars.message, rid);
+      }
+      const result = await principalSendStream(
+        vars.name,
+        vars.message,
+        nextRequestId(),
+        vars.onEvent,
+        rid,
+        vars.overrideModel,
+        vars.attachments,
+        vars.answers,
+        vars.replyTo,
+      );
+      return result.content;
+    },
+    onSuccess: (_reply, vars) => {
+      track("message_sent", { kind: "dm", has_attachment: (vars.attachments?.length ?? 0) > 0 });
+      trackFirstReply();
+    },
+  });
+}
+
+/**
+ * The approval requests waiting for a peko's owner (runtime ADR-078) —
+ * a local peko's, or one of yours on another computer, from its host
+ * (runtime ADR-099). Refetched when the peko's thread changes (its notice
+ * lands there) and every 30 s, so a request filed elsewhere shows up too.
+ */
+export function usePrincipalApprovals(
+  name: string | undefined,
+  enabled: boolean,
+  runtimeId = "local",
+) {
+  return useQuery({
+    queryKey: ["approvals", name, runtimeId],
+    queryFn: () => principalApprovals(name!, runtimeId),
+    enabled: !!name && enabled,
+    refetchInterval: 30_000,
+  });
+}
+
+/** Approve or deny a waiting request; the list refreshes after. */
+export function useDecideApproval() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: principalDecideApproval,
+    onSuccess: (_data, vars) =>
+      track("approval_decided", { decision: !vars.approve ? "deny" : vars.always ? "always" : "approve" }),
+    onSettled: (_data, _err, vars) => qc.invalidateQueries({ queryKey: ["approvals", vars.name] }),
+  });
+}
+
+/**
+ * The secrets a peko on this computer asked you for (runtime ADR-116).
+ * Refetched when the peko's thread changes (its notice lands there) and
+ * every 30 s.
+ */
+export function usePrincipalSecretRequests(name: string | undefined, enabled: boolean) {
+  return useQuery({
+    queryKey: ["secret-requests", name],
+    queryFn: () => principalSecretRequests(name!),
+    enabled: !!name && enabled,
+    refetchInterval: 30_000,
+  });
+}
+
+/**
+ * Your peko's browser (runtime ADR-119): whether it is running, its tabs,
+ * and whether the peko waits for you to step in. Refetched when the
+ * thread changes (the peko's notice lands there).
+ */
+export function usePekoBrowser(name: string | undefined, runtimeId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ["peko-browser", name, runtimeId],
+    queryFn: async () => (await principalBrowser(name!, runtimeId, "state")) as BrowserState,
+    enabled: !!name && enabled,
+    refetchInterval: 30_000,
+    retry: false,
+  });
+}
+
+/** Save or decline a secret request; the list refreshes after. */
+export function useAnswerSecret() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: principalAnswerSecret,
+    onSettled: (_data, _err, vars) => qc.invalidateQueries({ queryKey: ["secret-requests", vars.name] }),
+  });
+}
+
+/**
+ * Recent turns in your DM with a peko on this computer that changed files
+ * (runtime ADR-117). Refetched when the thread changes.
+ */
+export function usePrincipalTurnChanges(name: string | undefined, enabled: boolean) {
+  return useQuery({
+    queryKey: ["turn-changes", name],
+    queryFn: () => principalTurnChanges(name!),
+    enabled: !!name && enabled,
+  });
+}
+
+/** Undo a turn's file changes; the list refreshes after. */
+export function useUndoTurn() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: principalUndoTurn,
+    onSettled: (_data, _err, vars) => qc.invalidateQueries({ queryKey: ["turn-changes", vars.name] }),
+  });
+}
+
+/**
+ * Follow the caller's thread with `name` live and refetch the
+ * `principal-log` query whenever a new DM row lands — replies to
+ * queued messages, cron and check-in posts, approval requests, and
+ * stop markers all arrive this way. While `pausedRef.current` is true
+ * (a stream is rendering the reply itself) refetches are skipped; the
+ * caller calls `flush` when the stream settles. Local runtime only;
+ * remote pekos have no watch API.
+ *
+ * `sinceCursor` is the newest row the caller has already loaded (see
+ * `newestLogCursor`); `undefined` means the thread hasn't loaded yet,
+ * and the watch waits for it so opening a chat never replays history.
+ * It is read once per subscription.
+ */
+export function usePrincipalLogWatch(
+  name: string | undefined,
+  peer: string | undefined,
+  runtimeId: RuntimeId | undefined,
+  sinceCursor: string | null | undefined,
+) {
+  const qc = useQueryClient();
+  const rid = effectiveRuntimeId(runtimeId);
+  const pausedRef = useRef(false);
+  const queryKey = ["principal-log", rid, name, peer ?? "owner"];
+  const ready = sinceCursor !== undefined;
+  const sinceRef = useRef(sinceCursor);
+  sinceRef.current = sinceCursor;
+
+  useEffect(() => {
+    if (!name || !ready) return;
+    let stop: (() => void) | null = null;
+    let cancelled = false;
+    principalLogWatch(
+      name,
+      peer,
+      sinceRef.current ?? null,
+      () => {
+        if (pausedRef.current) return;
+        void qc.invalidateQueries({ queryKey: ["principal-log", rid, name, peer ?? "owner"] });
+      },
+      rid,
+    )
+      .then((unwatch) => {
+        if (cancelled) unwatch();
+        else stop = unwatch;
+      })
+      .catch(() => {
+        // No watch (daemon down or older runtime): the log still
+        // refreshes after every send.
+      });
+    return () => {
+      cancelled = true;
+      stop?.();
+    };
+  }, [name, peer, rid, qc, ready]);
+
+  return {
+    pausedRef,
+    /** Refetch the thread now (rows that landed while paused included). */
+    flush: () => qc.refetchQueries({ queryKey }),
+  };
+}
+
+/**
+ * The newest row number in a loaded thread page, as a log-watch
+ * cursor. Log row ids are `chan_<line>`; `null` for an empty thread.
+ */
+export function newestLogCursor(messages: { id: string }[] | undefined): string | null {
+  let newest: number | null = null;
+  for (const m of messages ?? []) {
+    const line = Number(m.id.startsWith("chan_") ? m.id.slice(5) : NaN);
+    if (Number.isInteger(line)) newest = newest === null ? line : Math.max(newest, line);
+  }
+  return newest === null ? null : String(newest);
+}
+
+// ─── Principal log (peko log, ADR-042) ──────────────────────────
+
+/**
+ * Read a peer's conversation thread with a Principal. Pass `peer =
+ * undefined` for the principal's owner-root view (default
+ * `peko log <PRINCIPAL>`); pass `peer = "user:<self>"` for peer
+ * self-read. The runtime enforces the privacy contract.
+ *
+ * Returns the latest `limit` (default 100) messages plus paging
+ * state. Callers that need older messages should use
+ * `fetchOlderPrincipalLog` to walk pages without overlap or gaps.
+ */
+export function usePrincipalLog(
+  name: string | undefined,
+  peer: string | undefined,
+  runtimeId?: RuntimeId,
+) {
+  const rid = effectiveRuntimeId(runtimeId);
+  return useQuery({
+    queryKey: ["principal-log", rid, name, peer ?? "owner"],
+    queryFn: () => {
+      if (!name) throw new Error("peko name required");
+      return principalLog({ name, peer, limit: 100, runtimeId: rid });
+    },
+    enabled: !!name,
+    // A run waiting out a disruption continues on its own; look again
+    // now and then so its status (and its reply) show up.
+    refetchInterval: (query) => (query.state.data?.runFailure?.nextAttemptAt ? 20_000 : false),
+  });
+}
+
+/**
+ * Manually fetch the next older page of chat-log messages for a
+ * principal / peer pair. Returns the raw page envelope so callers
+ * can reconcile (e.g. by message id) against their in-memory
+ * history. Throws on daemon errors; the caller should treat the
+ * thrown error as "stop paging".
+ */
+export async function fetchOlderPrincipalLog(params: {
+  name: string;
+  peer?: string;
+  limit?: number;
+  cursor: string;
+  runtimeId?: RuntimeId;
+}) {
+  return principalLog({
+    name: params.name,
+    peer: params.peer,
+    limit: params.limit ?? 100,
+    cursor: params.cursor,
+    runtimeId: params.runtimeId,
+  });
+}

@@ -1,0 +1,184 @@
+{
+  "title": "Réglages",
+  "sectionsLabel": "Sections des réglages",
+  "sections": {
+    "general": "Général",
+    "models": "Modèles",
+    "advanced": "Avancé",
+    "about": "À propos"
+  },
+  "yourName": {
+    "title": "Votre nom",
+    "hintSignedIn": "Le nom que vous donnent les gens et les pekos. C'est votre nom sur PekoHub, vos autres ordinateurs le suivent ; votre identifiant @{{handle}} ne change pas.",
+    "hintSignedOut": "Le nom que vous donnent vos pekos. Il reste sur cet ordinateur jusqu'à ce que vous vous connectiez à PekoHub.",
+    "placeholder": "Votre nom",
+    "saving": "Enregistrement…"
+  },
+  "appearance": {
+    "title": "Apparence",
+    "hint": "Le thème sombre correspond à PekoHub.",
+    "theme": "Thème",
+    "light": "Clair",
+    "dark": "Sombre",
+    "system": "Système"
+  },
+  "keys": {
+    "title": "Clés enregistrées",
+    "hint": "Tous les secrets du coffre du moteur. Les clés des modèles se gèrent dans Modèles ; cette liste concerne les clés utilisées par d'autres outils.",
+    "add": "Ajouter une clé",
+    "namespace": "Espace de noms",
+    "namePlaceholder": "p. ex. github",
+    "kind": "Type",
+    "kinds": {
+      "api_key": "Clé d'API",
+      "bearer_token": "Jeton Bearer",
+      "oauth_token": "Jeton OAuth",
+      "basic_auth": "Authentification Basic",
+      "private_key": "Clé privée",
+      "generic_secret": "Autre secret"
+    },
+    "secret": "Secret",
+    "save": "Enregistrer la clé",
+    "loading": "Chargement des identifiants…",
+    "empty": "Aucune clé enregistrée",
+    "emptyHint": "Les clés que vous ajoutez pour des modèles ou des outils apparaissent ici.",
+    "hide": "Masquer le secret",
+    "reveal": "Afficher le secret"
+  },
+  "models": {
+    "intro": "Les points de terminaison avec lesquels vos pekos pensent. Chaque modèle conserve sa propre clé d'API ; changez-la dans Modifier.",
+    "add": "Ajouter un modèle",
+    "usePlan": "Utiliser l'abonnement ChatGPT",
+    "loading": "Chargement des modèles…",
+    "empty": "Aucun modèle configuré pour l'instant",
+    "emptyHint": "Ajoutez un point de terminaison et sa clé d'API pour commencer à parler à vos pekos.",
+    "addFirst": "Ajouter votre premier modèle",
+    "unavailable": "Catalogue de modèles indisponible",
+    "unavailableHint": "Impossible de charger le catalogue de modèles. Vérifiez que le moteur tourne, puis rechargez cet onglet."
+  },
+  "folder": {
+    "title": "Dossier Peko",
+    "hint": "L'endroit où le moteur conserve vos pekos, vos modèles et vos clés.",
+    "unknown": "Inconnu",
+    "show": "Afficher le dossier"
+  },
+  "about": {
+    "appVersion": "Version de l'application",
+    "engineVersion": "Version du moteur",
+    "notRunning": "À l'arrêt",
+    "help": "Aide",
+    "gettingStarted": "Premiers pas",
+    "report": "Signaler un problème",
+    "onboarding": "Configuration initiale",
+    "onboardingHint": "Refaire les étapes de connexion d'un modèle et de création d'un peko.",
+    "replay": "Relancer la configuration initiale",
+    "updates": "Mises à jour",
+    "checkUpdates": "Rechercher des mises à jour",
+    "checking": "Vérification…",
+    "upToDate": "Vous avez la version la plus récente.",
+    "updateAvailable": "La version {{version}} est disponible.",
+    "checkFailed": "Impossible de rechercher des mises à jour. Vérifiez votre connexion et réessayez."
+  },
+  "language": {
+    "title": "Langue",
+    "hint": "La langue d'affichage de Peko Desktop.",
+    "system": "Langue du système"
+  },
+  "devices": {
+    "title": "Appareils",
+    "hint": "Vos ordinateurs et téléphones de votre compte PekoHub. Un appareil de cette liste lit et agit en votre nom ; rien n'y entre sans un code affiché sur un appareil qui en fait déjà partie.",
+    "notSignedIn": "Connectez-vous d'abord à PekoHub. Vos appareils se trouvent les uns les autres par PekoHub.",
+    "notOnList": "Cet ordinateur ne fait pas encore partie des appareils de votre compte.",
+    "joinHow": "Sur un ordinateur ou un téléphone déjà sur votre compte, choisissez Ajouter un appareil, puis saisissez ici le code affiché.",
+    "codeLabel": "Code",
+    "join": "Rejoindre",
+    "joining": "Connexion…",
+    "computer": "Ordinateur",
+    "phone": "Téléphone",
+    "thisComputer": "cet ordinateur",
+    "addedAt": "ajouté {{when}}",
+    "lastSeen": "utilisé {{when}}",
+    "remove": "Retirer",
+    "removeConfirm": "Le retirer ? Il ne pourra plus agir en votre nom.",
+    "removeThisConfirm": "Retirer cet ordinateur ? Il cesse d'agir en votre nom jusqu'à ce qu'il revienne.",
+    "add": "Ajouter un appareil",
+    "scanOrType": "Scannez-le avec Peko sur votre téléphone, ou saisissez le code sur votre autre ordinateur.",
+    "warning": "Qui l'utilise agit en votre nom. Ne le montrez qu'à votre propre appareil.",
+    "expires": "Il fonctionne une fois, jusqu'à {{time}}.",
+    "expired": "Ce code a expiré.",
+    "codeAlt": "Code pour ajouter un appareil",
+    "joined": "{{name}} a rejoint votre compte.",
+    "waiting": "En attente de votre décision",
+    "devicesReset": "PekoHub indique qu'une personne avec qui vous parlez a réinstallé tous ses appareils. N'approuvez que si elle vous l'a dit ; d'ici là, rien n'est envoyé à ses nouveaux appareils.",
+    "approve": "Approuver",
+    "deny": "Refuser",
+    "ownerChange": "PekoHub indique que {{peko}} appartient désormais à un autre compte. Le céder ? Si vous ne l'avez pas donné, refusez : il reste à vous.",
+    "keyChange": "PekoHub indique qu'un peko avec qui vous échangez a une nouvelle identité. Un peko garde son identité quand il change d'ordinateur : approuvez seulement si son propriétaire vous a dit l'avoir reconfiguré. Tant que vous n'avez pas décidé, rien de ce que vous envoyez ne lui parvient.",
+    "codePlaceholder": "ABCD-EFGH-JKMN",
+    "accountCode": "Code de votre compte",
+    "accountCodeHint": "Quelqu'un qui veut être sûr de vous joindre peut vous demander de le lire. Il ne change que si tous vos appareils sont reconfigurés.",
+    "itsCode": "Son code",
+    "untilNow": "Jusqu'ici",
+    "compare": "Demandez à son propriétaire de vous lire le code affiché sur son écran. N'approuvez que s'il correspond.",
+    "path": {
+      "direct": "Direct",
+      "relay": "Par PekoHub",
+      "waiting": "En attente du même réseau",
+      "offline": "Hors ligne"
+    }
+  },
+  "privacy": {
+    "title": "Confidentialité",
+    "noticeTitle": "Ce que Peko nous envoie",
+    "noticeBody": "Peko peut nous envoyer deux choses pour nous aider à le corriger et à l'améliorer. Aucune ne contient vos messages, noms, fichiers ou clés.",
+    "crash": {
+      "title": "Envoyer les rapports de plantage",
+      "hint": "Quand Peko cesse de fonctionner : l'erreur, la version de l'app et votre système d'exploitation."
+    },
+    "usage": {
+      "title": "Envoyer les compteurs d'utilisation",
+      "hint": "Quelles fonctions sont utilisées, sous forme de compteurs. Jamais ce que vous ou vos pekos écrivez."
+    },
+    "changeLater": "Vous pouvez changer cela à tout moment dans les Réglages.",
+    "continue": "Continuer"
+  },
+  "network": {
+    "title": "Réseau",
+    "hint": "Comment cet ordinateur joint vos autres ordinateurs et les personnes avec qui vous parlez. Les messages sont scellés dans tous les cas ; une connexion directe empêche en plus PekoHub de voir qui parle à qui.",
+    "how": "Comment cet ordinateur se connecte",
+    "automatic": {
+      "label": "Automatique",
+      "hint": "Directement quand l’autre ordinateur est sur le même réseau, par PekoHub sinon."
+    },
+    "pekohub": {
+      "label": "PekoHub uniquement",
+      "hint": "Tout passe par PekoHub."
+    },
+    "direct": {
+      "label": "Direct uniquement",
+      "hint": "Jamais par PekoHub. Les messages attendent que l’autre ordinateur soit sur le même réseau."
+    },
+    "listenError": "Cet ordinateur ne peut pas accepter de connexions directes : {{reason}}. Il se connecte quand même aux autres.",
+    "accepts": "Cet ordinateur acceptera les connexions de vos ordinateurs sur ce réseau. macOS ou Windows peut vous demander de l’autoriser.",
+    "directStops": "En Direct uniquement, rien d’une conversation ne passe par PekoHub :",
+    "stopsWait": "Les messages vers des ordinateurs d’autres réseaux attendent qu’ils soient sur le même réseau.",
+    "stopsPhones": "Vos téléphones ne reçoivent ni réponses ni notifications.",
+    "stopsWebChat": "Le chat web avec vos pekos publics s’arrête.",
+    "turnOnDirect": "Activer Direct uniquement",
+    "turnOnAutomatic": "Activer Automatique",
+    "with": {
+      "title": "Se connecter directement avec",
+      "mine": "Mes ordinateurs",
+      "people": "Les personnes avec qui je parle"
+    },
+    "advanced": {
+      "title": "Avancé",
+      "listen": "Écouter sur",
+      "listenHint": "Une adresse et un port de cet ordinateur (par défaut 0.0.0.0:11438). Maintenant : {{listening}}",
+      "tell": "Adresses communiquées aux autres",
+      "tellHint": "Une par ligne, hôte:port. Vide : les adresses réseau de cet ordinateur ({{told}}).",
+      "try": "Adresses à essayer",
+      "tryHint": "Une par ligne, hôte:port : des ordinateurs à joindre sans qu’ils disent où ils sont."
+    }
+  }
+}

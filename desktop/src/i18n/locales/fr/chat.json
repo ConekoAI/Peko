@@ -1,0 +1,141 @@
+{
+  "attachments": {
+    "listLabel": "Fichiers joints",
+    "remove": "Retirer {{name}}",
+    "open": "Ouvrir {{name}}",
+    "play": "Lire {{name}}",
+    "cantPlay": "Lecture impossible ici ; ouvrez plutôt le fichier",
+    "missingTitle": "{{name}} n'est pas encore arrivé depuis l'autre ordinateur",
+    "missing": "pas encore reçu",
+    "pageFull": "Ouvrir {{name}} en grand",
+    "pageBrowser": "Ouvrir {{name}} dans le navigateur"
+  },
+  "composer": {
+    "label": "Message",
+    "placeholder": "Écrivez à votre peko…",
+    "attachTitle": "Joindre des fichiers — ou déposez-les sur la fenêtre",
+    "modelLabel": "Modèle pour ce message",
+    "pekosModel": "Modèle du peko",
+    "hint": "↵ pour envoyer · ⇧↵ pour un retour à la ligne",
+    "sendTitle": "Envoyer (Entrée)"
+  },
+  "markdown": {
+    "svgImage": "Image SVG",
+    "code": "code",
+    "showImage": "Afficher l'image",
+    "showCode": "Afficher le code",
+    "image": "Image",
+    "codeLabel": "Code",
+    "copyCode": "Copier le code"
+  },
+  "hostOffline": "<computer/> est hors ligne, donc {{peko}} ne peut pas travailler pour l'instant. Ce que vous envoyez est mis en attente et parviendra à {{peko}} au retour de cet ordinateur ; vous recevrez une notification quand {{peko}} répondra.",
+  "hostOfflineSince": "<computer/> est hors ligne (dernière connexion : {{ago}}), donc {{peko}} ne peut pas travailler pour l'instant. Ce que vous envoyez est mis en attente et parviendra à {{peko}} au retour de cet ordinateur ; vous recevrez une notification quand {{peko}} répondra.",
+  "waitingFor": "En attente du retour en ligne de {{name}}",
+  "suggestedReplies": "Réponses suggérées",
+  "questions": {
+    "label": "Questions",
+    "for": "Pour {{name}}",
+    "pickAny": "(plusieurs choix possibles)",
+    "otherPlaceholder": "Ou avec vos propres mots…",
+    "answerPlaceholder": "Votre réponse…",
+    "otherLabel": "Votre réponse à : {{question}}",
+    "send": "Envoyer les réponses",
+    "answered": "Répondu"
+  },
+  "runFailure": {
+    "reason": {
+      "peko_limit": "sa limite de dépenses est atteinte",
+      "provider_quota": "le quota du fournisseur du modèle est épuisé",
+      "provider_unreachable": "le fournisseur du modèle est injoignable"
+    },
+    "waiting": "En attente : {{reason}}. Il reprendra tout seul, prochain essai {{when}}.",
+    "failed": "La dernière réponse n'a pas abouti : {{reason}}."
+  },
+  "approval": {
+    "asker": "{{name}} ({{address}})",
+    "ownerTask": "Vous avez demandé à {{peko}} quelque chose {{where}} qui nécessite votre accès complet. Une fois approuvée, la demande s'exécute en votre nom, hors de cette conversation, avec ces seules instructions :",
+    "ownerTaskWhere": "dans une conversation partagée",
+    "toolRequest": "<asker/> demande à {{peko}} d'exécuter <summary/>",
+    "approve": "Approuver",
+    "alwaysTitle": "Approuver et toujours l'autoriser pour {{name}}",
+    "always": "Toujours autoriser",
+    "deny": "Refuser",
+    "wakeLimit": "D'autres pekos ont réveillé {{peko}} dans un groupe autant que sa limite le permet. Leurs messages pour lui attendent.",
+    "wakeLimitContinue": "Le laisser continuer",
+    "wakeLimitNoLimit": "Sans limite dans ce groupe",
+    "wakeLimitNoLimitTitle": "Le laisser continuer et ne plus limiter le nombre de fois où d'autres pekos réveillent {{peko}} dans ce groupe",
+    "wakeLimitNotNow": "Pas maintenant"
+  },
+  "secret": {
+    "request": "{{peko}} demande <name/>",
+    "mcpRequest": "{{peko}} demande <name/> pour son serveur MCP <server/>",
+    "label": "Valeur de {{name}}",
+    "placeholder": "Collez-la ou saisissez-la ici",
+    "show": "Afficher",
+    "hide": "Masquer",
+    "save": "Enregistrer en sécurité",
+    "decline": "Refuser",
+    "hint": "Elle va dans le coffre de cet ordinateur. {{peko}} apprend qu'elle a été enregistrée, jamais sa valeur. Ne collez pas de secrets dans la conversation."
+  },
+  "browser": {
+    "needsYou": "{{peko}} a besoin de vous dans son navigateur",
+    "open": "{{peko}} a un navigateur ouvert",
+    "openButton": "Ouvrir le navigateur",
+    "title": "Navigateur de {{peko}}",
+    "tab": "Onglet",
+    "back": "Retour",
+    "reload": "Recharger",
+    "address": "Adresse",
+    "take": "Prendre la main",
+    "release": "Rendre la main",
+    "watching": "Vous regardez. {{peko}} utilise le navigateur.",
+    "handoff": "{{peko}} vous attend. Prenez le contrôle pour intervenir.",
+    "controlling": "Vous avez la main. {{peko}} attend que vous la rendiez.",
+    "other": "Un autre de vos appareils a la main.",
+    "waiting": "En attente de la page…",
+    "typeHere": "Saisissez ou collez du texte à envoyer à la page",
+    "send": "Envoyer",
+    "hint": "Ce que vous cliquez et saisissez va directement à la page, sur l'ordinateur où tourne {{peko}}. Ce n'est pas conservé dans la conversation et {{peko}} ne le voit jamais."
+  },
+  "changes": {
+    "summary_one": "{{peko}} a modifié {{count}} fichier",
+    "summary_other": "{{peko}} a modifié {{count}} fichiers",
+    "summary_many": "{{peko}} a modifié {{count}} fichiers",
+    "undo": "Annuler",
+    "dismiss": "Masquer",
+    "kind": {
+      "added": "ajouté",
+      "modified": "modifié",
+      "deleted": "supprimé"
+    },
+    "shell": "Il a aussi lancé des commandes shell ; ce qu'elles ont modifié hors de son espace de travail n'est ni listé ni annulé.",
+    "restored_one": "{{count}} fichier restauré.",
+    "restored_other": "{{count}} fichiers restaurés.",
+    "restored_many": "{{count}} fichiers restaurés.",
+    "skipped": "{{path}} laissé tel quel : {{why}}"
+  },
+  "yourPeko": "Votre peko",
+  "onComputer": "· sur {{computer}}",
+  "ownersPeko": "Peko de {{owner}}",
+  "pekosComputer": "l'ordinateur de {{name}}",
+  "selectPeko": "Sélectionnez un peko dans la barre latérale",
+  "noPekos": "Aucun peko pour l'instant",
+  "noPekosHint": "Créez votre premier peko pour commencer à discuter.",
+  "createPeko": "Créer un peko",
+  "signInPrompt": "Vous avez des pekos sur un autre ordinateur ? <signIn>Connectez-vous avec PekoHub</signIn> pour les voir ici.",
+  "dropFiles": "Déposez les fichiers pour les joindre",
+  "begin": "Envoyez un message pour commencer…",
+  "working": "{{name}} travaille",
+  "workingFor": "{{name}} travaille · {{seconds}} s",
+  "waitsSameNetwork": "Attend que vous soyez sur le même réseau",
+  "message": {
+    "reply": "Répondre",
+    "react": "Réagir",
+    "otherEmoji": "Autre emoji",
+    "reactedBy": "{{emoji}} par {{names}}",
+    "you": "Vous",
+    "notLoaded": "Un message non chargé",
+    "replyingTo": "Réponse à {{name}}",
+    "reactFailed": "Réaction impossible : {{reason}}"
+  }
+}
