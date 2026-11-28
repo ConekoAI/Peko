@@ -59,8 +59,13 @@ message says which edge to remove.
 
 ## The desktop app
 
-Peko Desktop lives in [ConekoAI/peko-desktop](https://github.com/ConekoAI/peko-desktop).
-App bugs and translations go there.
+Peko Desktop lives in [`desktop/`](desktop/): a Tauri app whose engine is
+the one built from this repository. Running it from source, its layout and
+its tests are in [desktop/CONTRIBUTING.md](desktop/CONTRIBUTING.md). App bugs
+and translations are issues and pull requests here, like the rest. A change
+to the IPC wire is one pull request: the desktop's contract check
+(`desktop/scripts/check-ipc-contract.py`) runs against the runtime's fixtures
+in the same commit.
 
 ## License
 

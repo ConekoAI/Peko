@@ -5,7 +5,7 @@ audience: owner
 
 # Improving Peko
 
-Some problems no role, skill or seed can fix: Peko itself does something wrong, or cannot do something it should. Peko is open source (`https://github.com/ConekoAI/Peko`, and `https://github.com/ConekoAI/peko-desktop` for the app), and a clear report helps every peko.
+Some problems no role, skill or seed can fix: Peko itself does something wrong, or cannot do something it should. Peko is open source (`https://github.com/ConekoAI/Peko`, the desktop app included), and a clear report helps every peko.
 
 First make sure it is Peko and not you: a rule in your conventions, a role, a skill, or how your owner set you up. Page `changing-yourself` covers those.
 

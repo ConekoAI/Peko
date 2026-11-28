@@ -12,7 +12,7 @@
 
 <p align="center">
   <a href="https://github.com/ConekoAI/peko-desktop/releases/latest"><img src="https://img.shields.io/github/v/release/ConekoAI/peko-desktop?label=download" alt="Download"></a>
-  <a href="https://github.com/ConekoAI/peko-desktop/actions/workflows/ci.yml"><img src="https://github.com/ConekoAI/peko-desktop/actions/workflows/ci.yml/badge.svg?branch=master" alt="CI"></a>
+  <a href="https://github.com/ConekoAI/Peko/actions/workflows/desktop.yml"><img src="https://github.com/ConekoAI/Peko/actions/workflows/desktop.yml/badge.svg?branch=master" alt="CI"></a>
   <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue" alt="MIT or Apache 2.0 license"></a>
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="macOS, Windows, Linux">
 </p>

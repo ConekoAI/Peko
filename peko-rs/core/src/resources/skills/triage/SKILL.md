@@ -29,11 +29,11 @@ When a log line or error needs explaining, read the source of the version they r
 git clone --depth 1 --branch v<version> https://github.com/ConekoAI/Peko <workspace>/.triage/peko-<version>
 ```
 
-If that tag doesn't exist, clone `master` and say file and line references are approximate. Desktop problems are in `https://github.com/ConekoAI/peko-desktop`. Search the clone for the error text; ground your diagnosis in what the code does.
+If that tag doesn't exist, clone `master` and say file and line references are approximate. The desktop app is in the same repository, under `desktop/`, with the same version. Search the clone for the error text; ground your diagnosis in what the code does.
 
 ## 4. Check whether it is known or fixed
 
-Search open and closed issues with `gh issue list --repo ConekoAI/Peko --state all --search "<words from the error>"` (and `ConekoAI/peko-desktop` for the app). Compare their version with the latest release (`gh release list --repo ConekoAI/Peko --limit 5`) and read the changelog between them. If a newer release fixes it, say so plainly: Peko Desktop updates itself from its Settings, and the command line with `peko update`.
+Search open and closed issues with `gh issue list --repo ConekoAI/Peko --state all --search "<words from the error>"` (apps up to 0.7.3 also reported to `ConekoAI/peko-desktop`). Compare their version with the latest release (`gh release list --repo ConekoAI/Peko --limit 5`) and read the changelog between them. If a newer release fixes it, say so plainly: Peko Desktop updates itself from its Settings, and the command line with `peko update`.
 
 ## 5. Offer what to do
 
@@ -53,7 +53,7 @@ A security problem (one peko or visitor reaching what it shouldn't, a way around
 
 Show the owner the complete title and text and post only after they say yes:
 
-- With `gh` signed in: write the title and body to files in your workspace, then `gh issue create --repo ConekoAI/Peko --title "<title>" --body-file <file>` (or `ConekoAI/peko-desktop`). Give them the link.
+- With `gh` signed in: write the title and body to files in your workspace, then `gh issue create --repo ConekoAI/Peko --title "<title>" --body-file <file>`, for the app too. Give them the link.
 - Without it: give them `https://github.com/ConekoAI/Peko/issues/new?template=bug_report.yml` with the text to paste.
 
 End the issue with a line saying you drafted it, and which model you are.

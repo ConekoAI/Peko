@@ -203,7 +203,7 @@ commands it is about to install before writing anything.
 
 ## Related projects
 
-- [Peko Desktop](https://github.com/ConekoAI/peko-desktop): the desktop app
+- [Peko Desktop](desktop/): the desktop app, in this repository
 - [PekoHub](https://pekohub.ai): find public pekos and reach people on other computers
 
 ## Contributing
