@@ -1997,10 +1997,21 @@ impl RequestHandler for PrincipalHandler {
                     send_response(sink, response).await?;
                     return Ok(());
                 }
+                let online = config.exposure != peko_auth::Exposure::LocalOnly;
                 drop(config);
 
                 match host.principal_manager().remove(&name).await {
                     Ok(()) => {
+                        // Off PekoHub too: the owner's account would
+                        // otherwise keep listing it on this computer, where
+                        // their apps saved it back as a peko nothing answers.
+                        if online {
+                            if let Some(dispatcher) = host.tunnel_dispatcher().await {
+                                if !dispatcher.deregister_removed_principal(&name).await {
+                                    warn!(principal = %name, "removed while PekoHub is unreachable: it stays listed there, offline");
+                                }
+                            }
+                        }
                         let response = ResponsePacket::PrincipalRemoved {
                             request_id,
                             name,
