@@ -2161,3 +2161,164 @@ mod group_people_tests {
         assert!(not_signed_in(&dm_requests_from(&unregistered).unwrap_err()));
     }
 }
+
+/// The desktop reads channel events as JSON (`parse_channel_event`), so an
+/// engine of another version can send fields or board ops it doesn't know.
+/// These tests build each event with the runtime's own type from the same
+/// commit and check that every field the app shows arrives. A renamed or
+/// retyped field there fails to compile or fails here, in the same pull
+/// request that changes it.
+#[cfg(test)]
+mod protocol_contract_tests {
+    use super::*;
+    use peko_protocol::channel::{
+        BoardOp, BoardState, ChannelEvent as WireEvent, ChannelId, ReactOp,
+    };
+
+    fn read(event: &WireEvent) -> ChannelEvent {
+        let value = serde_json::to_value(event).unwrap();
+        parse_channel_event(&value, "chan_fallback").expect("the desktop reads the runtime's event")
+    }
+
+    fn posted(board: Option<BoardOp>, react: Option<ReactOp>) -> WireEvent {
+        WireEvent::Posted {
+            channel: ChannelId("chan_a".into()),
+            author: "principal:local:otto".into(),
+            parent: Some("node_1".into()),
+            text: "hello".into(),
+            at: "2026-11-28T10:00:00Z".into(),
+            via: Some("/local-user".into()),
+            msg_id: Some("m_2".into()),
+            reply_to: Some("m_1".into()),
+            attachments: Vec::new(),
+            options: Vec::new(),
+            model: None,
+            board,
+            ask: None,
+            answers: None,
+            react,
+        }
+    }
+
+    #[test]
+    fn created_and_membership_events_arrive_whole() {
+        let created = read(&WireEvent::Created {
+            channel: ChannelId("chan_a".into()),
+            creator: "user:local".into(),
+            name: "team".into(),
+            at: "2026-11-28T09:00:00Z".into(),
+        });
+        assert!(matches!(
+            created,
+            ChannelEvent::Created { ref channel, ref creator, ref name, ref at }
+                if channel == "chan_a" && creator == "user:local" && name == "team" && at == "2026-11-28T09:00:00Z"
+        ));
+        let joined = read(&WireEvent::MemberJoined {
+            channel: ChannelId("chan_a".into()),
+            member: "principal:local:otto".into(),
+            at: "t1".into(),
+        });
+        assert!(matches!(
+            joined,
+            ChannelEvent::MemberJoined { ref member, ref at, .. } if member == "principal:local:otto" && at == "t1"
+        ));
+        let left = read(&WireEvent::MemberLeft {
+            channel: ChannelId("chan_a".into()),
+            member: "principal:local:otto".into(),
+            at: "t2".into(),
+        });
+        assert!(
+            matches!(left, ChannelEvent::MemberLeft { ref member, .. } if member == "principal:local:otto")
+        );
+    }
+
+    #[test]
+    fn a_post_arrives_with_its_ids() {
+        let ChannelEvent::Posted {
+            channel,
+            author,
+            parent,
+            text,
+            at,
+            msg_id,
+            board,
+            reply_to,
+            react,
+        } = read(&posted(None, None))
+        else {
+            panic!("a post reads as a post");
+        };
+        assert_eq!(channel, "chan_a");
+        assert_eq!(author, "principal:local:otto");
+        assert_eq!(parent.as_deref(), Some("node_1"));
+        assert_eq!(text, "hello");
+        assert_eq!(at, "2026-11-28T10:00:00Z");
+        assert_eq!(msg_id.as_deref(), Some("m_2"));
+        assert_eq!(reply_to.as_deref(), Some("m_1"));
+        assert!(board.is_none() && react.is_none());
+    }
+
+    /// The board op and the reaction reach the frontend as the runtime wrote
+    /// them, so its `op` / `to` / `emoji` fields are the runtime's.
+    #[test]
+    fn a_board_op_and_a_reaction_arrive_as_the_runtime_wrote_them() {
+        let ops = [
+            BoardOp::Add {
+                title: "Write it".into(),
+                for_member: Some("principal:local:otto".into()),
+            },
+            BoardOp::Claim {
+                item: "m_1".into(),
+                check_at: Some("2026-11-29T00:00:00Z".into()),
+            },
+            BoardOp::Update {
+                item: "m_1".into(),
+                state: BoardState::Blocked,
+                note: Some("waiting".into()),
+                check_at: None,
+            },
+            BoardOp::Release { item: "m_1".into() },
+            BoardOp::Drop { item: "m_1".into() },
+        ];
+        for op in ops {
+            let ChannelEvent::Posted { board, .. } = read(&posted(Some(op.clone()), None)) else {
+                panic!("a board post reads as a post");
+            };
+            assert_eq!(
+                board,
+                Some(serde_json::to_value(&op).unwrap()),
+                "{}",
+                op.name()
+            );
+        }
+        let reaction = ReactOp {
+            to: "m_1".into(),
+            emoji: "👍".into(),
+            remove: true,
+        };
+        let ChannelEvent::Posted { react, .. } = read(&posted(None, Some(reaction.clone()))) else {
+            panic!("a reaction reads as a post");
+        };
+        let react = react.expect("the reaction arrives");
+        assert_eq!(react, serde_json::to_value(&reaction).unwrap());
+        assert_eq!(
+            (
+                react["to"].as_str(),
+                react["emoji"].as_str(),
+                react["remove"].as_bool()
+            ),
+            (Some("m_1"), Some("👍"), Some(true))
+        );
+    }
+
+    /// A delivery receipt is transport between runtimes, never shown.
+    #[test]
+    fn a_receipt_is_not_shown() {
+        let receipt = WireEvent::Received {
+            channel: ChannelId("chan_a".into()),
+            request_ids: vec!["r1".into()],
+            at: "t".into(),
+        };
+        assert!(parse_channel_event(&serde_json::to_value(&receipt).unwrap(), "chan_a").is_none());
+    }
+}

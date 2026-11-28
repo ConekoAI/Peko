@@ -3048,6 +3048,7 @@ dependencies = [
  "libc",
  "notify",
  "objc2",
+ "peko-protocol",
  "qrcode",
  "reqwest",
  "sentry",
@@ -3072,6 +3073,14 @@ dependencies = [
  "tracing",
  "urlencoding",
  "which",
+]
+
+[[package]]
+name = "peko-protocol"
+version = "0.7.2"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

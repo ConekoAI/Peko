@@ -94,9 +94,8 @@ def set_manifest_version(manifest: pathlib.Path, new: str) -> None:
     manifest.write_text(text.replace(section, updated, 1))
 
 
-def set_lock_versions(names: set[str], old: str, new: str) -> int:
-    """Rewrite the workspace packages' own entries in Cargo.lock."""
-    lock = ROOT / "Cargo.lock"
+def set_lock_versions(names: set[str], old: str, new: str, lock: pathlib.Path = ROOT / "Cargo.lock") -> int:
+    """Rewrite the workspace packages' own entries in a Cargo.lock."""
     lines = lock.read_text().split("\n")
     changed = 0
     for i, line in enumerate(lines[:-1]):
@@ -206,6 +205,12 @@ def check() -> int:
             # Only after a release from ConekoAI/peko-desktop (0.7.3, the
             # last one there); the next bump brings them together.
             print(f"note: the desktop app is at {version}, ahead of core's {truth}; the next bump passes both")
+    runtime_names = {read_name(m) for m in manifests()}
+    for name in sorted(runtime_names):
+        locked = lock_entry_version(DESKTOP_CRATE_LOCK, name)
+        if locked is not None and locked != truth:
+            print(f"error: desktop/src-tauri/Cargo.lock has {name} at {locked}, core says {truth}")
+            problems += 1
     floor = DESKTOP_RUNTIME_VERSION.read_text().strip()
     if floor != truth:
         print(f"error: desktop/src-tauri/runtime-version says {floor}, core says {truth}")
@@ -247,6 +252,8 @@ def main(argv: list[str]) -> int:
             f"error: Cargo.lock had {locked} of {len(names)} workspace packages at "
             f"{current}; run `cargo metadata` and check it by hand"
         )
+    # The desktop's lockfile names the runtime crates it uses by path.
+    set_lock_versions(names, current, new, DESKTOP_CRATE_LOCK)
     set_desktop_versions(new)
     note = cut_changelog(new)
 
