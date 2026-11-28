@@ -138,6 +138,49 @@ pub fn genesis_is_over(status: &str) -> bool {
     status == "success" || status == peko_cron::STOPPED_STATUS
 }
 
+/// Schedule the first turn again for a peko still setting itself up whose
+/// first turn is not scheduled: one that failed (a failed one-shot is
+/// deleted after it runs, and is otherwise re-armed only at the next
+/// boot). For the owner who fixed what made it fail (its model) or asks
+/// to try again. Returns whether a turn was scheduled.
+pub fn rearm_first_turn(
+    scheduler: &peko_cron::CronScheduler,
+    config: &PrincipalConfig,
+    now: DateTime<Utc>,
+) -> Result<bool> {
+    if config.boot_state() == BootState::Organized || scheduler.get_job(GENESIS_JOB_ID)?.is_some() {
+        return Ok(false);
+    }
+    scheduler.add_job(&genesis_job(config, now)?)?;
+    Ok(true)
+}
+
+/// Why the first turn last failed, while it is not over and nothing will
+/// run it again: the error of its most recent finished run, if that run
+/// did not end it. `None` before it ran, while it runs or is scheduled to
+/// try again, and once it is over.
+pub fn first_turn_failure(scheduler: &peko_cron::CronScheduler) -> Option<String> {
+    if scheduler.get_job(GENESIS_JOB_ID).ok()?.is_some() {
+        return None;
+    }
+    let run = scheduler
+        .get_run_history(GENESIS_JOB_ID, 1)
+        .ok()?
+        .into_iter()
+        .next()?;
+    if run.finished_at.is_none() || genesis_is_over(&run.status) {
+        return None;
+    }
+    // A failed turn's reason is in its output; `error` is for what the
+    // engine itself saw (an interrupted run).
+    let text = |t: Option<String>| t.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+    Some(
+        text(run.error)
+            .or_else(|| text(run.output))
+            .unwrap_or(run.status),
+    )
+}
+
 /// The text a cron `Send` job delivers when it fires: the current memory
 /// brief for a job carrying [`MEMORY_BRIEF_MARKER`] (or the brief an
 /// earlier build stored in the seeded `memory` job), else the job's own
@@ -1967,6 +2010,69 @@ mod tests {
             "[memory] Daily memory maintenance for `x`".into(),
         );
         assert!(!fire_message(&other, &config).contains("kb/journal/"));
+    }
+
+    /// A first turn that failed is deleted after it runs; the owner's fix
+    /// (a model) or "try again" schedules it again, once, and never for
+    /// a peko that is set up or whose first turn is already scheduled.
+    #[test]
+    fn a_failed_first_turn_is_scheduled_again_and_says_why() {
+        let dir = tempfile::tempdir().unwrap();
+        let scheduler =
+            peko_cron::CronScheduler::new(dir.path().join("cron").join("schedule.toml")).unwrap();
+        let mut config = defined_config();
+        config.set_boot_state(BootState::GenesisPending);
+        let now = Utc::now();
+        assert_eq!(first_turn_failure(&scheduler), None, "not run yet");
+
+        let run = |status: &str, error: Option<&str>, finished: bool| peko_cron::CronRun {
+            id: uuid::Uuid::new_v4().to_string(),
+            job_id: GENESIS_JOB_ID.into(),
+            started_at: Utc::now(),
+            finished_at: finished.then(Utc::now),
+            status: status.into(),
+            output: None,
+            error: error.map(str::to_string),
+        };
+        // How a failed turn records its reason: in its output.
+        let mut failed = run("failed", None, true);
+        failed.output = Some("Scheduled turn failed: No provider configured\n".into());
+        scheduler.record_run(&failed).unwrap();
+        assert_eq!(
+            first_turn_failure(&scheduler).as_deref(),
+            Some("Scheduled turn failed: No provider configured")
+        );
+        scheduler
+            .record_run(&run(
+                "failed",
+                Some("no model configured for this call"),
+                true,
+            ))
+            .unwrap();
+        assert_eq!(
+            first_turn_failure(&scheduler).as_deref(),
+            Some("no model configured for this call")
+        );
+
+        assert!(rearm_first_turn(&scheduler, &config, now).unwrap());
+        assert!(scheduler.get_job(GENESIS_JOB_ID).unwrap().is_some());
+        assert!(
+            !rearm_first_turn(&scheduler, &config, now).unwrap(),
+            "already scheduled"
+        );
+        assert_eq!(first_turn_failure(&scheduler), None, "it tries again");
+        scheduler.delete_job(GENESIS_JOB_ID).unwrap();
+
+        scheduler.record_run(&run("running", None, false)).unwrap();
+        assert_eq!(first_turn_failure(&scheduler), None, "running");
+        scheduler.record_run(&run("success", None, true)).unwrap();
+        assert_eq!(first_turn_failure(&scheduler), None, "over");
+
+        config.set_boot_state(BootState::Organized);
+        assert!(
+            !rearm_first_turn(&scheduler, &config, now).unwrap(),
+            "set up"
+        );
     }
 
     /// Seeded once, then the principal's: deleting it never brings it

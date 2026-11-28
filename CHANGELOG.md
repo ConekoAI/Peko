@@ -16,6 +16,15 @@ All notable changes to Peko.
 
 ### Fixed
 
+- **A peko stuck setting itself up says why, and starts again once fixed.** A
+  peko whose model was removed (or that is set to none) failed its first turn,
+  which is then retried only at the next engine start, so Peko Desktop showed
+  "setting itself up… Nothing yet" for good. `principal_setup_status` now carries
+  `first_turn_error` (why the last try failed, while nothing will run it again)
+  and `missing_model` (the model it is set to that this computer doesn't have,
+  `""` for none). Changing its model (`principal_update`) or asking again
+  (`principal_setup_run`) schedules the first turn at once.
+
 - **A computer's engine is the authority on its pekos (ADR-131).** Removing a peko
   that was on PekoHub (`principal_remove`, what Peko Desktop's Remove sends) now
   deregisters its instance, and once connected the engine lists every peko it has

@@ -2012,7 +2012,7 @@
           "type": "object"
         },
         {
-          "description": "Run a peko's setup steps again (ADR-106): a setup turn that\nchecks each step and carries out the ones that do not work yet.\nOwner (or operator) only. Answers `done`; `success: false` when\nthe peko lists no steps, a setup turn is already scheduled, or it\nis still on its first turn.",
+          "description": "Run a peko's setup steps again (ADR-106): a setup turn that\nchecks each step and carries out the ones that do not work yet.\nFor a peko whose first turn failed and is not scheduled, that\nfirst turn runs again instead. Owner (or operator) only. Answers\n`done`; `success: false` when the peko lists no steps, a setup\nturn is already scheduled, or its first turn is still to run.",
           "properties": {
             "name": {
               "type": "string"
@@ -8452,7 +8452,7 @@
           "x-stability": "stable"
         },
         {
-          "description": "Run a peko's setup steps again (ADR-106): a setup turn that\nchecks each step and carries out the ones that do not work yet.\nOwner (or operator) only. Answers `done`; `success: false` when\nthe peko lists no steps, a setup turn is already scheduled, or it\nis still on its first turn.",
+          "description": "Run a peko's setup steps again (ADR-106): a setup turn that\nchecks each step and carries out the ones that do not work yet.\nFor a peko whose first turn failed and is not scheduled, that\nfirst turn runs again instead. Owner (or operator) only. Answers\n`done`; `success: false` when the peko lists no steps, a setup\nturn is already scheduled, or its first turn is still to run.",
           "properties": {
             "name": {
               "type": "string"
@@ -13727,6 +13727,20 @@
             "boot_state": {
               "description": "`provisioned` | `defined` | `genesis_pending` | `organized`.\nAnything but `organized` means the first turn is not over.",
               "type": "string"
+            },
+            "first_turn_error": {
+              "description": "Why its first turn last failed, while that turn is not over\n(it is tried again at the next boot, when its model changes,\nor on `principal_setup_run`). Absent from older engines.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "missing_model": {
+              "description": "The model its turns need and this computer doesn't have: the\nid it is set to that isn't in the model list (or is turned\noff), or `\"\"` when it is set to none. Absent when its model is\nthere, and from older engines.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "name": {
               "type": "string"
