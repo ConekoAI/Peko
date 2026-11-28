@@ -68,3 +68,7 @@ objc2 = "0.6"
 
 [dev-dependencies]
 tempfile = "3"
+# The runtime's wire types, from the same commit: tests build the runtime's
+# own values and check the desktop reads them (`protocol_contract_tests`).
+# A test-only dependency, so the app's build keeps parsing JSON as before.
+peko-protocol = { path = "../../peko-rs/protocol" }

@@ -11,12 +11,14 @@ on:
     paths:
       - 'desktop/**'
       - 'peko-rs/core/src/ipc/fixtures/**'
+      - 'peko-rs/protocol/**'
       - '.github/workflows/desktop.yml'
   pull_request:
     branches: [master, main]
     paths:
       - 'desktop/**'
       - 'peko-rs/core/src/ipc/fixtures/**'
+      - 'peko-rs/protocol/**'
       - '.github/workflows/desktop.yml'
   workflow_dispatch:
 
@@ -57,6 +59,8 @@ jobs:
               - 'desktop/*.html'
               - 'desktop/audit.toml'
               - 'desktop/.trivyignore'
+              # The runtime's wire types the desktop's tests build (peko-protocol).
+              - 'peko-rs/protocol/**'
               - '.github/workflows/desktop.yml'
             contract:
               - 'desktop/src-tauri/src/ipc/**'
