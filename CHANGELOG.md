@@ -4,6 +4,8 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-28
+
 ### Added
 
 - **Peko Desktop is released with the command line.** The app now lives in this
