@@ -125,8 +125,10 @@ jobs:
           VERSION: ${{ steps.decide.outputs.version }}
           PRERELEASE: ${{ steps.decide.outputs.prerelease }}
         run: |
+          # A draft can lose its tag (it reads `untagged-…`) when it is edited
+          # without one, so a retry also finds the draft by its name.
           ID="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
-            --jq ".[] | select(.tag_name == \"$TAG\") | .id" | head -n 1)"
+            --jq ".[] | select(.tag_name == \"$TAG\" or (.draft and .name == \"Peko v$VERSION\")) | .id" | head -n 1)"
           if [ -z "$ID" ]; then
             ID="$(gh api "repos/$GITHUB_REPOSITORY/releases" \
               -f tag_name="$TAG" \
@@ -461,7 +463,10 @@ jobs:
           ID: ${{ needs.prepare.outputs.release_id }}
           TAG: ${{ needs.prepare.outputs.tag }}
         run: |
-          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$ID" -F body=@RELEASE_NOTES.md >/dev/null
+          # Every edit names the tag: GitHub drops a draft's tag when it is
+          # edited without one, and then `gh release upload "$TAG"` can't find
+          # it (v0.8.0's first run failed this way).
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$ID" -f tag_name="$TAG" -F body=@RELEASE_NOTES.md >/dev/null
           gh release upload "$TAG" artifacts/*.tar.gz artifacts/*.zip --clobber --repo "$GITHUB_REPOSITORY"
 
   # The desktop app for every platform, with the engine from this commit as
@@ -628,11 +633,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ID: ${{ needs.prepare.outputs.release_id }}
+          TAG: ${{ needs.prepare.outputs.tag }}
           PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
         run: |
           if [ "$PRERELEASE" = "true" ]; then LATEST=false; else LATEST=true; fi
           gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$ID" \
-            -F draft=false -f make_latest="$LATEST" --jq '.html_url'
+            -f tag_name="$TAG" -F draft=false -f make_latest="$LATEST" --jq '.html_url'
 
   # Install each published archive with install.sh and run the quick start
   # on all five platforms (release-smoke.yml).
