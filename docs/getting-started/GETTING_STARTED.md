@@ -36,6 +36,12 @@ runtime home `~/.peko`. To install somewhere else, pass `--install-dir`:
 curl -fsSL https://raw.githubusercontent.com/ConekoAI/Peko/master/install.sh | bash -s -- --install-dir ~/.local/bin
 ```
 
+Peko keeps everything (pekos, models, the vault) in that one folder. To keep
+it somewhere else, set `PEKO_HOME`, or choose a folder in Peko Desktop's
+first-run setup: the app records it in `<local config>/peko/home.toml`
+(`~/Library/Application Support` on macOS, `%LOCALAPPDATA%` on Windows,
+`~/.config` on Linux), and `peko` uses the same folder from then on.
+
 The installer takes the newest release. To install a particular one, name
 it with `--version`, for example `bash -s -- --version 0.1.0`. The
 [releases page](https://github.com/ConekoAI/Peko/releases) lists

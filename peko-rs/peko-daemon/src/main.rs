@@ -20,8 +20,16 @@ use std::time::Duration;
 use peko_core::common::paths::PathResolver;
 use peko_core::daemon::{Daemon, DaemonConfig, LaunchMode};
 
+fn main() -> Result<()> {
+    // Where Peko lives, when Peko Desktop's setup chose a folder other
+    // than `~/.peko`: adopted into `PEKO_HOME` before the async runtime
+    // starts its threads, so every path below agrees on one home.
+    peko_core::common::paths::adopt_home_pointer();
+    run()
+}
+
 #[tokio::main(flavor = "multi_thread")]
-async fn main() -> Result<()> {
+async fn run() -> Result<()> {
     // One rustls crypto provider for the whole process, before anything
     // opens a TLS connection (tunnel, providers, MCP).
     peko_core::tunnel::tls::install_default_crypto_provider();
@@ -168,6 +176,9 @@ OPTIONS:
     -h, --help                         Print this help
 
 ENVIRONMENT:
+    PEKO_HOME                          Peko's folder (default: the folder
+                                       named in <local config>/peko/home.toml,
+                                       else ~/.peko)
     PEKO_CONFIG_DIR                    Override the config directory
     PEKO_DATA_DIR                      Override the data directory
 

@@ -12,6 +12,7 @@ import models from "./models.json";
 import peko from "./peko.json";
 import people from "./people.json";
 import settings from "./settings.json";
+import setup from "./setup.json";
 import sidebar from "./sidebar.json";
 import time from "./time.json";
 
@@ -31,6 +32,7 @@ export const en = {
   peko,
   people,
   settings,
+  setup,
   sidebar,
   time,
 };
