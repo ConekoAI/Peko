@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
 import {
   AlertTriangle,
@@ -20,17 +21,20 @@ import {
 import PekoMark from "../PekoMark";
 import TitleBar from "../TitleBar";
 import PrivacySwitches, { type Switches } from "../PrivacySwitches";
+import { HelloStep, ModelStep, ONBOARDING_KEY, PekoStep } from "../FirstRunWalkthrough";
 import {
   appSetupCheckFolder,
   appSetupFinish,
   appSetupUseFolder,
   engineStatus,
   pickFolder,
+  principalList,
   privacySet,
   type AppSetupStatus,
   type FolderCheck,
 } from "../../lib/api";
 import { formatBytes } from "../../lib/format";
+import { track } from "../../lib/usage";
 import {
   LANGUAGES,
   getLanguageChoice,
@@ -39,7 +43,7 @@ import {
   type LanguageChoice,
 } from "../../i18n";
 
-const STEPS = ["welcome", "folder", "privacy", "ready"] as const;
+const STEPS = ["welcome", "folder", "privacy", "ready", "model", "peko", "hello"] as const;
 type Step = (typeof STEPS)[number];
 
 /** How long "Start Peko" waits for the engine before showing the app anyway. */
@@ -60,6 +64,10 @@ function shortPath(path: string, defaultHome: string): string {
  * chosen one is gone. It chooses where Peko keeps things, asks about
  * crash reports and usage counts, and then starts the engine. The engine
  * waits for it: nothing is written to `~/.peko` before the owner chooses.
+ *
+ * Once the engine runs, the same window goes on to the first peko: connect
+ * a model, name the peko, say hello (the steps `FirstRunWalkthrough` uses).
+ * Any of those can be skipped; a folder that already has pekos skips them.
  */
 export default function SetupWizard({
   status,
@@ -74,6 +82,9 @@ export default function SetupWizard({
   const [step, setStep] = useState<Step>(missing ? "folder" : "welcome");
   const [home, setHome] = useState<string | null>(null);
   const [privacy, setPrivacy] = useState<Switches>({ crashReports: true, usageEvents: true });
+  const [modelId, setModelId] = useState<string | null>(null);
+  const [pekoName, setPekoName] = useState<string | null>(null);
+  const navigate = useNavigate();
   const index = STEPS.indexOf(step);
   const heading = useRef<HTMLHeadingElement>(null);
 
@@ -83,6 +94,22 @@ export default function SetupWizard({
   }, [step]);
 
   const go = (to: Step) => setStep(to);
+
+  /** Setup is over: show the app, in the new peko's chat when there is one. */
+  const finish = (how: "done" | "skipped" | "had pekos", name: string | null, say: string | null) => {
+    // The overlay walkthrough covers the same steps: not again.
+    try {
+      localStorage.setItem(ONBOARDING_KEY, "1");
+    } catch {
+      // No storage: the overlay may offer the steps once more.
+    }
+    if (how !== "had pekos") track("onboarding_step", { step: how });
+    onDone();
+    if (name) {
+      void navigate({ to: "/chat/$pekoName", params: { pekoName: name }, search: say ? { say } : {} });
+    }
+  };
+  const skip = () => finish("skipped", pekoName, null);
 
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-surface-rail" data-testid="setup-wizard">
@@ -122,8 +149,39 @@ export default function SetupWizard({
                 home={home ?? status.home}
                 privacy={privacy}
                 onBack={() => go("privacy")}
-                onDone={onDone}
+                onStarted={(hasPekos) => (hasPekos ? finish("had pekos", null, null) : go("model"))}
               />
+            )}
+            {step === "model" && (
+              <OnboardingFrame headingRef={heading} title={t("firstRun.steps.1")} onSkip={skip}>
+                <ModelStep
+                  onNext={(id) => {
+                    setModelId(id);
+                    track("onboarding_step", { step: "model" });
+                    go("peko");
+                  }}
+                />
+              </OnboardingFrame>
+            )}
+            {step === "peko" && modelId && (
+              <OnboardingFrame headingRef={heading} title={t("firstRun.steps.2")} onSkip={skip}>
+                <PekoStep
+                  modelId={modelId}
+                  takenNames={[]}
+                  onBack={() => go("model")}
+                  onNext={(name) => {
+                    setPekoName(name);
+                    track("onboarding_step", { step: "peko" });
+                    go("hello");
+                  }}
+                />
+              </OnboardingFrame>
+            )}
+            {step === "hello" && pekoName && (
+              // The peko exists by now: its own "go to the chat" is the way out.
+              <OnboardingFrame headingRef={heading} title={t("firstRun.steps.3")}>
+                <HelloStep pekoName={pekoName} onFinish={(say) => finish("done", pekoName, say)} />
+              </OnboardingFrame>
             )}
           </section>
         </div>
@@ -210,7 +268,9 @@ function StepFrame({
         {body && <div className="mt-2 max-w-prose text-sm leading-relaxed text-fg-muted">{body}</div>}
         {children && <div className="mt-6">{children}</div>}
       </div>
-      <div className="flex items-center justify-between gap-3 border-t border-line px-10 py-4">{footer}</div>
+      {footer && (
+        <div className="flex items-center justify-between gap-3 border-t border-line px-10 py-4">{footer}</div>
+      )}
     </>
   );
 }
@@ -637,14 +697,14 @@ function ReadyStep({
   home,
   privacy,
   onBack,
-  onDone,
+  onStarted,
 }: {
   headingRef: React.RefObject<HTMLHeadingElement | null>;
   status: AppSetupStatus;
   home: string;
   privacy: Switches;
   onBack: () => void;
-  onDone: () => void;
+  onStarted: (hasPekos: boolean) => void;
 }) {
   const { t } = useTranslation();
   const [starting, setStarting] = useState(false);
@@ -658,8 +718,9 @@ function ReadyStep({
       // Saved in the chosen folder, so only once it exists.
       await privacySet({ ...privacy, acknowledged: true });
       await appSetupFinish();
-      // Show the app once the engine is up, or after a while regardless:
-      // the app has its own word for an engine that is slow or failed.
+      // Go on once the engine is up, or after a while regardless: the next
+      // steps wait for it themselves, and the app has its own word for an
+      // engine that is slow or failed.
       const deadline = Date.now() + START_WAIT_MS;
       while (Date.now() < deadline) {
         const state = await engineStatus().catch(() => null);
@@ -667,7 +728,9 @@ function ReadyStep({
         if (state?.kind === "failed") throw new Error(state.message);
         await new Promise((r) => setTimeout(r, 400));
       }
-      onDone();
+      // A folder that already has pekos needs no first peko.
+      const pekos = await principalList().catch(() => []);
+      onStarted(pekos.length > 0);
     } catch (e) {
       setError(t("setup.ready.failed", { message: String(e instanceof Error ? e.message : e) }));
       setStarting(false);
@@ -731,6 +794,45 @@ function ReadyStep({
           {error}
         </p>
       )}
+    </StepFrame>
+  );
+}
+
+// ─── 5–7. The first peko, skippable ──────────────────────────────────
+
+/**
+ * A first-peko step: the walkthrough's own component (with its own
+ * buttons) in the wizard's frame, and a way out to the app.
+ */
+function OnboardingFrame({
+  headingRef,
+  title,
+  onSkip,
+  children,
+}: {
+  headingRef: React.RefObject<HTMLHeadingElement | null>;
+  title: string;
+  /** Leave for the app; absent where the step has its own way out. */
+  onSkip?: () => void;
+  children: React.ReactNode;
+}) {
+  const { t } = useTranslation();
+  return (
+    <StepFrame
+      headingRef={headingRef}
+      title={title}
+      footer={
+        onSkip ? (
+          <>
+            <span className="field-hint">{t("setup.skipHint")}</span>
+            <button type="button" className="btn-ghost" onClick={onSkip} data-testid="setup-skip">
+              {t("setup.skip")}
+            </button>
+          </>
+        ) : null
+      }
+    >
+      {children}
     </StepFrame>
   );
 }

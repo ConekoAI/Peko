@@ -4,11 +4,16 @@
     "welcome": "Willkommen",
     "folder": "Ordner",
     "privacy": "Datenschutz",
-    "ready": "Fertig"
+    "ready": "Fertig",
+    "model": "Modell",
+    "peko": "Dein Peko",
+    "hello": "Hallo sagen"
   },
   "stepOf": "Schritt {{current}} von {{total}}",
   "back": "Zurück",
   "continue": "Weiter",
+  "skip": "Vorerst überspringen",
+  "skipHint": "Modelle und Pekos kannst du jederzeit hinzufügen.",
   "welcome": {
     "title": "Willkommen bei Peko",
     "slogan": "Wo sich Köpfe begegnen.",

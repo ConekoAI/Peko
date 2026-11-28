@@ -305,6 +305,8 @@ let setupHeld = setupMode === "fresh" || setupMode === "missing";
 let setupHome = setupMode === "missing" ? "/Volumes/T7/Peko" : "/Users/you/.peko";
 const PICKS = ["/Users/you/Documents", "/Volumes/T7", "/Users/you/Library/Mobile Documents/com~apple~CloudDocs/Peko", "/usr/local"];
 let pickIndex = 0;
+/** A fresh setup starts with no pekos, so the first-peko steps show. */
+const setupPekos: (typeof pekos)[number][] | null = setupMode === "fresh" ? [] : null;
 
 function mockFolderCheck(path: string) {
   const base = { pekos: null as number | null, freeBytes: 412_000_000_000, warnings: [] as string[], problem: null as string | null };
@@ -387,9 +389,17 @@ function handle(cmd: string, args: Record<string, unknown> = {}): unknown {
         disk: { total: 1e12, used: 4e11, free: 6e11 },
       };
     case "principal_list":
-      return pekos;
+      return setupPekos ?? pekos;
     case "principal_get":
-      return pekos.find((p) => p.name === args.name) ?? null;
+      return (setupPekos ?? pekos).find((p) => p.name === args.name) ?? null;
+    // A fresh setup creates its first peko.
+    case "principal_create": {
+      const made = { ...pekos[0], name: String(args.name), localId: `prin_${String(args.name)}`, description: "" };
+      (setupPekos ?? pekos).push(made);
+      return made;
+    }
+    case "principal_update":
+      return (setupPekos ?? pekos).find((p) => p.name === args.name) ?? null;
     case "remote_principal_list":
       return remotePekos;
     case "seed_contents":

@@ -4,11 +4,16 @@
     "welcome": "Bienvenue",
     "folder": "Dossier",
     "privacy": "Confidentialité",
-    "ready": "Prêt"
+    "ready": "Prêt",
+    "model": "Modèle",
+    "peko": "Votre peko",
+    "hello": "Dites bonjour"
   },
   "stepOf": "Étape {{current}} sur {{total}}",
   "back": "Retour",
   "continue": "Continuer",
+  "skip": "Passer pour l'instant",
+  "skipHint": "Vous pourrez ajouter un modèle et des pekos à tout moment.",
   "welcome": {
     "title": "Bienvenue dans Peko",
     "slogan": "Là où les esprits se rencontrent.",

@@ -7,8 +7,11 @@ All notable changes to Peko.
 ### Added
 
 - **Peko Desktop sets itself up on first start, and you choose where Peko
-  keeps things.** A new install opens on a four-step setup (welcome and
-  language, folder, privacy, ready) before anything is written. The folder
+  keeps things.** A new install opens on a setup (welcome and language,
+  folder, privacy, ready) before anything is written, and once the engine
+  starts the same window goes on to the first peko: connect a model, name
+  it, say hello. Those last steps can be skipped, and a folder that already
+  has pekos skips them. The folder
   step offers `~/.peko` or any folder you pick, and says what picking it
   does: a folder that is already Peko's brings its pekos along, a folder with
   other things in it gets a `Peko` folder inside, and a cloud-synced folder,

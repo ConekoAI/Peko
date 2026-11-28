@@ -4,11 +4,16 @@
     "welcome": "欢迎",
     "folder": "文件夹",
     "privacy": "隐私",
-    "ready": "就绪"
+    "ready": "就绪",
+    "model": "模型",
+    "peko": "你的 peko",
+    "hello": "打个招呼"
   },
   "stepOf": "第 {{current}} 步，共 {{total}} 步",
   "back": "返回",
   "continue": "继续",
+  "skip": "暂时跳过",
+  "skipHint": "你可以随时添加模型和 peko。",
   "welcome": {
     "title": "欢迎使用 Peko",
     "slogan": "心智相遇之处。",

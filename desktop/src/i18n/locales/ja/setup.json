@@ -4,11 +4,16 @@
     "welcome": "ようこそ",
     "folder": "フォルダー",
     "privacy": "プライバシー",
-    "ready": "準備完了"
+    "ready": "準備完了",
+    "model": "モデル",
+    "peko": "あなたの peko",
+    "hello": "あいさつ"
   },
   "stepOf": "ステップ {{current}} / {{total}}",
   "back": "戻る",
   "continue": "続ける",
+  "skip": "今はスキップ",
+  "skipHint": "モデルや peko はいつでも追加できます。",
   "welcome": {
     "title": "Peko へようこそ",
     "slogan": "心が出会う場所。",

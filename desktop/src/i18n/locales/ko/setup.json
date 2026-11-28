@@ -4,11 +4,16 @@
     "welcome": "환영",
     "folder": "폴더",
     "privacy": "개인정보",
-    "ready": "준비 완료"
+    "ready": "준비 완료",
+    "model": "모델",
+    "peko": "나의 peko",
+    "hello": "인사하기"
   },
   "stepOf": "{{total}}단계 중 {{current}}단계",
   "back": "뒤로",
   "continue": "계속",
+  "skip": "지금은 건너뛰기",
+  "skipHint": "모델과 peko는 언제든 추가할 수 있습니다.",
   "welcome": {
     "title": "Peko에 오신 것을 환영합니다",
     "slogan": "마음이 만나는 곳.",

@@ -4,11 +4,16 @@
     "welcome": "Boas-vindas",
     "folder": "Pasta",
     "privacy": "Privacidade",
-    "ready": "Pronto"
+    "ready": "Pronto",
+    "model": "Modelo",
+    "peko": "Seu peko",
+    "hello": "Diga oi"
   },
   "stepOf": "Etapa {{current}} de {{total}}",
   "back": "Voltar",
   "continue": "Continuar",
+  "skip": "Pular por enquanto",
+  "skipHint": "Você pode adicionar um modelo e pekos quando quiser.",
   "welcome": {
     "title": "Boas-vindas ao Peko",
     "slogan": "Onde as mentes se encontram.",

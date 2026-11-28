@@ -1,6 +1,9 @@
 // The first-run setup (src-tauri/src/home.rs): with no Peko folder the app
 // shows the wizard instead of itself; it chooses a folder, saves the
-// privacy choices there, and only then starts the engine.
+// privacy choices there, and only then starts the engine. Then the same
+// window goes on to the first peko (model, name, hello), which can be
+// skipped. Those three steps are FirstRunWalkthrough's, tested there;
+// here they are stand-ins.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
@@ -10,6 +13,22 @@ import type { AppSetupStatus, FolderCheck } from "../lib/api";
 
 vi.mock("../components/TitleBar", () => ({ default: () => null }));
 
+const navigate = vi.hoisted(() => vi.fn());
+vi.mock("@tanstack/react-router", () => ({ useNavigate: () => navigate }));
+vi.mock("../lib/usage", () => ({ track: vi.fn() }));
+vi.mock("../components/FirstRunWalkthrough", () => ({
+  ONBOARDING_KEY: "peko.onboarding.seen",
+  ModelStep: ({ onNext }: { onNext: (id: string) => void }) => (
+    <button data-testid="stub-model" onClick={() => onNext("m1")} />
+  ),
+  PekoStep: ({ modelId, onNext }: { modelId: string; onNext: (name: string) => void }) => (
+    <button data-testid="stub-peko" data-model={modelId} onClick={() => onNext("mochi")} />
+  ),
+  HelloStep: ({ onFinish }: { onFinish: (say: string | null) => void }) => (
+    <button data-testid="stub-hello" onClick={() => onFinish("Hi!")} />
+  ),
+}));
+
 const api = vi.hoisted(() => ({
   appSetupStatus: vi.fn(),
   appSetupCheckFolder: vi.fn(),
@@ -18,6 +37,7 @@ const api = vi.hoisted(() => ({
   pickFolder: vi.fn(),
   privacySet: vi.fn(),
   engineStatus: vi.fn(),
+  principalList: vi.fn(),
 }));
 vi.mock("../lib/api", () => api);
 
@@ -54,7 +74,21 @@ describe("SetupGate", () => {
     api.privacySet.mockImplementation(async (c) => c);
     api.appSetupFinish.mockResolvedValue(undefined);
     api.engineStatus.mockResolvedValue({ kind: "running", pid: 1, version: "0.8.1", uptime_secs: 1 });
+    api.principalList.mockResolvedValue([]);
+    navigate.mockReset();
+    localStorage.clear();
   });
+
+  /** Through welcome, the default folder and privacy, then "Start Peko". */
+  async function startWithDefaults() {
+    fireEvent.click(await screen.findByTestId("setup-start"));
+    await waitFor(() =>
+      expect((screen.getByTestId("setup-folder-continue") as HTMLButtonElement).disabled).toBe(false),
+    );
+    fireEvent.click(screen.getByTestId("setup-folder-continue"));
+    fireEvent.click(await screen.findByTestId("setup-privacy-continue"));
+    fireEvent.click(await screen.findByTestId("setup-finish"));
+  }
 
   it("shows the app when there is a Peko folder", async () => {
     api.appSetupStatus.mockResolvedValue(status({ needed: false, reason: null }));
@@ -84,11 +118,45 @@ describe("SetupGate", () => {
     expect(api.appSetupFinish).not.toHaveBeenCalled();
     fireEvent.click(await screen.findByTestId("setup-finish"));
 
-    expect(await screen.findByText("the app")).toBeTruthy();
+    // The engine runs; the first peko comes next, in the same window.
+    fireEvent.click(await screen.findByTestId("stub-model"));
     expect(api.privacySet).toHaveBeenCalledWith({ crashReports: true, usageEvents: false, acknowledged: true });
     expect(api.privacySet.mock.invocationCallOrder[0]).toBeLessThan(
       api.appSetupFinish.mock.invocationCallOrder[0],
     );
+    const peko = await screen.findByTestId("stub-peko");
+    expect(peko.getAttribute("data-model")).toBe("m1");
+    fireEvent.click(peko);
+    fireEvent.click(await screen.findByTestId("stub-hello"));
+
+    expect(await screen.findByText("the app")).toBeTruthy();
+    expect(navigate).toHaveBeenCalledWith({
+      to: "/chat/$pekoName",
+      params: { pekoName: "mochi" },
+      search: { say: "Hi!" },
+    });
+    // The overlay walkthrough does not offer the same steps again.
+    expect(localStorage.getItem("peko.onboarding.seen")).toBe("1");
+  });
+
+  it("lets the first peko be skipped", async () => {
+    api.appSetupStatus.mockResolvedValue(status());
+    renderGate();
+    await startWithDefaults();
+    expect(await screen.findByTestId("stub-model")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("setup-skip"));
+    expect(await screen.findByText("the app")).toBeTruthy();
+    expect(navigate).not.toHaveBeenCalled();
+    expect(localStorage.getItem("peko.onboarding.seen")).toBe("1");
+  });
+
+  it("goes straight to the app when the folder already has pekos", async () => {
+    api.appSetupStatus.mockResolvedValue(status());
+    api.principalList.mockResolvedValue([{ name: "aria" }]);
+    renderGate();
+    await startWithDefaults();
+    expect(await screen.findByText("the app")).toBeTruthy();
+    expect(screen.queryByTestId("stub-model")).toBeNull();
   });
 
   it("keeps the default folder as `~/.peko` (no pointer)", async () => {

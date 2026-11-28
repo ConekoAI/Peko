@@ -4,11 +4,16 @@
     "welcome": "Welcome",
     "folder": "Folder",
     "privacy": "Privacy",
-    "ready": "Ready"
+    "ready": "Ready",
+    "model": "Model",
+    "peko": "Your peko",
+    "hello": "Say hello"
   },
   "stepOf": "Step {{current}} of {{total}}",
   "back": "Back",
   "continue": "Continue",
+  "skip": "Skip for now",
+  "skipHint": "You can add a model and pekos any time.",
   "welcome": {
     "title": "Welcome to Peko",
     "slogan": "Where minds meet.",

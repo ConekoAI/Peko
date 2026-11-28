@@ -4,11 +4,16 @@
     "welcome": "Bienvenida",
     "folder": "Carpeta",
     "privacy": "Privacidad",
-    "ready": "Listo"
+    "ready": "Listo",
+    "model": "Modelo",
+    "peko": "Tu peko",
+    "hello": "Saluda"
   },
   "stepOf": "Paso {{current}} de {{total}}",
   "back": "Atrás",
   "continue": "Continuar",
+  "skip": "Omitir por ahora",
+  "skipHint": "Puedes añadir un modelo y pekos cuando quieras.",
   "welcome": {
     "title": "Te damos la bienvenida a Peko",
     "slogan": "Donde las mentes se encuentran.",
