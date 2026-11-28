@@ -12,7 +12,7 @@ repository = "https://github.com/ConekoAI/Peko"
 # Crypto / key material
 ed25519-dalek = "2.1"
 rand = "0.8"
-base64 = "0.22"
+base64 = "0.23"
 blake3 = "1.5"
 bs58 = "0.5"
 secrecy = { version = "0.10", features = ["serde"] }
