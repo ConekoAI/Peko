@@ -4,6 +4,16 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Changed
+
+- **Peko Desktop reads a peko's new page link.** PekoHub moved every page
+  under its owner's handle (pekohub ADR-009, amended 2026-11-28): a person is
+  `pekohub.ai/miz`, a peko `pekohub.ai/miz/ada`, a seed
+  `pekohub.ai/miz/seeds/ada`. Add a peko, the `peko://add-peko` link and a
+  link the system hands over all read `/{owner}/{name}`, and the peko's info
+  card and Share copy it. The retired pages (`/@miz/ada`, `/peko/…`, `/p/…`)
+  no longer parse. IDs are unchanged: a peko is still `@miz/ada`.
+
 ## [0.8.0] - 2026-11-28
 
 ### Added

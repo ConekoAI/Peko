@@ -82,7 +82,7 @@
     "title": "Add a peko",
     "intro": "Type the ID of someone's public peko, like <code>@alice/coding-assistant</code>, or paste its link from PekoHub.",
     "label": "Peko ID or link",
-    "invalid": "That doesn't look like a peko's ID or link. Expected <code>@owner/name</code> or <code>https://pekohub.ai/@owner/name</code>.",
+    "invalid": "That doesn't look like a peko's ID or link. Expected <code>@owner/name</code> or <code>https://pekohub.ai/owner/name</code>.",
     "inviteToken": "Invite token detected — the peko's owner shared this link privately with you.",
     "ownedBy": "Owned by <owner/> on <hub/>",
     "status": "Status: {{status}}",

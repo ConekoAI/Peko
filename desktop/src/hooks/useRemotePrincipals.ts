@@ -75,14 +75,13 @@ export function useRemotePeko(runtimeId: string | undefined, name: string) {
  * `parse_share_url` rules.
  *
  * Accepted shapes:
- *   - `/@{owner}/{name}`                    — the peko's ID as its page
- *                                             (pekohub ADR-009)
- *   - `/peko/{owner}/{name}`, `/p/{owner}/{name}`
- *                                           — older share links (the hub
- *                                             redirects them)
+ *   - `/{owner}/{name}`                     — the peko's page (pekohub
+ *                                             ADR-009, amended 2026-11-28)
  *   - `/v1/public/pekos/{owner}/{name}`     — current API URL form
  *   - `/v1/public/principals/{owner}/{name}`— legacy API URL form
- * Each accepts an optional `?token=...` invite-token query.
+ * Each accepts an optional `?token=...` invite-token query. The older
+ * pages (`/@{owner}/{name}`, `/peko/…`, `/p/…`) are retired with the
+ * website's.
  */
 export function parseShareUrl(raw: string):
   | { hubUrl: string; owner: string; principalName: string; inviteToken?: string }
@@ -94,28 +93,17 @@ export function parseShareUrl(raw: string):
     return null;
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") return null;
-  const path = url.pathname.replace(/\/$/, "");
+  const path = url.pathname.replace(/\/$/, "").replace(/^\/v1\/public\/(?:pekos|principals)(?=\/)/, "");
   const token = url.searchParams.get("token") ?? undefined;
-  // /@{owner}/{name} — the peko's ID is its page; `@` may come encoded.
-  const id = path.match(/^\/(?:@|%40)([^/]+)\/([^/]+)$/i);
-  if (id)
-    return {
-      hubUrl: url.origin,
-      owner: id[1].toLowerCase(),
-      principalName: id[2],
-      inviteToken: token,
-    };
-  const forms = [
-    /^\/peko\/([^/]+)\/([^/]+)$/, // older canonical share link
-    /^\/p\/([^/]+)\/([^/]+)$/, // older still
-    /^\/v1\/public\/pekos\/([^/]+)\/([^/]+)$/, // API URL
-    /^\/v1\/public\/principals\/([^/]+)\/([^/]+)$/, // retired API URL
-  ];
-  for (const form of forms) {
-    const m = path.match(form);
-    if (m) return { hubUrl: url.origin, owner: m[1], principalName: m[2], inviteToken: token };
-  }
-  return null;
+  // /{owner}/{name} — the owner is a handle, which a link may capitalise.
+  const page = path.match(/^\/([a-z0-9][a-z0-9_-]*)\/([^/]+)$/i);
+  if (!page) return null;
+  return {
+    hubUrl: url.origin,
+    owner: page[1].toLowerCase(),
+    principalName: decodeURIComponent(page[2]),
+    inviteToken: token,
+  };
 }
 
 /** A peko's ID as people write it (pekohub ADR-009): `@alice/ada`. */
@@ -123,13 +111,14 @@ const PEKO_ID = /^@([a-z0-9][a-z0-9_-]{0,127})\/([A-Za-z0-9][A-Za-z0-9_-]{0,63})
 
 /**
  * What someone typed into "add a peko", as a share link: a link stays as
- * it is; a peko's ID, `@alice/ada`, becomes its page on `hubUrl`'s website.
+ * it is; a peko's ID, `@alice/ada`, becomes its page on `hubUrl`'s website,
+ * `/alice/ada`.
  */
 export function shareLinkFromInput(input: string, hubUrl: string): string {
   const text = input.trim();
   const id = text.match(PEKO_ID);
   if (!id) return text;
-  return `${hubWebOrigin(hubUrl)}/@${id[1].toLowerCase()}/${id[2]}`;
+  return `${hubWebOrigin(hubUrl)}/${id[1].toLowerCase()}/${id[2]}`;
 }
 
 /**

@@ -172,7 +172,7 @@ describe("the other hub calls go through the backend too", () => {
         items: [],
         total: 0,
         queryKind: "peko",
-        exact: [{ kind: "peko", id: "@fox/ada", owner: "fox", name: "ada", displayName: "Ada", description: null, avatar: null, status: "online", url: "https://pekohub.ai/@fox/ada" }],
+        exact: [{ kind: "peko", id: "@fox/ada", owner: "fox", name: "ada", displayName: "Ada", description: null, avatar: null, status: "online", url: "https://pekohub.ai/fox/ada" }],
       }),
     );
     const result = await hubSearch("https://pekohub.ai", "@fox/ada");

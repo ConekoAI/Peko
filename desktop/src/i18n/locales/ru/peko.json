@@ -84,7 +84,7 @@
     "title": "Добавить peko",
     "intro": "Введите ID чужого публичного peko, например <code>@alice/coding-assistant</code>, или вставьте ссылку на него в PekoHub.",
     "label": "ID peko или ссылка",
-    "invalid": "Это не похоже на ID или ссылку peko. Ожидается <code>@owner/name</code> или <code>https://pekohub.ai/@owner/name</code>.",
+    "invalid": "Это не похоже на ID или ссылку peko. Ожидается <code>@owner/name</code> или <code>https://pekohub.ai/owner/name</code>.",
     "inviteToken": "Обнаружен токен приглашения — владелец peko поделился этой ссылкой лично с вами.",
     "ownedBy": "Владелец: <owner/>, хаб: <hub/>",
     "status": "Статус: {{status}}",

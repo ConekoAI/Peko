@@ -120,8 +120,7 @@ pub fn run() {
             // the JS side parses the URL, distinguishes
             // `peko://add-peko?url=...` (legacy:
             // `peko://add-principal?url=...`) from
-            // `https://${hub}/@${owner}/${name}?token=...` (older:
-            // `/peko/…`, `/p/…`), and either calls
+            // `https://${hub}/${owner}/${name}?token=...`, and either calls
             // `remotePrincipalAdd` directly or opens
             // the AddRemotePrincipalModal pre-filled. The runtime
             // path keeps both shapes routed through one parser so

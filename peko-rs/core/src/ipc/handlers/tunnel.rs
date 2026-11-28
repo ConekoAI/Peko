@@ -382,7 +382,7 @@ mod tests {
                 name: "ada".into(),
                 version: version.into(),
                 digest: crate::principal::seed::seed_digest(seed),
-                web_url: "https://pekohub.ai/seeds/maya/ada".into(),
+                web_url: "https://pekohub.ai/maya/seeds/ada".into(),
             })
         }
     }

@@ -78,12 +78,12 @@ export async function hubSearch(hubUrl: string, q: string): Promise<HubSearchRes
 }
 
 /**
- * A peko's share link: its ID as a page on the hub's website,
- * `https://pekohub.ai/@alice/ada` (pekohub ADR-009). Mirrors the hub's
+ * A peko's share link: its page on the hub's website,
+ * `https://pekohub.ai/alice/ada` (pekohub ADR-009, amended 2026-11-28). Mirrors the hub's
  * own `shareUrl`, so both emit the same input to `parseDeepLink`.
  */
 export function shareUrlFor(hubUrl: string, peko: { owner: string; name: string }): string {
-  return `${hubWebOrigin(hubUrl)}/@${encodeURIComponent(peko.owner)}/${encodeURIComponent(peko.name)}`;
+  return `${hubWebOrigin(hubUrl)}/${encodeURIComponent(peko.owner)}/${encodeURIComponent(peko.name)}`;
 }
 
 /**

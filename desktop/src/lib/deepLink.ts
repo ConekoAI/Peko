@@ -18,10 +18,9 @@ import { parseShareUrl } from "../hooks/useRemotePrincipals";
  *    `peko://add-principal?url=...` form is still accepted on
  *    receipt but never emitted.
  *
- * 2. `https://<hub>/@<owner>/<name>?token=<optional>`
- *    The canonical pekohub share link itself — the peko's ID as its
- *    page (pekohub ADR-009). The older `/peko/<owner>/<name>` and
- *    `/p/<owner>/<name>` links are also accepted.
+ * 2. `https://<hub>/<owner>/<name>?token=<optional>`
+ *    The pekohub share link itself — the peko's page (pekohub
+ *    ADR-009, amended 2026-11-28).
  *    When the OS hands this to the desktop (because the user has
  *    peko-desktop installed and the link was clicked from another
  *    app), the desktop treats it as an add request directly.
@@ -72,12 +71,10 @@ export function parseDeepLink(raw: string): DeepLinkIntent | null {
     return { kind: "add-principal", shareUrl: inner };
   }
 
-  // Shape 2: `https://<hub>/@<owner>/<name>` (canonical), the older
-  // `/peko/<owner>/<name>` and `/p/<owner>/<name>` share forms, or the
-  // legacy `https://<hub>/v1/public/principals/<owner>/<name>` API
-  // form. `parseShareUrl` already encodes all of those shapes plus
-  // the optional `?token=...` query — we only need to check that
-  // the URL has one of those path shapes.
+  // Shape 2: `https://<hub>/<owner>/<name>`, the peko's page, or the
+  // `https://<hub>/v1/public/pekos/<owner>/<name>` API form.
+  // `parseShareUrl` encodes those shapes plus the optional `?token=...`
+  // query; we only need to check that the URL has one of them.
   if (url.protocol === "http:" || url.protocol === "https:") {
     if (parseShareUrl(raw)) {
       return { kind: "pekohub-share", shareUrl: raw };

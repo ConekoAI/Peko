@@ -81,7 +81,7 @@
     "title": "peko 추가",
     "intro": "다른 사람의 공개 peko ID(예: <code>@alice/coding-assistant</code>)를 입력하거나 PekoHub의 링크를 붙여 넣으세요.",
     "label": "Peko ID 또는 링크",
-    "invalid": "peko의 ID나 링크가 아닌 것 같습니다. <code>@owner/name</code> 또는 <code>https://pekohub.ai/@owner/name</code> 형식이어야 합니다.",
+    "invalid": "peko의 ID나 링크가 아닌 것 같습니다. <code>@owner/name</code> 또는 <code>https://pekohub.ai/owner/name</code> 형식이어야 합니다.",
     "inviteToken": "초대 토큰이 감지되었습니다. 이 peko의 소유자가 이 링크를 나에게만 공유했습니다.",
     "ownedBy": "소유자: <owner/> (<hub/>)",
     "status": "상태: {{status}}",

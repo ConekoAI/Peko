@@ -121,7 +121,7 @@ mod tests {
             let answers = [
                 (
                     "201 Created",
-                    r#"{"owner":"maya","name":"ada","version":"1.0.0","digest":"sha256:ab","webUrl":"http://w/seeds/maya/ada"}"#,
+                    r#"{"owner":"maya","name":"ada","version":"1.0.0","digest":"sha256:ab","webUrl":"http://w/maya/seeds/ada"}"#,
                 ),
                 ("409 Conflict", r#"{"error":"Version 1.0.0 is published"}"#),
             ];
@@ -168,7 +168,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(published.owner, "maya");
-        assert_eq!(published.web_url, "http://w/seeds/maya/ada");
+        assert_eq!(published.web_url, "http://w/maya/seeds/ada");
         let refused = post(&origin, "did:key:zrt", &key, seed, "1.0.0", None)
             .await
             .unwrap_err();

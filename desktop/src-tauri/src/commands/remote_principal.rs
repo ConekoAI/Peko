@@ -65,13 +65,12 @@ impl RemotePrincipalSummary {
     }
 }
 
-/// Share-link shape. Accepts the canonical `${hubUrl}/@{owner}/{name}`
-/// form (the peko's ID as its page, hub ADR-009; with optional
-/// `?token=...`), the older `${hubUrl}/peko/{owner}/{name}` and
-/// `${hubUrl}/p/{owner}/{name}` forms (the hub redirects them, and users
-/// still have old links lying around), plus the `/v1/public/pekos/{owner}/{name}` and retired
+/// Share-link shape. Accepts the peko's page `${hubUrl}/{owner}/{name}`
+/// (hub ADR-009, amended 2026-11-28; with optional `?token=...`), plus
+/// the `/v1/public/pekos/{owner}/{name}` and retired
 /// `/v1/public/principals/{owner}/{name}` API URL forms for users who
-/// copied the endpoint directly.
+/// copied the endpoint directly. The older pages (`/@{owner}/{name}`,
+/// `/peko/…`, `/p/…`) are retired with the website's.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemotePrincipalAddRequest {
@@ -95,81 +94,45 @@ pub struct RemotePrincipalResolve {
 }
 
 /// Parse a share URL into `(hub_url, owner, principal_name, invite_token)`.
-/// Accepts `${hubUrl}/@{owner}/{name}` (canonical, hub ADR-009), the
-/// older `${hubUrl}/peko/{owner}/{name}` and `${hubUrl}/p/{owner}/{name}`
-/// forms, and both API URL forms (`/v1/public/pekos/...` and the retired
-/// `/v1/public/principals/...`). Returns `None` if the URL doesn't
-/// match any known shape.
+/// Accepts the peko's page `${hubUrl}/{owner}/{name}` (hub ADR-009,
+/// amended 2026-11-28) and both API URL forms (`/v1/public/pekos/...` and
+/// the retired `/v1/public/principals/...`). Returns `None` if the URL
+/// doesn't match any known shape.
 fn parse_share_url(raw: &str) -> Option<(String, String, String, Option<String>)> {
     let url = urlparse_simple(raw)?;
     let path = url.path.trim_end_matches('/');
     // Strip leading slash so split gives clean segments.
     let stripped = path.strip_prefix('/').unwrap_or(path);
-    // `/@{owner}/{name}` — the peko's ID is its page (hub ADR-009). A
-    // pasted link may carry the `@` percent-encoded. Handles are
-    // lowercase.
-    if let Some(rest) = stripped
-        .strip_prefix('@')
-        .or_else(|| stripped.strip_prefix("%40"))
-    {
-        let mut parts = rest.split('/');
-        let owner = parts.next()?.to_ascii_lowercase();
-        let name = parts.next()?.to_string();
-        if owner.is_empty() || name.is_empty() || parts.next().is_some() {
-            return None;
-        }
-        return Some((
-            crate::clients::hub_origin::hub_api_base(&url.origin),
-            owner,
-            name,
-            url.query_token,
-        ));
-    }
-    // `/peko/{owner}/{name}` and `/p/…` — the older share-link forms the
-    // hub still redirects.
-    for prefix in ["peko/", "p/"] {
-        if let Some(rest) = stripped.strip_prefix(prefix) {
-            let mut parts = rest.split('/');
-            let owner = parts.next()?.to_string();
-            let name = parts.next()?.to_string();
-            if owner.is_empty() || name.is_empty() {
-                return None;
-            }
-            // No more path segments allowed.
-            if parts.next().is_some() {
-                return None;
-            }
-            return Some((
-                crate::clients::hub_origin::hub_api_base(&url.origin),
-                owner,
-                name,
-                url.query_token,
-            ));
-        }
-    }
     // `/v1/public/pekos/{owner}/{name}` — the API URL form; the
     // retired `/v1/public/principals/…` spelling is accepted for old
     // copied links.
-    for prefix in ["v1/public/pekos/", "v1/public/principals/"] {
-        if let Some(rest) = stripped.strip_prefix(prefix) {
-            let mut parts = rest.split('/');
-            let owner = parts.next()?.to_string();
-            let name = parts.next()?.to_string();
-            if owner.is_empty() || name.is_empty() {
-                return None;
-            }
-            if parts.next().is_some() {
-                return None;
-            }
-            return Some((
-                crate::clients::hub_origin::hub_api_base(&url.origin),
-                owner,
-                name,
-                url.query_token,
-            ));
-        }
+    let rest = ["v1/public/pekos/", "v1/public/principals/"]
+        .iter()
+        .find_map(|prefix| stripped.strip_prefix(prefix))
+        .unwrap_or(stripped);
+    // `/{owner}/{name}` — the peko's page. The owner is a handle
+    // (lowercase letters, digits, `-`, `_`); a link may carry it in
+    // capitals.
+    let mut parts = rest.split('/');
+    let owner = parts.next()?;
+    let name = parts.next()?;
+    if parts.next().is_some() || !is_handle(owner) || name.is_empty() {
+        return None;
     }
-    None
+    Some((
+        crate::clients::hub_origin::hub_api_base(&url.origin),
+        owner.to_ascii_lowercase(),
+        name.to_string(),
+        url.query_token,
+    ))
+}
+
+/// A PekoHub handle as a link may spell it: a letter or digit, then
+/// letters, digits, `-` and `_`.
+fn is_handle(segment: &str) -> bool {
+    let mut chars = segment.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 struct SimpleUrl {
@@ -889,63 +852,26 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_share_url_canonical_form() {
-        let (hub, owner, name, token) =
-            parse_share_url("https://pekohub.org/peko/alice/coding-assistant")
-                .expect("the /peko/ form should parse");
-        assert_eq!(
-            hub, "https://api.pekohub.ai",
-            "calls go to the official API host"
-        );
-        assert_eq!(owner, "alice");
-        assert_eq!(name, "coding-assistant");
-        assert!(token.is_none());
-    }
-
-    #[test]
-    fn test_parse_share_url_id_form() {
+    fn test_parse_share_url_page_form() {
         for raw in [
-            "https://pekohub.ai/@alice/coding-assistant",
-            "https://pekohub.ai/%40Alice/coding-assistant/",
+            "https://pekohub.ai/alice/coding-assistant",
+            "https://pekohub.ai/Alice/coding-assistant/",
         ] {
-            let (hub, owner, name, token) = parse_share_url(raw).expect("the /@ form should parse");
+            let (hub, owner, name, token) =
+                parse_share_url(raw).expect("the peko's page should parse");
             assert_eq!(hub, "https://api.pekohub.ai", "{raw}");
             assert_eq!(owner, "alice", "{raw}");
             assert_eq!(name, "coding-assistant", "{raw}");
             assert!(token.is_none());
         }
-        let (_, _, _, token) =
-            parse_share_url("http://localhost:3000/@alice/helper?token=t1").unwrap();
-        assert_eq!(token.as_deref(), Some("t1"));
-        assert!(parse_share_url("https://pekohub.ai/@alice").is_none());
-        assert!(parse_share_url("https://pekohub.ai/@alice/a/b").is_none());
-    }
-
-    #[test]
-    fn test_parse_share_url_legacy_p_form_still_accepted() {
-        // Pre-rename share links (`/p/{owner}/{name}`) keep parsing —
-        // the hub redirects them and users still have old links.
-        let (hub, owner, name, token) =
-            parse_share_url("https://pekohub.org/p/alice/coding-assistant")
-                .expect("legacy /p/ form should parse");
-        assert_eq!(
-            hub, "https://api.pekohub.ai",
-            "calls go to the official API host"
-        );
-        assert_eq!(owner, "alice");
-        assert_eq!(name, "coding-assistant");
-        assert!(token.is_none());
     }
 
     #[test]
     fn test_parse_share_url_with_token() {
         let (hub, owner, name, token) =
-            parse_share_url("https://pekohub.org/peko/alice/coding-assistant?token=abc123")
+            parse_share_url("https://pekohub.ai/alice/coding-assistant?token=abc123")
                 .expect("token-bearing form should parse");
-        assert_eq!(
-            hub, "https://api.pekohub.ai",
-            "calls go to the official API host"
-        );
+        assert_eq!(hub, "https://api.pekohub.ai");
         assert_eq!(owner, "alice");
         assert_eq!(name, "coding-assistant");
         assert_eq!(token.as_deref(), Some("abc123"));
@@ -953,58 +879,50 @@ mod tests {
 
     #[test]
     fn test_parse_share_url_api_form() {
-        let (hub, owner, name, token) =
-            parse_share_url("https://pekohub.org/v1/public/pekos/alice/coding-assistant")
-                .expect("api form should parse");
-        assert_eq!(
-            hub, "https://api.pekohub.ai",
-            "calls go to the official API host"
-        );
-        assert_eq!(owner, "alice");
-        assert_eq!(name, "coding-assistant");
-        assert!(token.is_none());
-    }
-
-    #[test]
-    fn test_parse_share_url_retired_api_form_still_accepted() {
-        // The retired `/v1/public/principals/...` API URL 404s on the
-        // hub, but old copied links should still resolve — the
-        // resolver hits the NEW endpoint with the parsed owner/name.
-        let (hub, owner, name, _token) =
-            parse_share_url("https://pekohub.org/v1/public/principals/alice/coding-assistant")
-                .expect("retired api form should parse");
-        assert_eq!(
-            hub, "https://api.pekohub.ai",
-            "calls go to the official API host"
-        );
-        assert_eq!(owner, "alice");
-        assert_eq!(name, "coding-assistant");
+        for raw in [
+            "https://pekohub.org/v1/public/pekos/alice/coding-assistant",
+            // The retired API URL 404s on the hub, but old copied links
+            // resolve: the resolver hits the new endpoint.
+            "https://pekohub.org/v1/public/principals/alice/coding-assistant",
+        ] {
+            let (hub, owner, name, token) = parse_share_url(raw).expect("api form should parse");
+            assert_eq!(
+                hub, "https://api.pekohub.ai",
+                "calls go to the official API host"
+            );
+            assert_eq!(owner, "alice");
+            assert_eq!(name, "coding-assistant");
+            assert!(token.is_none());
+        }
     }
 
     #[test]
     fn test_parse_share_url_keeps_a_self_hosted_origin() {
-        let (hub, owner, _, _) = parse_share_url("http://localhost:3000/peko/alice/helper")
+        let (hub, owner, _, _) = parse_share_url("http://localhost:3000/alice/helper")
             .expect("self-hosted share links parse");
         assert_eq!(hub, "http://localhost:3000");
         assert_eq!(owner, "alice");
     }
 
     #[test]
-    fn test_parse_share_url_rejects_unknown_shape() {
+    fn test_parse_share_url_retired_pages_and_unknown_shapes() {
+        // The older pages are retired with the website's.
+        for raw in [
+            "https://pekohub.ai/@alice/coding-assistant",
+            "https://pekohub.ai/%40alice/coding-assistant",
+            "https://pekohub.ai/peko/alice/coding-assistant",
+            "https://pekohub.ai/p/alice/coding-assistant",
+        ] {
+            assert!(parse_share_url(raw).is_none(), "{raw}");
+        }
         // The parser does NOT validate the host (peko supports self-hosted
-        // hubs); only the URL shape must match. Unknown hosts are passed
-        // through to `remote_principal_resolve` and rejected by the hub's
-        // HTTP 404 there.
-        assert!(parse_share_url("https://example.com/p/alice/coding-assistant").is_some());
-        // Path-shape rejections:
+        // hubs); only the URL shape must match.
+        assert!(parse_share_url("https://example.com/alice/coding-assistant").is_some());
         assert!(parse_share_url("https://pekohub.org/").is_none());
+        assert!(parse_share_url("https://pekohub.ai/alice").is_none());
+        assert!(parse_share_url("https://pekohub.ai/alice/seeds/ada").is_none());
         assert!(parse_share_url("not a url").is_none());
-        assert!(parse_share_url("ftp://pekohub.org/p/alice/x").is_none());
-        // Trailing path segment is rejected — only the owner/name
-        // pair is allowed.
-        assert!(parse_share_url("https://pekohub.org/p/alice/coding-assistant/extra").is_none());
-        // `/p/owner` (no name) is rejected.
-        assert!(parse_share_url("https://pekohub.org/p/alice").is_none());
+        assert!(parse_share_url("ftp://pekohub.org/alice/x").is_none());
     }
 
     #[test]
